@@ -4,6 +4,18 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.services.accounting_service import AccountingService, DEFAULT_CHART_OF_ACCOUNTS
+from app.core.security import create_access_token
+
+
+@pytest.fixture
+def auth_headers():
+    token = create_access_token(
+        user_id=str(uuid.uuid4()),
+        email="finance@default-org.com",
+        tenant_id="default-tenant-001",
+        role="FINANCE",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio
@@ -102,7 +114,7 @@ async def test_accounting_service_connection_error():
 
 
 @pytest.mark.asyncio
-async def test_invoice_categorize_endpoint_not_found():
+async def test_invoice_categorize_endpoint_not_found(auth_headers):
     """Verify 404 response on unknown invoice ID for categorize endpoint."""
     from app.db.database import get_db
 
@@ -119,8 +131,7 @@ async def test_invoice_categorize_endpoint_not_found():
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             random_id = str(uuid.uuid4())
-            response = await client.post(f"/api/v1/invoices/{random_id}/categorize")
+            response = await client.post(f"/api/v1/invoices/{random_id}/categorize", headers=auth_headers)
             assert response.status_code == 404
     finally:
         app.dependency_overrides.pop(get_db, None)
-
