@@ -1,0 +1,51 @@
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api.v1.health import router as health_router
+from app.api.v1.invoices import router as invoices_router
+from app.core.config import settings
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(f"Starting {settings.PROJECT_NAME} backend...")
+    yield
+    logger.info(f"Shutting down {settings.PROJECT_NAME} backend...")
+
+
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    openapi_url=f"{settings.API_V1_STR}/openapi.json",
+    docs_url=f"{settings.API_V1_STR}/docs",
+    redoc_url=f"{settings.API_V1_STR}/redoc",
+    lifespan=lifespan,
+)
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# API v1 routes
+app.include_router(health_router, prefix=settings.API_V1_STR)
+app.include_router(invoices_router, prefix=settings.API_V1_STR)
+
+
+@app.get("/")
+async def root():
+    return {
+        "message": f"Welcome to {settings.PROJECT_NAME} API",
+        "docs": f"{settings.API_V1_STR}/docs",
+        "health": f"{settings.API_V1_STR}/health",
+    }
