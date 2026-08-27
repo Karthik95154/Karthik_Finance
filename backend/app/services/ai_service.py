@@ -16,7 +16,10 @@ class AIService:
         """Checks if the Colab / ngrok Qwen3-VL server is reachable."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get(f"{self.colab_url}/health")
+                res = await client.get(
+                    f"{self.colab_url}/health",
+                    headers={"ngrok-skip-browser-warning": "1"},
+                )
                 return res.status_code == 200
         except Exception as e:
             logger.warning(f"Colab health check failed: {e}")
@@ -38,7 +41,14 @@ class AIService:
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
-                response = await client.post(endpoint, json=payload)
+                response = await client.post(
+                    endpoint,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "ngrok-skip-browser-warning": "1",
+                    },
+                )
             except httpx.ConnectError as e:
                 logger.error(f"Failed to connect to Colab Qwen3-VL at {self.colab_url}: {e}")
                 raise RuntimeError(

@@ -5,7 +5,7 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Standard Default Chart of Accounts as expected by Qwen3-4B
+# Standard Default Chart of Accounts as fallback
 DEFAULT_CHART_OF_ACCOUNTS: List[Dict[str, Any]] = [
     {"account_id": "ACC_1", "account_name": "Cloud Hosting & Infrastructure", "account_type": "expense"},
     {"account_id": "ACC_2", "account_name": "Software & Subscription Expenses", "account_type": "expense"},
@@ -21,7 +21,7 @@ DEFAULT_CHART_OF_ACCOUNTS: List[Dict[str, Any]] = [
     {"account_id": "ACC_12", "account_name": "Shipping & Freight Charges", "account_type": "expense"},
 ]
 
-# Standard Default Tax Records as expected by Qwen3-4B
+# Standard Default Tax Records as fallback
 DEFAULT_AVAILABLE_TAXES: List[Dict[str, Any]] = [
     {"tax_id": "TAX_0", "tax_name": "GST 0%", "tax_rate": 0.0, "tax_type": "GST"},
     {"tax_id": "TAX_5", "tax_name": "GST 5%", "tax_rate": 5.0, "tax_type": "GST"},
@@ -42,7 +42,10 @@ class AccountingService:
         """Check if Colab Qwen3-4B accounting endpoint is reachable and responsive."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                res = await client.get(f"{self.base_url}/health")
+                res = await client.get(
+                    f"{self.base_url}/health",
+                    headers={"ngrok-skip-browser-warning": "1"},
+                )
                 return res.status_code == 200
         except Exception as e:
             logger.warning(f"Accounting Colab health check failed: {e}")
@@ -80,7 +83,10 @@ class AccountingService:
                 response = await client.post(
                     endpoint,
                     json=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers={
+                        "Content-Type": "application/json",
+                        "ngrok-skip-browser-warning": "1",
+                    },
                 )
 
             if response.status_code != 200:
