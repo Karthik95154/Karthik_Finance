@@ -17,6 +17,10 @@ import {
   AccountingOutput,
   AccountingLineItem,
   TdsResult,
+  GstResult,
+  ItcResult,
+  FinancialValidationResult,
+  JournalEntry,
 } from "@/lib/api";
 import {
   ArrowLeft,
@@ -40,6 +44,9 @@ import {
   BookOpen,
   Scale,
   RefreshCw,
+  ShieldCheck,
+  Landmark,
+  Calculator,
 } from "lucide-react";
 
 // Helper to parse clean numeric values including currency strings like "Rupees 35,36,917.24" or "Rs. 248,417.88"
@@ -215,6 +222,10 @@ export default function InvoiceWorkspacePage() {
   // Editable form state
   const [formData, setFormData] = useState<ExtractedInvoiceData>({});
   const [accountingData, setAccountingData] = useState<AccountingOutput>({});
+  const [gstResult, setGstResult] = useState<GstResult | null>(null);
+  const [itcResult, setItcResult] = useState<ItcResult | null>(null);
+  const [financialValidationResult, setFinancialValidationResult] = useState<FinancialValidationResult | null>(null);
+  const [journalEntry, setJournalEntry] = useState<JournalEntry | null>(null);
   const [additionalFieldsText, setAdditionalFieldsText] = useState<string>("");
 
   useEffect(() => {
@@ -304,6 +315,10 @@ export default function InvoiceWorkspacePage() {
         const accOutput =
           invData.current_accounting_output || invData.accounting_output || {};
         setAccountingData(accOutput);
+        setGstResult(invData.gst_result || null);
+        setItcResult(invData.itc_result || null);
+        setFinancialValidationResult(invData.financial_validation_result || null);
+        setJournalEntry(invData.journal_entry || null);
       } catch (err: any) {
         setError(err.message || "Failed to load invoice details.");
       } finally {
@@ -435,6 +450,10 @@ export default function InvoiceWorkspacePage() {
         accountingData
       );
       setInvoice(updated);
+      if (updated.gst_result) setGstResult(updated.gst_result);
+      if (updated.itc_result) setItcResult(updated.itc_result);
+      if (updated.financial_validation_result) setFinancialValidationResult(updated.financial_validation_result);
+      if (updated.journal_entry) setJournalEntry(updated.journal_entry);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
@@ -480,14 +499,23 @@ export default function InvoiceWorkspacePage() {
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <button
-            onClick={() => router.push("/finance/upload")}
+            onClick={() => router.push("/finance/invoices")}
             className="btn btn-secondary"
             style={{ padding: "6px 12px", fontSize: "13px" }}
+            title="Return to Invoice Registry"
           >
             <ArrowLeft size={14} />
-            <span>Upload New</span>
+            <span>Invoices</span>
+          </button>
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="btn btn-secondary"
+            style={{ padding: "6px 10px", fontSize: "12px" }}
+            title="Return to Dashboard"
+          >
+            <span>Dashboard</span>
           </button>
           <div>
             <span style={{ fontSize: "16px", fontWeight: "700", letterSpacing: "-0.02em" }}>
@@ -1593,12 +1621,906 @@ export default function InvoiceWorkspacePage() {
                   </section>
                 )}
 
-                {/* 10. ADDITIONAL EXTRACTED INFORMATION (ZERO DATA LOSS) */}
+                {/* 9. GST VALIDATION (STAGE 4 DETERMINISTIC ENGINE) */}
+                {gstResult && (
+                  <section
+                    style={{
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <ShieldCheck size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          9. GST Structure Validation
+                        </h3>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span
+                          className={`badge ${
+                            gstResult.supply_type === "INTRA_STATE"
+                              ? "badge-success"
+                              : gstResult.supply_type === "INTER_STATE"
+                              ? "badge-uploaded"
+                              : "badge-warning"
+                          }`}
+                          style={{ fontSize: "11px", fontWeight: "600" }}
+                        >
+                          {gstResult.supply_type === "INTRA_STATE"
+                            ? "Intra-State (CGST+SGST)"
+                            : gstResult.supply_type === "INTER_STATE"
+                            ? "Inter-State (IGST)"
+                            : "Review Required"}
+                        </span>
+                        <span
+                          className={`badge ${
+                            gstResult.validation_status === "PASSED"
+                              ? "badge-success"
+                              : gstResult.validation_status === "GST_MISMATCH"
+                              ? "badge-warning"
+                              : "badge-uploaded"
+                          }`}
+                          style={{ fontSize: "11px", fontWeight: "700" }}
+                        >
+                          {gstResult.validation_status || "PENDING"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* GST Identification Grid */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(4, 1fr)",
+                        gap: "12px",
+                        background: "var(--bg-main)",
+                        padding: "12px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-subtle)",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Supplier GSTIN & State
+                        </div>
+                        <div style={{ fontWeight: "600", fontSize: "12px", fontFamily: "monospace" }}>
+                          {formData.vendor_gstin || "-"}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                          {gstResult.supplier_state_code
+                            ? `${gstResult.supplier_state_code} - ${gstResult.supplier_state_name}`
+                            : "Unresolved"}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Buyer GSTIN & State
+                        </div>
+                        <div style={{ fontWeight: "600", fontSize: "12px", fontFamily: "monospace" }}>
+                          {formData.customer_gstin || "-"}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                          {gstResult.buyer_state_code
+                            ? `${gstResult.buyer_state_code} - ${gstResult.buyer_state_name}`
+                            : "Unresolved"}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Place of Supply (POS)
+                        </div>
+                        <div style={{ fontWeight: "600", fontSize: "12px" }}>
+                          {gstResult.place_of_supply_state_name
+                            ? `${gstResult.place_of_supply_state_code} - ${gstResult.place_of_supply_state_name}`
+                            : "Unresolved"}
+                        </div>
+                        <div style={{ fontSize: "10px", color: "var(--accent)", marginTop: "2px" }}>
+                          Source: {gstResult.place_of_supply_source === "explicit_invoice" ? "Explicit Invoice" : gstResult.place_of_supply_source === "buyer_gstin_fallback" ? "Buyer GSTIN Fallback" : "Unresolved"}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Reverse Charge (RCM)
+                        </div>
+                        <div style={{ fontWeight: "600", fontSize: "12px" }}>
+                          {gstResult.is_reverse_charge ? "Yes (RCM Applicable)" : "No"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Extracted vs Calculated Tax Comparison Table */}
+                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
+                      <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", textAlign: "left" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
+                            <th style={{ padding: "8px" }}>Tax Component</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Extracted (Source)</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Calculated (Engine)</th>
+                            <th style={{ padding: "8px", textAlign: "center" }}>Validation</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                            <td style={{ padding: "8px", fontWeight: "600" }}>CGST (Central Tax)</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.extracted?.cgst_amount !== null && gstResult.extracted?.cgst_amount !== undefined
+                                ? `₹${gstResult.extracted.cgst_amount.toLocaleString()}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.calculated?.cgst_amount !== null && gstResult.calculated?.cgst_amount !== undefined
+                                ? `₹${gstResult.calculated.cgst_amount.toLocaleString()}`
+                                : "₹0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "center" }}>
+                              {gstResult.supply_type === "INTRA_STATE" ? (
+                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
+                              ) : gstResult.extracted?.cgst_amount ? (
+                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
+                              ) : (
+                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
+                              )}
+                            </td>
+                          </tr>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                            <td style={{ padding: "8px", fontWeight: "600" }}>SGST / UTGST (State Tax)</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.extracted?.sgst_amount !== null && gstResult.extracted?.sgst_amount !== undefined
+                                ? `₹${gstResult.extracted.sgst_amount.toLocaleString()}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.calculated?.sgst_amount !== null && gstResult.calculated?.sgst_amount !== undefined
+                                ? `₹${gstResult.calculated.sgst_amount.toLocaleString()}`
+                                : "₹0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "center" }}>
+                              {gstResult.supply_type === "INTRA_STATE" ? (
+                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
+                              ) : gstResult.extracted?.sgst_amount ? (
+                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
+                              ) : (
+                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
+                              )}
+                            </td>
+                          </tr>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                            <td style={{ padding: "8px", fontWeight: "600" }}>IGST (Integrated Tax)</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.extracted?.igst_amount !== null && gstResult.extracted?.igst_amount !== undefined
+                                ? `₹${gstResult.extracted.igst_amount.toLocaleString()}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.calculated?.igst_amount !== null && gstResult.calculated?.igst_amount !== undefined
+                                ? `₹${gstResult.calculated.igst_amount.toLocaleString()}`
+                                : "₹0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "center" }}>
+                              {gstResult.supply_type === "INTER_STATE" ? (
+                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
+                              ) : gstResult.extracted?.igst_amount ? (
+                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
+                              ) : (
+                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
+                              )}
+                            </td>
+                          </tr>
+                          <tr style={{ background: "var(--bg-main)", fontWeight: "700" }}>
+                            <td style={{ padding: "8px" }}>Total GST</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "var(--accent)" }}>
+                              {gstResult.extracted?.tax_total !== null && gstResult.extracted?.tax_total !== undefined
+                                ? `₹${gstResult.extracted.tax_total.toLocaleString()}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "var(--accent)" }}>
+                              {gstResult.calculated?.gst_total !== null && gstResult.calculated?.gst_total !== undefined
+                                ? `₹${gstResult.calculated.gst_total.toLocaleString()}`
+                                : "₹0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "center" }}>
+                              {gstResult.validation_status === "PASSED" ? (
+                                <span style={{ color: "var(--success)", fontSize: "11px" }}>MATCH</span>
+                              ) : (
+                                <span style={{ color: "var(--danger)", fontSize: "11px" }}>CHECK</span>
+                              )}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Errors & Warnings */}
+                    {gstResult.errors && gstResult.errors.length > 0 && (
+                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginBottom: "8px", fontSize: "12px", color: "#991b1b" }}>
+                        {gstResult.errors.map((err, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < gstResult.errors!.length - 1 ? "4px" : "0" }}>
+                            <AlertCircle size={14} /> <span>{err}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {gstResult.warnings && gstResult.warnings.length > 0 && (
+                      <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontSize: "12px", color: "#854d0e" }}>
+                        {gstResult.warnings.map((w, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < gstResult.warnings!.length - 1 ? "4px" : "0" }}>
+                            <AlertCircle size={14} /> <span>{w}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* 10. INPUT TAX CREDIT (ITC) (STAGE 4 DETERMINISTIC ENGINE) */}
+                {itcResult && (
+                  <section
+                    style={{
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <Landmark size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          10. Input Tax Credit (ITC) Eligibility
+                        </h3>
+                      </div>
+                      <span
+                        className={`badge ${
+                          itcResult.status === "ELIGIBLE"
+                            ? "badge-success"
+                            : itcResult.status === "INELIGIBLE"
+                            ? "badge-warning"
+                            : "badge-uploaded"
+                        }`}
+                        style={{ fontSize: "11px", fontWeight: "700" }}
+                      >
+                        {itcResult.status}
+                      </span>
+                    </div>
+
+                    {/* ITC Summary Cards */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(3, 1fr)",
+                        gap: "12px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          background: "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Total Tax Available
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "15px" }}>
+                          ₹{itcResult.total_tax_amount?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: "#f0fdf4",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid #bbf7d0",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px" }}>
+                          Eligible ITC (Claimable)
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "15px", color: "#15803d" }}>
+                          ₹{itcResult.eligible_amount?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: itcResult.ineligible_amount > 0 ? "#fef2f2" : "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: itcResult.ineligible_amount > 0 ? "1px solid #fecaca" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: itcResult.ineligible_amount > 0 ? "#991b1b" : "var(--text-secondary)", marginBottom: "3px" }}>
+                          Blocked / Ineligible (Sec 17(5))
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "15px", color: itcResult.ineligible_amount > 0 ? "#b91c1c" : "var(--text-primary)" }}>
+                          ₹{itcResult.ineligible_amount?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Statutory Reason & Rule Reference */}
+                    <div
+                      style={{
+                        background: "var(--bg-main)",
+                        padding: "12px 14px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-subtle)",
+                        fontSize: "12px",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                        <span style={{ fontWeight: "600", color: "var(--text-primary)" }}>
+                          Statutory Assessment & Rule Reference
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: "monospace",
+                            fontWeight: "600",
+                            fontSize: "11px",
+                            color: "var(--accent)",
+                            background: "#eff6ff",
+                            padding: "2px 6px",
+                            borderRadius: "4px",
+                          }}
+                        >
+                          {itcResult.rule_reference}
+                        </span>
+                      </div>
+                      <div style={{ color: "var(--text-secondary)" }}>
+                        {itcResult.reason}
+                      </div>
+                    </div>
+
+                    {/* Line-item ITC Breakdown Table */}
+                    {itcResult.line_item_breakdown && itcResult.line_item_breakdown.length > 1 && (
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
+                          <thead>
+                            <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
+                              <th style={{ padding: "6px" }}>#</th>
+                              <th style={{ padding: "6px" }}>Item Description</th>
+                              <th style={{ padding: "6px" }}>Account</th>
+                              <th style={{ padding: "6px", textAlign: "right" }}>Tax (₹)</th>
+                              <th style={{ padding: "6px", textAlign: "center" }}>Status</th>
+                              <th style={{ padding: "6px" }}>Rule & Reason</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {itcResult.line_item_breakdown.map((line) => (
+                              <tr key={line.line_index} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                                <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{line.line_index}</td>
+                                <td style={{ padding: "6px", fontWeight: "600" }}>{line.description}</td>
+                                <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{line.account_name || "-"}</td>
+                                <td style={{ padding: "6px", textAlign: "right", fontFamily: "monospace" }}>
+                                  ₹{line.tax_amount?.toLocaleString() || "0.00"}
+                                </td>
+                                <td style={{ padding: "6px", textAlign: "center" }}>
+                                  <span
+                                    className={`badge ${
+                                      line.itc_status === "ELIGIBLE"
+                                        ? "badge-success"
+                                        : line.itc_status === "INELIGIBLE"
+                                        ? "badge-warning"
+                                        : "badge-uploaded"
+                                    }`}
+                                    style={{ fontSize: "10px" }}
+                                  >
+                                    {line.itc_status}
+                                  </span>
+                                </td>
+                                <td style={{ padding: "6px", fontSize: "10px", color: "var(--text-secondary)" }}>
+                                  <strong style={{ color: "var(--text-primary)" }}>{line.rule_reference}:</strong> {line.reason}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* 11. FINANCIAL VALIDATION & RECONCILIATION (STAGE 5 DETERMINISTIC ENGINE) */}
+                {financialValidationResult && (
+                  <section
+                    style={{
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <Calculator size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          11. Financial Validation & Reconciliation
+                        </h3>
+                      </div>
+                      <span
+                        className={`badge ${
+                          financialValidationResult.overall_status === "PASSED"
+                            ? "badge-success"
+                            : financialValidationResult.overall_status === "MISMATCH"
+                            ? "badge-danger"
+                            : "badge-warning"
+                        }`}
+                        style={{ fontSize: "11px", fontWeight: "700" }}
+                      >
+                        {financialValidationResult.overall_status === "PASSED"
+                          ? "✓ RECONCILED (PASSED)"
+                          : financialValidationResult.overall_status === "MISMATCH"
+                          ? "⚠ DISCREPANCY DETECTED"
+                          : "REVIEW REQUIRED"}
+                      </span>
+                    </div>
+
+                    {/* Financial Summary Cards */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(3, 1fr)",
+                        gap: "12px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      {/* Subtotal Card */}
+                      <div
+                        style={{
+                          background: "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Subtotal (Taxable)
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: "700", fontSize: "15px" }}>
+                            ₹{financialValidationResult.source.subtotal?.toLocaleString() ?? "-"}
+                          </span>
+                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                            Calc: ₹{financialValidationResult.calculated.subtotal?.toLocaleString() ?? "-"}
+                          </span>
+                        </div>
+                        {financialValidationResult.differences?.subtotal !== undefined && financialValidationResult.differences?.subtotal !== null && financialValidationResult.differences?.subtotal !== 0 && (
+                          <div style={{ fontSize: "10px", color: "var(--danger)", fontWeight: "600", marginTop: "2px" }}>
+                            Diff: ₹{financialValidationResult.differences.subtotal.toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* GST / Tax Total Card */}
+                      <div
+                        style={{
+                          background: "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          GST Tax Total
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: "700", fontSize: "15px" }}>
+                            ₹{financialValidationResult.source.tax_total?.toLocaleString() ?? "-"}
+                          </span>
+                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                            Calc: ₹{financialValidationResult.calculated.gst_total?.toLocaleString() ?? "-"}
+                          </span>
+                        </div>
+                        {financialValidationResult.differences?.tax_total !== undefined && financialValidationResult.differences?.tax_total !== null && financialValidationResult.differences?.tax_total !== 0 && (
+                          <div style={{ fontSize: "10px", color: "var(--danger)", fontWeight: "600", marginTop: "2px" }}>
+                            Diff: ₹{financialValidationResult.differences.tax_total.toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Grand Total Card */}
+                      <div
+                        style={{
+                          background: financialValidationResult.differences?.total_amount ? "#fef2f2" : "#f0fdf4",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: financialValidationResult.differences?.total_amount ? "1px solid #fecaca" : "1px solid #bbf7d0",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: financialValidationResult.differences?.total_amount ? "#991b1b" : "#166534", marginBottom: "3px" }}>
+                          Grand Total Equation
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: "700", fontSize: "15px", color: financialValidationResult.differences?.total_amount ? "#b91c1c" : "#15803d" }}>
+                            ₹{financialValidationResult.source.total_amount?.toLocaleString() ?? "-"}
+                          </span>
+                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                            Expected: ₹{financialValidationResult.calculated.grand_total?.toLocaleString() ?? "-"}
+                          </span>
+                        </div>
+                        {financialValidationResult.differences?.total_amount !== undefined && financialValidationResult.differences?.total_amount !== null && financialValidationResult.differences?.total_amount !== 0 && (
+                          <div style={{ fontSize: "10px", color: "#b91c1c", fontWeight: "700", marginTop: "2px" }}>
+                            Diff: ₹{financialValidationResult.differences.total_amount.toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Secondary Charges Strip */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(4, 1fr)",
+                        gap: "8px",
+                        background: "var(--bg-main)",
+                        padding: "10px 12px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-subtle)",
+                        fontSize: "11px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div>
+                        <span style={{ color: "var(--text-secondary)" }}>Discount: </span>
+                        <strong>-₹{financialValidationResult.source.discount_total?.toLocaleString() || "0.00"}</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-secondary)" }}>Shipping: </span>
+                        <strong>+₹{financialValidationResult.source.shipping_charges?.toLocaleString() || "0.00"}</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-secondary)" }}>Other Charges: </span>
+                        <strong>+₹{financialValidationResult.source.other_charges?.toLocaleString() || "0.00"}</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-secondary)" }}>Round Off: </span>
+                        <strong>{financialValidationResult.source.round_off !== null && financialValidationResult.source.round_off !== undefined ? (financialValidationResult.source.round_off >= 0 ? `+₹${financialValidationResult.source.round_off}` : `-₹${Math.abs(financialValidationResult.source.round_off)}`) : "₹0.00"}</strong>
+                      </div>
+                    </div>
+
+                    {/* Mathematical Checks Table */}
+                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
+                      <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
+                            <th style={{ padding: "8px" }}>Mathematical Check</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Extracted (Source)</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Calculated (Engine)</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Difference</th>
+                            <th style={{ padding: "8px", textAlign: "center" }}>Status</th>
+                            <th style={{ padding: "8px" }}>Notes / Discrepancies</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {financialValidationResult.checks?.map((chk, idx) => (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                              <td style={{ padding: "8px", fontWeight: "600" }}>{chk.description || chk.name}</td>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                                {chk.source_value !== null && chk.source_value !== undefined ? `₹${chk.source_value.toLocaleString()}` : "-"}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                                {chk.calculated_value !== null && chk.calculated_value !== undefined ? `₹${chk.calculated_value.toLocaleString()}` : "-"}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: chk.difference && chk.difference > 0 ? "var(--danger)" : "var(--text-primary)" }}>
+                                {chk.difference !== null && chk.difference !== undefined ? `₹${chk.difference.toLocaleString()}` : "₹0.00"}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "center" }}>
+                                <span
+                                  className={`badge ${
+                                    chk.status === "PASSED"
+                                      ? "badge-success"
+                                      : chk.status === "MISMATCH"
+                                      ? "badge-danger"
+                                      : chk.status === "NOT_APPLICABLE"
+                                      ? "badge-uploaded"
+                                      : "badge-warning"
+                                  }`}
+                                  style={{ fontSize: "10px" }}
+                                >
+                                  {chk.status}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px", color: "var(--text-secondary)", fontSize: "10px" }}>
+                                {chk.note || (chk.status === "PASSED" ? "Verified consistent" : "")}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Discrepancy Errors & Warnings Callout */}
+                    {financialValidationResult.errors && financialValidationResult.errors.length > 0 && (
+                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginBottom: "8px", fontSize: "12px", color: "#991b1b" }}>
+                        <div style={{ fontWeight: "700", marginBottom: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <AlertCircle size={15} /> <span>Mathematical Discrepancies Detected:</span>
+                        </div>
+                        {financialValidationResult.errors.map((err, i) => (
+                          <div key={i} style={{ marginLeft: "21px", marginBottom: i < financialValidationResult.errors.length - 1 ? "4px" : "0" }}>
+                            • {err}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {financialValidationResult.warnings && financialValidationResult.warnings.length > 0 && (
+                      <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontSize: "12px", color: "#854d0e" }}>
+                        {financialValidationResult.warnings.map((w, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < financialValidationResult.warnings!.length - 1 ? "4px" : "0" }}>
+                            <AlertCircle size={14} /> <span>{w}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* 12. ACCOUNTING JOURNAL ENTRY PREVIEW (STAGE 6 DETERMINISTIC ENGINE) */}
+                {journalEntry && (
+                  <section
+                    style={{
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <BookOpen size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          12. Accounting Journal Entry Preview (Double-Entry)
+                        </h3>
+                      </div>
+                      <span
+                        className={`badge ${
+                          journalEntry.status === "BALANCED"
+                            ? "badge-success"
+                            : journalEntry.status === "UNBALANCED"
+                            ? "badge-danger"
+                            : "badge-warning"
+                        }`}
+                        style={{ fontSize: "11px", fontWeight: "700" }}
+                      >
+                        {journalEntry.status === "BALANCED"
+                          ? "✓ BALANCED"
+                          : journalEntry.status === "UNBALANCED"
+                          ? "✕ UNBALANCED"
+                          : "⚠ REVIEW REQUIRED"}
+                      </span>
+                    </div>
+
+                    {/* Journal Balancing Metrics */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(3, 1fr)",
+                        gap: "12px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          background: "#f0fdf4",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid #bbf7d0",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px" }}>
+                          Total Debits (Dr)
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "16px", color: "#15803d", fontFamily: "monospace" }}>
+                          ₹{journalEntry.total_debit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: "#f0fdf4",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid #bbf7d0",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px" }}>
+                          Total Credits (Cr)
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "16px", color: "#15803d", fontFamily: "monospace" }}>
+                          ₹{journalEntry.total_credit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: journalEntry.difference !== 0 ? "#fef2f2" : "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: journalEntry.difference !== 0 ? "1px solid #fecaca" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: journalEntry.difference !== 0 ? "#991b1b" : "var(--text-secondary)", marginBottom: "3px" }}>
+                          Balancing Net Difference
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "16px", color: journalEntry.difference !== 0 ? "#b91c1c" : "var(--text-primary)", fontFamily: "monospace" }}>
+                          ₹{journalEntry.difference?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Journal Lines Table (Read-Only Preview) */}
+                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
+                      <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
+                            <th style={{ padding: "8px", width: "30px" }}>#</th>
+                            <th style={{ padding: "8px" }}>Account Name</th>
+                            <th style={{ padding: "8px" }}>Account Code</th>
+                            <th style={{ padding: "8px" }}>Type</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Debit (₹)</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Credit (₹)</th>
+                            <th style={{ padding: "8px" }}>Source / Provenance</th>
+                            <th style={{ padding: "8px" }}>Description</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {journalEntry.lines?.map((line, idx) => (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                              <td style={{ padding: "8px", color: "var(--text-secondary)" }}>{idx + 1}</td>
+                              <td style={{ padding: "8px", fontWeight: "600", color: "var(--text-primary)" }}>
+                                {line.account_name}
+                              </td>
+                              <td style={{ padding: "8px", fontFamily: "monospace", color: "var(--accent)" }}>
+                                {line.account_id}
+                              </td>
+                              <td style={{ padding: "8px" }}>
+                                <span
+                                  className={`badge ${
+                                    line.line_type === "INPUT_TAX"
+                                      ? "badge-uploaded"
+                                      : line.line_type === "ACCOUNTS_PAYABLE"
+                                      ? "badge-warning"
+                                      : line.line_type === "TDS_PAYABLE"
+                                      ? "badge-danger"
+                                      : "badge-success"
+                                  }`}
+                                  style={{ fontSize: "10px" }}
+                                >
+                                  {line.line_type}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", fontWeight: line.debit > 0 ? "700" : "normal" }}>
+                                {line.debit > 0 ? `₹${line.debit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", fontWeight: line.credit > 0 ? "700" : "normal" }}>
+                                {line.credit > 0 ? `₹${line.credit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                              </td>
+                              <td style={{ padding: "8px", fontSize: "10px", color: "var(--text-secondary)" }}>
+                                <span
+                                  style={{
+                                    fontFamily: "monospace",
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    background: line.provenance === "HITL_OVERRIDE" ? "#fef3c7" : "#f1f5f9",
+                                    color: line.provenance === "HITL_OVERRIDE" ? "#92400e" : "var(--text-secondary)",
+                                    fontWeight: "600",
+                                  }}
+                                >
+                                  {line.provenance}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px", color: "var(--text-secondary)", fontSize: "11px" }}>
+                                {line.description || "-"}
+                              </td>
+                            </tr>
+                          ))}
+                          <tr style={{ background: "var(--bg-main)", fontWeight: "700", borderTop: "2px solid var(--border-subtle)" }}>
+                            <td colSpan={4} style={{ padding: "8px", textAlign: "right" }}>
+                              Total (INR)
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "#15803d" }}>
+                              ₹{journalEntry.total_debit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "#15803d" }}>
+                              ₹{journalEntry.total_credit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                            </td>
+                            <td colSpan={2} style={{ padding: "8px", fontSize: "10px", color: "var(--text-secondary)" }}>
+                              {journalEntry.validation?.balanced ? "✓ Reconciled & Balanced" : "⚠ Review Discrepancy"}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Journal Errors and Warnings */}
+                    {journalEntry.validation?.errors && journalEntry.validation.errors.length > 0 && (
+                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginBottom: "8px", fontSize: "12px", color: "#991b1b" }}>
+                        <div style={{ fontWeight: "700", marginBottom: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <AlertCircle size={15} /> <span>Journal Balancing Issues:</span>
+                        </div>
+                        {journalEntry.validation.errors.map((err, i) => (
+                          <div key={i} style={{ marginLeft: "21px", marginBottom: i < journalEntry.validation.errors.length - 1 ? "4px" : "0" }}>
+                            • {err}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {journalEntry.validation?.warnings && journalEntry.validation.warnings.length > 0 && (
+                      <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontSize: "12px", color: "#854d0e" }}>
+                        {journalEntry.validation.warnings.map((w, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < journalEntry.validation.warnings.length - 1 ? "4px" : "0" }}>
+                            <AlertCircle size={14} /> <span>{w}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* 13. ADDITIONAL EXTRACTED INFORMATION (ZERO DATA LOSS) */}
                 <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
                     <Layers size={16} color="var(--text-secondary)" />
                     <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      10. Additional Extracted Information
+                      13. Additional Extracted Information
                     </h3>
                   </div>
                   <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px" }}>
