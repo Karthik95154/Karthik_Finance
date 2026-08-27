@@ -42,60 +42,125 @@ import {
   RefreshCw,
 } from "lucide-react";
 
+// Helper to parse clean numeric values including currency strings like "Rupees 35,36,917.24" or "Rs. 248,417.88"
+function parseCleanNumeric(val: any): number | null {
+  if (val === null || val === undefined || val === "") return null;
+  if (typeof val === "number") return isNaN(val) ? null : val;
+  if (typeof val === "string") {
+    let clean = val.trim().replace(/,/g, "");
+    clean = clean.replace(/^(?:Rupees|Rupee|Rs\.?|INR|₹)\s*/i, "");
+    clean = clean.replace(/\s*(?:\/-\s*|Only\s*)$/i, "");
+    clean = clean.trim();
+    const negative = clean.startsWith("(") && clean.endsWith(")");
+    clean = clean.replace(/[()]/g, "").trim();
+    const num = parseFloat(clean);
+    if (!isNaN(num)) {
+      return negative ? -num : num;
+    }
+  }
+  return null;
+}
+
 // Helper to extract or derive invoice-level CGST/SGST/IGST amounts from Qwen3-VL extraction
 function extractOrDeriveTax(
   extracted: ExtractedInvoiceData,
   taxType: "cgst" | "sgst" | "igst"
 ): number | null {
-  // 1. Direct explicit top-level values if already present
-  const direct =
-    extracted[taxType] ??
-    extracted[`${taxType}_amount` as keyof ExtractedInvoiceData];
-  if (typeof direct === "number") return direct;
-  if (typeof direct === "string" && !isNaN(parseFloat(direct))) return parseFloat(direct);
+  if (!extracted || typeof extracted !== "object") return null;
 
-  // 2. Derive by summing corresponding line_items[].cgst_amount / sgst_amount / igst_amount
-  const lineKey = `${taxType}_amount` as keyof LineItem;
-  const lineAmounts: number[] = [];
-  if (Array.isArray(extracted.line_items)) {
-    for (const item of extracted.line_items) {
-      const val = item[lineKey];
-      if (val !== null && val !== undefined && val !== "") {
-        const num = typeof val === "number" ? val : parseFloat(String(val));
-        if (!isNaN(num)) {
-          lineAmounts.push(num);
+  const exactKeys = {
+    cgst: ["cgst", "cgst_amount", "cgst_total", "total_cgst", "cgst_tax", "c_gst"],
+    sgst: ["sgst", "sgst_amount", "sgst_total", "total_sgst", "sgst_tax", "s_gst", "utgst", "utgst_amount"],
+    igst: ["igst", "igst_amount", "igst_total", "total_igst", "igst_tax", "i_gst"],
+  }[taxType];
+
+  // 1. Direct explicit top-level values
+  for (const k of exactKeys) {
+    if (k in extracted) {
+      const val = parseCleanNumeric((extracted as any)[k]);
+      if (val !== null) return val;
+    }
+    const upperK = k.toUpperCase();
+    if (upperK in extracted) {
+      const val = parseCleanNumeric((extracted as any)[upperK]);
+      if (val !== null) return val;
+    }
+  }
+
+  // 2. Search inside additional_fields (and nested tax_details)
+  const af = extracted.additional_fields;
+  if (af && typeof af === "object") {
+    for (const [k, v] of Object.entries(af)) {
+      const cleanKey = k.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+      if (
+        taxType === "cgst" &&
+        ["cgst", "cgstamount", "cgsttotal", "cgsttax", "centralgst", "centralgstamount", "cgstamt"].includes(cleanKey)
+      ) {
+        const val = parseCleanNumeric(v);
+        if (val !== null) return val;
+      } else if (
+        taxType === "sgst" &&
+        ["sgst", "sgstamount", "sgsttotal", "sgsttax", "stategst", "utgst", "utgstamount", "sgstamt"].includes(cleanKey)
+      ) {
+        const val = parseCleanNumeric(v);
+        if (val !== null) return val;
+      } else if (
+        taxType === "igst" &&
+        ["igst", "igstamount", "igsttotal", "igsttax", "integratedgst", "igstamt"].includes(cleanKey)
+      ) {
+        const val = parseCleanNumeric(v);
+        if (val !== null) return val;
+      }
+    }
+
+    const td = (af as any).tax_details;
+    if (td && typeof td === "object") {
+      const sections = ["output_tax", "tax_payable", "input_tax_credit", "tax_breakdown", ""];
+      for (const section of sections) {
+        const target = section ? td[section] : td;
+        if (target && typeof target === "object") {
+          for (const k of exactKeys) {
+            if (k in target) {
+              const val = parseCleanNumeric(target[k]);
+              if (val !== null) return val;
+            }
+            const upperK = k.toUpperCase();
+            if (upperK in target) {
+              const val = parseCleanNumeric(target[upperK]);
+              if (val !== null) return val;
+            }
+          }
         }
       }
     }
   }
-  if (lineAmounts.length > 0) {
-    const sum = lineAmounts.reduce((a, b) => a + b, 0);
-    return Math.round(sum * 100) / 100;
-  }
 
-  // 3. Search inside additional_fields / tax_details structures
-  const af = extracted.additional_fields;
-  if (af && typeof af === "object") {
-    const upper = taxType.toUpperCase();
-    const candidates = [
-      af[taxType],
-      af[upper],
-      af[`${taxType}_amount`],
-      af[`${upper}_AMOUNT`],
-      af[`${taxType}_total`],
-      af[`${upper}_TOTAL`],
-      af.tax_details?.output_tax?.[taxType],
-      af.tax_details?.output_tax?.[upper],
-      af.tax_details?.tax_payable?.[taxType],
-      af.tax_details?.tax_payable?.[upper],
-      af.tax_details?.[taxType],
-      af.tax_details?.[upper],
-      af.tax_details?.[`${taxType}_amount`],
-      af.tax_details?.[`${upper}_AMOUNT`],
-    ];
-    for (const cand of candidates) {
-      if (typeof cand === "number") return cand;
-      if (typeof cand === "string" && !isNaN(parseFloat(cand))) return parseFloat(cand);
+  // 3. Derive from line items by summing corresponding line item tax amounts
+  if (Array.isArray(extracted.line_items) && extracted.line_items.length > 0) {
+    const lineVals: number[] = [];
+    for (const item of extracted.line_items) {
+      if (!item || typeof item !== "object") continue;
+      for (const k of exactKeys) {
+        if (k in item) {
+          const val = parseCleanNumeric((item as any)[k]);
+          if (val !== null) {
+            lineVals.push(val);
+            break;
+          }
+        }
+        const upperK = k.toUpperCase();
+        if (upperK in item) {
+          const val = parseCleanNumeric((item as any)[upperK]);
+          if (val !== null) {
+            lineVals.push(val);
+            break;
+          }
+        }
+      }
+    }
+    if (lineVals.length > 0) {
+      const sum = lineVals.reduce((a, b) => a + b, 0);
+      return Math.round(sum * 100) / 100;
     }
   }
 
@@ -145,34 +210,62 @@ export default function InvoiceWorkspacePage() {
           return;
         }
 
-        // Initialize form state from current_vlm_output (edited) or raw_vlm_output (initial)
-        const vlmOutput = invData.current_vlm_output || invData.raw_vlm_output || {};
-        const extracted: ExtractedInvoiceData = vlmOutput.data ? { ...vlmOutput.data } : {};
+        // Initialize form state from current_vlm_output (edited) merged over raw_vlm_output (base)
+        const rawData: ExtractedInvoiceData =
+          invData.raw_vlm_output && (invData.raw_vlm_output as any).data
+            ? (invData.raw_vlm_output as any).data
+            : (invData.raw_vlm_output as ExtractedInvoiceData) || {};
 
-        // Extract or derive CGST, SGST, IGST from explicit values, line item sums, or tax structures
-        if (extracted.cgst === undefined && extracted.cgst_amount === undefined) {
-          const derived = extractOrDeriveTax(extracted, "cgst");
-          extracted.cgst = derived;
-          extracted.cgst_amount = derived;
+        const currData: ExtractedInvoiceData =
+          invData.current_vlm_output && (invData.current_vlm_output as any).data
+            ? (invData.current_vlm_output as any).data
+            : (invData.current_vlm_output as ExtractedInvoiceData) || {};
+
+        // Merge raw extraction with user-edited fields, ensuring line_items and totals are never wiped
+        const extracted: ExtractedInvoiceData = {
+          ...rawData,
+          ...currData,
+        };
+
+        if (!extracted.line_items || extracted.line_items.length === 0) {
+          if (Array.isArray(rawData.line_items) && rawData.line_items.length > 0) {
+            extracted.line_items = [...rawData.line_items];
+          } else {
+            extracted.line_items = [];
+          }
         }
-        if (extracted.sgst === undefined && extracted.sgst_amount === undefined) {
-          const derived = extractOrDeriveTax(extracted, "sgst");
-          extracted.sgst = derived;
-          extracted.sgst_amount = derived;
+        if (extracted.subtotal === undefined || extracted.subtotal === null) {
+          extracted.subtotal = rawData.subtotal ?? null;
         }
-        if (extracted.igst === undefined && extracted.igst_amount === undefined) {
-          const derived = extractOrDeriveTax(extracted, "igst");
-          extracted.igst = derived;
-          extracted.igst_amount = derived;
+        if (extracted.tax_total === undefined || extracted.tax_total === null) {
+          extracted.tax_total = rawData.tax_total ?? null;
+        }
+        if (extracted.total_amount === undefined || extracted.total_amount === null) {
+          extracted.total_amount = rawData.total_amount ?? null;
         }
 
-        if (!extracted.line_items) extracted.line_items = [];
-        if (!extracted.bank_details) extracted.bank_details = {};
+        // Extract or derive CGST, SGST, IGST:
+        // Priority: explicit edits in currData > derived from currData > explicit in rawData > derived from rawData
+        const extractedCgst = extractOrDeriveTax(currData, "cgst") ?? extractOrDeriveTax(rawData, "cgst");
+        extracted.cgst = extractedCgst;
+        extracted.cgst_amount = extractedCgst;
+
+        const extractedSgst = extractOrDeriveTax(currData, "sgst") ?? extractOrDeriveTax(rawData, "sgst");
+        extracted.sgst = extractedSgst;
+        extracted.sgst_amount = extractedSgst;
+
+        const extractedIgst = extractOrDeriveTax(currData, "igst") ?? extractOrDeriveTax(rawData, "igst");
+        extracted.igst = extractedIgst;
+        extracted.igst_amount = extractedIgst;
+
+        if (!extracted.bank_details) extracted.bank_details = rawData.bank_details || {};
 
         setFormData(extracted);
         setAdditionalFieldsText(
           extracted.additional_fields
             ? JSON.stringify(extracted.additional_fields, null, 2)
+            : rawData.additional_fields
+            ? JSON.stringify(rawData.additional_fields, null, 2)
             : ""
         );
 
