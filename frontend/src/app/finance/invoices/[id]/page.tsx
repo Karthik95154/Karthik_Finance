@@ -68,6 +68,12 @@ function extractOrDeriveTax(
 ): number | null {
   if (!extracted || typeof extracted !== "object") return null;
 
+  // Support both direct object and nested .data object
+  const dataObj =
+    (extracted as any).data && typeof (extracted as any).data === "object"
+      ? (extracted as any).data
+      : extracted;
+
   const exactKeys = {
     cgst: ["cgst", "cgst_amount", "cgst_total", "total_cgst", "cgst_tax", "c_gst"],
     sgst: ["sgst", "sgst_amount", "sgst_total", "total_sgst", "sgst_tax", "s_gst", "utgst", "utgst_amount"],
@@ -75,59 +81,64 @@ function extractOrDeriveTax(
   }[taxType];
 
   // 1. Direct explicit top-level values
-  for (const k of exactKeys) {
-    if (k in extracted) {
-      const val = parseCleanNumeric((extracted as any)[k]);
-      if (val !== null) return val;
-    }
-    const upperK = k.toUpperCase();
-    if (upperK in extracted) {
-      const val = parseCleanNumeric((extracted as any)[upperK]);
-      if (val !== null) return val;
+  for (const src of [extracted, dataObj]) {
+    for (const k of exactKeys) {
+      if (k in src && (src as any)[k] !== null && (src as any)[k] !== undefined && (src as any)[k] !== "") {
+        const val = parseCleanNumeric((src as any)[k]);
+        if (val !== null) return val;
+      }
+      const upperK = k.toUpperCase();
+      if (upperK in src && (src as any)[upperK] !== null && (src as any)[upperK] !== undefined && (src as any)[upperK] !== "") {
+        const val = parseCleanNumeric((src as any)[upperK]);
+        if (val !== null) return val;
+      }
     }
   }
 
   // 2. Search inside additional_fields (and nested tax_details)
-  const af = extracted.additional_fields;
-  if (af && typeof af === "object") {
-    for (const [k, v] of Object.entries(af)) {
-      const cleanKey = k.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-      if (
-        taxType === "cgst" &&
-        ["cgst", "cgstamount", "cgsttotal", "cgsttax", "centralgst", "centralgstamount", "cgstamt"].includes(cleanKey)
-      ) {
-        const val = parseCleanNumeric(v);
-        if (val !== null) return val;
-      } else if (
-        taxType === "sgst" &&
-        ["sgst", "sgstamount", "sgsttotal", "sgsttax", "stategst", "utgst", "utgstamount", "sgstamt"].includes(cleanKey)
-      ) {
-        const val = parseCleanNumeric(v);
-        if (val !== null) return val;
-      } else if (
-        taxType === "igst" &&
-        ["igst", "igstamount", "igsttotal", "igsttax", "integratedgst", "igstamt"].includes(cleanKey)
-      ) {
-        const val = parseCleanNumeric(v);
-        if (val !== null) return val;
+  for (const src of [extracted, dataObj]) {
+    const af = src.additional_fields;
+    if (af && typeof af === "object") {
+      for (const [k, v] of Object.entries(af)) {
+        if (v === null || v === undefined || v === "") continue;
+        const cleanKey = k.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+        if (
+          taxType === "cgst" &&
+          ["cgst", "cgstamount", "cgsttotal", "cgsttax", "centralgst", "centralgstamount", "cgstamt"].includes(cleanKey)
+        ) {
+          const val = parseCleanNumeric(v);
+          if (val !== null) return val;
+        } else if (
+          taxType === "sgst" &&
+          ["sgst", "sgstamount", "sgsttotal", "sgsttax", "stategst", "utgst", "utgstamount", "sgstamt"].includes(cleanKey)
+        ) {
+          const val = parseCleanNumeric(v);
+          if (val !== null) return val;
+        } else if (
+          taxType === "igst" &&
+          ["igst", "igstamount", "igsttotal", "igsttax", "integratedgst", "igstamt"].includes(cleanKey)
+        ) {
+          const val = parseCleanNumeric(v);
+          if (val !== null) return val;
+        }
       }
-    }
 
-    const td = (af as any).tax_details;
-    if (td && typeof td === "object") {
-      const sections = ["output_tax", "tax_payable", "input_tax_credit", "tax_breakdown", ""];
-      for (const section of sections) {
-        const target = section ? td[section] : td;
-        if (target && typeof target === "object") {
-          for (const k of exactKeys) {
-            if (k in target) {
-              const val = parseCleanNumeric(target[k]);
-              if (val !== null) return val;
-            }
-            const upperK = k.toUpperCase();
-            if (upperK in target) {
-              const val = parseCleanNumeric(target[upperK]);
-              if (val !== null) return val;
+      const td = (af as any).tax_details;
+      if (td && typeof td === "object") {
+        const sections = ["output_tax", "tax_payable", "input_tax_credit", "tax_breakdown", ""];
+        for (const section of sections) {
+          const target = section ? td[section] : td;
+          if (target && typeof target === "object") {
+            for (const k of exactKeys) {
+              if (k in target && target[k] !== null && target[k] !== undefined && target[k] !== "") {
+                const val = parseCleanNumeric(target[k]);
+                if (val !== null) return val;
+              }
+              const upperK = k.toUpperCase();
+              if (upperK in target && target[upperK] !== null && target[upperK] !== undefined && target[upperK] !== "") {
+                const val = parseCleanNumeric(target[upperK]);
+                if (val !== null) return val;
+              }
             }
           }
         }
@@ -135,32 +146,52 @@ function extractOrDeriveTax(
     }
   }
 
-  // 3. Derive from line items by summing corresponding line item tax amounts
-  if (Array.isArray(extracted.line_items) && extracted.line_items.length > 0) {
+  // 3. Line items - explicit tax amount or rate * taxable
+  const line_items = dataObj.line_items || extracted.line_items;
+  if (Array.isArray(line_items) && line_items.length > 0) {
     const lineVals: number[] = [];
-    for (const item of extracted.line_items) {
+    for (const item of line_items) {
       if (!item || typeof item !== "object") continue;
+      let foundVal: number | null = null;
       for (const k of exactKeys) {
-        if (k in item) {
+        if (k in item && (item as any)[k] !== null && (item as any)[k] !== undefined && (item as any)[k] !== "") {
           const val = parseCleanNumeric((item as any)[k]);
           if (val !== null) {
-            lineVals.push(val);
+            foundVal = val;
             break;
           }
         }
         const upperK = k.toUpperCase();
-        if (upperK in item) {
+        if (upperK in item && (item as any)[upperK] !== null && (item as any)[upperK] !== undefined && (item as any)[upperK] !== "") {
           const val = parseCleanNumeric((item as any)[upperK]);
           if (val !== null) {
-            lineVals.push(val);
+            foundVal = val;
             break;
           }
         }
       }
+
+      // If explicit line tax amount is omitted, check rate * taxable
+      if (foundVal === null) {
+        const rateKey = taxType + "_rate";
+        const rateVal = parseCleanNumeric((item as any)[rateKey] || (item as any)[rateKey.toUpperCase()]);
+        const taxableVal = parseCleanNumeric(
+          item.taxable_amount ??
+          (item as any).taxable ??
+          (item as any).pretax_amount ??
+          (typeof item.unit_price === "number" && typeof item.quantity === "number" ? item.unit_price * item.quantity : null)
+        );
+        if (rateVal !== null && rateVal > 0 && taxableVal !== null && taxableVal > 0) {
+          foundVal = Math.round(((taxableVal * rateVal) / 100) * 100) / 100;
+        }
+      }
+
+      if (foundVal !== null) {
+        lineVals.push(foundVal);
+      }
     }
     if (lineVals.length > 0) {
-      const sum = lineVals.reduce((a, b) => a + b, 0);
-      return Math.round(sum * 100) / 100;
+      return Math.round(lineVals.reduce((a, b) => a + b, 0) * 100) / 100;
     }
   }
 
