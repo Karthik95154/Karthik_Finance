@@ -60,7 +60,14 @@ export default function AppShell({
       label: "Invoices",
       href: "/finance/invoices",
       icon: FileSpreadsheet,
-      active: pathname.startsWith("/finance/invoices") && !pathname.includes("/processing"),
+      active: pathname.startsWith("/finance/invoices") && !pathname.includes("/processing") && pathname !== "/finance/settings",
+    },
+    {
+      label: "Zoho Books",
+      href: "/finance/settings",
+      icon: Layers,
+      active: pathname === "/finance/settings",
+      badge: "Connected",
     },
     {
       label: "Integrations",
