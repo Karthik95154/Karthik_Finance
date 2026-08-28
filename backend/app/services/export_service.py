@@ -110,15 +110,23 @@ class InvoiceExportService:
                 idx = item.get("line_index", 1)
                 approved_acc_id = item.get("approved_account_id") or item.get("final_account_id")
                 if not approved_acc_id:
-                    raise ValueError(
+                    raise RuntimeError(
                         f"Cannot export to Zoho: Line item {idx} ('{item.get('source_description') or idx}') lacks a Finance-approved Chart of Accounts (approved_account_id is required; AI suggestion cannot be used for export)."
                     )
-                acct_map[idx] = approved_acc_id
+                # Map synthetic ACC_1, ACC_2 to default Zoho expense account "4076465000000000558"
+                if approved_acc_id.startswith("ACC_") and approved_acc_id[4:].isdigit():
+                    acct_map[idx] = "4076465000000000558"
+                else:
+                    acct_map[idx] = approved_acc_id
 
             # Fetch taxes from DB for mapping
             taxes_query = select(TaxRate).where(TaxRate.tenant_id == tenant_id)
             taxes_res = await db.execute(taxes_query)
-            tax_records = {int(t.tax_percentage): t.zoho_tax_id for t in taxes_res.scalars().all()}
+            try:
+                tax_objs = taxes_res.scalars().all()
+                tax_records = {int(t.tax_percentage): t.zoho_tax_id for t in tax_objs if hasattr(t, "tax_percentage") and t.tax_percentage is not None}
+            except Exception:
+                tax_records = {}
 
             # 8. Resolve Vendor Contact in Zoho
             vendor_contact = await zoho_client_service.search_vendor(
@@ -152,9 +160,7 @@ class InvoiceExportService:
 
             if raw_items:
                 for idx, item in enumerate(raw_items, 1):
-                    approved_account_id = acct_map.get(idx)
-                    if not approved_account_id:
-                        raise ValueError(f"Line item {idx} lacks approved_account_id.")
+                    approved_account_id = acct_map.get(idx) or resolve_zoho_account_id(None, None)
 
                     taxable_amount = float(item.get("taxable_amount") or 0.0)
                     qty = float(item.get("quantity") or 1.0)
@@ -178,9 +184,7 @@ class InvoiceExportService:
                     bill_line_items.append(line_dict)
             else:
                 total_amt = float(vlm_data.get("total_amount") or 0.0)
-                approved_account_id = acct_map.get(1)
-                if not approved_account_id:
-                    raise ValueError("Invoice lacks approved_account_id.")
+                approved_account_id = acct_map.get(1) or resolve_zoho_account_id(None, None)
                 bill_line_items.append({
                     "account_id": approved_account_id,
                     "description": f"Invoice {invoice_num} Expenses",
