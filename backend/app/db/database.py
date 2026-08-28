@@ -1,4 +1,5 @@
 from typing import AsyncGenerator
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -11,11 +12,7 @@ engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     future=True,
-    pool_size=10,
-    max_overflow=5,
-    pool_recycle=300,
-    pool_timeout=30,
-    pool_pre_ping=True,
+    poolclass=NullPool,
     connect_args={
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,

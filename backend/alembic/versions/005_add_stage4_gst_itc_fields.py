@@ -17,9 +17,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # gst_result and itc_result columns are already applied on the live database.
-    # This migration is a no-op to avoid duplicate column errors on re-run.
-    pass
+    op.add_column(
+        "invoices",
+        sa.Column(
+            "gst_result",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=True,
+        ),
+    )
+    op.add_column(
+        "invoices",
+        sa.Column(
+            "itc_result",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=True,
+        ),
+    )
 
 
 def downgrade() -> None:
