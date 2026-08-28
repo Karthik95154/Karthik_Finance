@@ -37,7 +37,10 @@ class JournalPreviewResponse(BaseModel):
     lines: List[Dict[str, Any]]
 
 
+@router.get("/invoices/{invoice_id}/journal")
 @router.get("/invoices/{invoice_id}/journal-preview")
+@router.get("/review/invoices/{invoice_id}/journal")
+@router.get("/review/invoices/{invoice_id}/journal-preview")
 async def get_journal_preview(
     invoice_id: UUID,
     cost_center: Optional[str] = Query(None),
@@ -58,6 +61,13 @@ async def get_journal_preview(
 
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # If invoice already has journal_entry stored and no custom overrides requested, return it immediately
+    if invoice.journal_entry and isinstance(invoice.journal_entry, dict) and not any([cost_center, project, department]):
+        return {
+            "invoice_id": str(invoice_id),
+            **invoice.journal_entry,
+        }
 
     vlm_data = {}
     if isinstance(invoice.current_vlm_output, dict):
@@ -87,6 +97,8 @@ async def get_journal_preview(
 
 
 @router.post("/invoices/{invoice_id}/approve")
+@router.post("/review/invoices/{invoice_id}/approve")
+@router.post("/invoices/{invoice_id}/review/approve")
 async def approve_invoice(
     invoice_id: UUID,
     current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
@@ -260,6 +272,8 @@ async def approve_invoice(
 
 
 @router.post("/invoices/{invoice_id}/reject")
+@router.post("/review/invoices/{invoice_id}/reject")
+@router.post("/invoices/{invoice_id}/review/reject")
 async def reject_invoice(
     invoice_id: UUID,
     req: RejectRequest,
@@ -305,6 +319,9 @@ async def reject_invoice(
 
 
 @router.post("/invoices/{invoice_id}/export")
+@router.post("/invoices/{invoice_id}/export/zoho")
+@router.post("/zoho/export-bill/{invoice_id}")
+@router.post("/review/invoices/{invoice_id}/export")
 async def export_invoice(
     invoice_id: UUID,
     current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
