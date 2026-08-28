@@ -266,7 +266,7 @@ export default function InboxPage() {
                         <span>{doc.file_name}</span>
                       </div>
                       <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                        {formatSize(doc.file_size)} · {doc.mime_type}
+                        {formatSize(doc.file_size || 0)} · {doc.mime_type}
                       </div>
                     </td>
                     <td style={{ padding: "16px 20px", verticalAlign: "top", color: "var(--text-secondary)", fontSize: "12px" }}>
