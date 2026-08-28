@@ -528,8 +528,47 @@ export interface JournalPreviewResponse {
   lines: any[];
 }
 
+let devToken: string | null = null;
+
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  if (typeof window !== "undefined") {
+    const stored = localStorage.getItem("dev_auth_token");
+    if (stored) {
+      return { Authorization: `Bearer ${stored}` };
+    }
+  }
+  if (!devToken) {
+    try {
+      const res = await fetch(`${API_BASE}/auth/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "finance@sakshi.ai",
+          dev_role: "ADMIN",
+          dev_tenant_id: "default-tenant-001",
+          dev_name: "Dev Admin",
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        devToken = data.access_token;
+        if (typeof window !== "undefined" && devToken) {
+          localStorage.setItem("dev_auth_token", devToken);
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to retrieve dev token", err);
+    }
+  }
+  return devToken ? { Authorization: `Bearer ${devToken}` } : {};
+}
+
 export async function getCurrentUser(): Promise<UserProfile> {
-  const res = await fetch(`${API_BASE}/auth/me`, { cache: "no-store" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/auth/me`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
   if (!res.ok) {
     return { id: "dev-user", email: "finance@sakshi.ai", role: "ADMIN", tenant_id: "default-tenant-001" };
   }
@@ -537,17 +576,37 @@ export async function getCurrentUser(): Promise<UserProfile> {
 }
 
 export async function switchDevRole(role: string): Promise<UserProfile> {
-  const res = await fetch(`${API_BASE}/auth/dev-switch-role?role=${encodeURIComponent(role)}`, {
-    method: "POST",
-  });
-  if (!res.ok) {
-    return { id: "dev-user", email: "finance@sakshi.ai", role, tenant_id: "default-tenant-001" };
+  try {
+    const res = await fetch(`${API_BASE}/auth/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "finance@sakshi.ai",
+        dev_role: role,
+        dev_tenant_id: "default-tenant-001",
+        dev_name: `Dev ${role}`,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      devToken = data.access_token;
+      if (typeof window !== "undefined" && devToken) {
+        localStorage.setItem("dev_auth_token", devToken);
+      }
+      return data.user;
+    }
+  } catch (err) {
+    console.warn("Failed to switch dev role", err);
   }
-  return res.json();
+  return { id: "dev-user", email: "finance@sakshi.ai", role, tenant_id: "default-tenant-001" };
 }
 
 export async function getZohoStatus(): Promise<ZohoStatusResponse> {
-  const res = await fetch(`${API_BASE}/zoho/status`, { cache: "no-store" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/zoho/status`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
   if (!res.ok) {
     return { connected: false, status: "DISCONNECTED" };
   }
@@ -561,7 +620,11 @@ export async function getZohoConnectUrl(accountsServer?: string, redirectUri?: s
   if (redirectUri) params.append("redirect_uri", redirectUri);
   if (params.toString()) url += `?${params.toString()}`;
 
-  const res = await fetch(url, { cache: "no-store" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(url, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to get Zoho auth URL");
@@ -570,7 +633,11 @@ export async function getZohoConnectUrl(accountsServer?: string, redirectUri?: s
 }
 
 export async function getZohoOrganizations(): Promise<ZohoOrganization[]> {
-  const res = await fetch(`${API_BASE}/zoho/organizations`, { cache: "no-store" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/zoho/organizations`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to fetch Zoho organizations");
@@ -579,9 +646,13 @@ export async function getZohoOrganizations(): Promise<ZohoOrganization[]> {
 }
 
 export async function selectZohoOrganization(organizationId: string, organizationName?: string): Promise<{ success: boolean; message: string; accounts_synced?: number; taxes_synced?: number; vendors_synced?: number }> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/zoho/select-organization`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+    },
     body: JSON.stringify({ organization_id: organizationId, organization_name: organizationName }),
   });
   if (!res.ok) {
@@ -592,7 +663,11 @@ export async function selectZohoOrganization(organizationId: string, organizatio
 }
 
 export async function triggerZohoSync(): Promise<{ message: string; chart_of_accounts?: number; tax_rates?: number; vendors?: number; accounts_synced?: number; taxes_synced?: number; vendors_synced?: number }> {
-  const res = await fetch(`${API_BASE}/zoho/sync`, { method: "POST" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/zoho/sync`, {
+    method: "POST",
+    headers: authHeaders,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to sync Zoho master data");
@@ -601,7 +676,11 @@ export async function triggerZohoSync(): Promise<{ message: string; chart_of_acc
 }
 
 export async function getMasterDataSummary(): Promise<ZohoMasterDataSummary> {
-  const res = await fetch(`${API_BASE}/zoho/master-data-summary`, { cache: "no-store" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/zoho/master-data-summary`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
   if (!res.ok) {
     return { chart_of_accounts_count: 0, tax_rates_count: 0, vendors_count: 0 };
   }
@@ -609,7 +688,11 @@ export async function getMasterDataSummary(): Promise<ZohoMasterDataSummary> {
 }
 
 export async function disconnectZoho(): Promise<{ success: boolean; message: string }> {
-  const res = await fetch(`${API_BASE}/zoho/disconnect`, { method: "POST" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/zoho/disconnect`, {
+    method: "POST",
+    headers: authHeaders,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to disconnect Zoho");
@@ -618,7 +701,11 @@ export async function disconnectZoho(): Promise<{ success: boolean; message: str
 }
 
 export async function approveInvoice(id: string): Promise<Invoice> {
-  const res = await fetch(`${API_BASE}/review/invoices/${id}/approve`, { method: "POST" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/review/invoices/${id}/approve`, {
+    method: "POST",
+    headers: authHeaders,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to approve invoice");
@@ -627,9 +714,13 @@ export async function approveInvoice(id: string): Promise<Invoice> {
 }
 
 export async function rejectInvoice(id: string, reason: string): Promise<Invoice> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/review/invoices/${id}/reject`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+    },
     body: JSON.stringify({ reason }),
   });
   if (!res.ok) {
@@ -640,7 +731,11 @@ export async function rejectInvoice(id: string, reason: string): Promise<Invoice
 }
 
 export async function exportInvoiceToZoho(id: string): Promise<{ success: boolean; zoho_bill_id: string; zoho_bill_number: string }> {
-  const res = await fetch(`${API_BASE}/zoho/export-bill/${id}`, { method: "POST" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/zoho/export-bill/${id}`, {
+    method: "POST",
+    headers: authHeaders,
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to export invoice to Zoho");
@@ -649,7 +744,11 @@ export async function exportInvoiceToZoho(id: string): Promise<{ success: boolea
 }
 
 export async function getJournalPreview(id: string): Promise<JournalPreviewResponse> {
-  const res = await fetch(`${API_BASE}/invoices/${id}/journal`, { cache: "no-store" });
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices/${id}/journal`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to fetch journal preview");
