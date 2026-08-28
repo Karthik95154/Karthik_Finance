@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import {
   Mail,
@@ -19,6 +20,16 @@ import {
   Lock,
   Eye,
   EyeOff,
+  Building2,
+  Globe,
+  Database,
+  Percent,
+  Users,
+  Search,
+  Check,
+  ChevronRight,
+  Unlink,
+  Link2,
 } from "lucide-react";
 import {
   getIMAPSettings,
@@ -26,25 +37,47 @@ import {
   disconnectIMAP,
   pollEmails,
   getZohoStatus,
+  getZohoConnectUrl,
+  getZohoOrganizations,
+  selectZohoOrganization,
+  triggerZohoSync,
   getMasterDataSummary,
+  disconnectZoho,
   IMAPSettings,
   ZohoStatusResponse,
   ZohoMasterDataSummary,
+  ZohoOrganization,
+  API_BASE,
 } from "@/lib/api";
 import Link from "next/link";
 
-export default function IntegrationsPage() {
+const DATA_CENTERS = [
+  { id: "in", label: "India (.IN)", url: "https://accounts.zoho.in" },
+  { id: "com", label: "United States / Global (.COM)", url: "https://accounts.zoho.com" },
+  { id: "eu", label: "Europe (.EU)", url: "https://accounts.zoho.eu" },
+  { id: "au", label: "Australia (.COM.AU)", url: "https://accounts.zoho.com.au" },
+];
+
+function IntegrationsContent() {
+  const searchParams = useSearchParams();
+
+  // Active top-level tab
+  const [activeTab, setActiveTab] = useState<"overview" | "zoho" | "imap">("overview");
+
+  // Notifications
   const [notification, setNotification] = useState<{
     type: "success" | "error" | "info";
     message: string;
   } | null>(null);
 
+  // ==========================================
   // IMAP State
+  // ==========================================
   const [imapSettings, setImapSettings] = useState<IMAPSettings | null>(null);
   const [isEmailConnected, setIsEmailConnected] = useState(false);
   const [showEmailModal, setShowEmailModal] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const [isConnectingEmail, setIsConnectingEmail] = useState(false);
   const [isPolling, setIsPolling] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [emailForm, setEmailForm] = useState({
@@ -54,14 +87,35 @@ export default function IntegrationsPage() {
     password: "",
   });
 
+  // ==========================================
   // Zoho State
+  // ==========================================
   const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(null);
   const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isConnectingZoho, setIsConnectingZoho] = useState<boolean>(false);
+  const [isSyncingZoho, setIsSyncingZoho] = useState<boolean>(false);
+  const [isDisconnectingZoho, setIsDisconnectingZoho] = useState<boolean>(false);
+  const [isSelectingOrg, setIsSelectingOrg] = useState<boolean>(false);
 
-  // Load all integration statuses
-  const loadData = async () => {
-    setLoading(true);
+  // Zoho Modals
+  const [showZohoConnectModal, setShowZohoConnectModal] = useState<boolean>(false);
+  const [showOrgModal, setShowOrgModal] = useState<boolean>(false);
+  const [showDisconnectZohoModal, setShowDisconnectZohoModal] = useState<boolean>(false);
+  const [organizations, setOrganizations] = useState<ZohoOrganization[]>([]);
+  const [selectedAccountsUrl, setSelectedAccountsUrl] = useState<string>("https://accounts.zoho.in");
+  const [customRedirectUri, setCustomRedirectUri] = useState<string>(() => `${API_BASE}/zoho/callback`);
+  const [copiedUri, setCopiedUri] = useState<boolean>(false);
+
+  // Master Data Viewer
+  const [masterDataTab, setMasterDataTab] = useState<"coa" | "taxes" | "vendors">("coa");
+  const [masterDataSearch, setMasterDataSearch] = useState<string>("");
+
+  // ==========================================
+  // Load All Integration Statuses
+  // ==========================================
+  const loadAllData = async () => {
+    setIsLoading(true);
     try {
       // 1. Fetch IMAP
       try {
@@ -87,33 +141,160 @@ export default function IntegrationsPage() {
       try {
         const zoho = await getZohoStatus();
         setZohoStatus(zoho);
+        if (zoho.connected) {
+          try {
+            const md = await getMasterDataSummary();
+            setMasterData(md);
+          } catch (_) {}
+        }
       } catch (err) {
         console.warn("Could not load Zoho status:", err);
       }
-
-      try {
-        const md = await getMasterDataSummary();
-        setMasterData(md);
-      } catch (err) {
-        console.warn("Could not load master data summary:", err);
-      }
     } finally {
-      setLoading(false);
+      setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
-  }, []);
+    loadAllData();
 
-  // Clear notification banner after 5 seconds
+    // Check OAuth return params
+    const zohoRedirectStatus = searchParams.get("zoho_status");
+    const orgName = searchParams.get("org_name");
+    const errorDetail = searchParams.get("error_detail");
+
+    if (zohoRedirectStatus === "connected") {
+      setNotification({
+        type: "success",
+        message: `Zoho Books successfully connected${orgName ? ` to ${orgName}` : ""}! Master Chart of Accounts, Tax Rates, and Vendors synchronized.`,
+      });
+      setActiveTab("zoho");
+    } else if (zohoRedirectStatus === "error") {
+      setNotification({
+        type: "error",
+        message: `Zoho OAuth Connection failed: ${errorDetail || "Authorization was denied or expired."}`,
+      });
+      setActiveTab("zoho");
+    }
+  }, [searchParams]);
+
+  // Clear notification banner
   useEffect(() => {
     if (notification) {
-      const t = setTimeout(() => setNotification(null), 5000);
+      const t = setTimeout(() => setNotification(null), 6000);
       return () => clearTimeout(t);
     }
   }, [notification]);
 
+  // ==========================================
+  // Zoho Handlers
+  // ==========================================
+  const handleInitiateZohoConnect = async () => {
+    try {
+      setIsConnectingZoho(true);
+      setNotification(null);
+      const res = await getZohoConnectUrl(selectedAccountsUrl, customRedirectUri);
+      const authUrl = res.auth_url || (res as any).authorization_url;
+      if (authUrl) {
+        window.location.href = authUrl;
+      } else {
+        throw new Error("Authorization URL was not returned by the server.");
+      }
+    } catch (err: any) {
+      setNotification({
+        type: "error",
+        message: err.message || "Failed to initiate Zoho connection.",
+      });
+      setIsConnectingZoho(false);
+    }
+  };
+
+  const handleSyncZohoNow = async () => {
+    try {
+      setIsSyncingZoho(true);
+      setNotification(null);
+      const res = await triggerZohoSync();
+      const coaCount = res.accounts_synced ?? (res as any).chart_of_accounts ?? 0;
+      const taxCount = res.taxes_synced ?? (res as any).tax_rates ?? 0;
+      const vendorCount = res.vendors_synced ?? (res as any).vendors ?? 0;
+      setNotification({
+        type: "success",
+        message: `Master data synchronized! ${coaCount} Chart of Accounts, ${taxCount} tax rates, and ${vendorCount} vendors updated.`,
+      });
+      const md = await getMasterDataSummary();
+      setMasterData(md);
+      const statusRes = await getZohoStatus();
+      setZohoStatus(statusRes);
+    } catch (err: any) {
+      setNotification({
+        type: "error",
+        message: err.message || "Failed to sync Zoho master data.",
+      });
+    } finally {
+      setIsSyncingZoho(false);
+    }
+  };
+
+  const handleOpenOrgModal = async () => {
+    try {
+      setIsSelectingOrg(true);
+      const res = await getZohoOrganizations();
+      const orgs = Array.isArray(res) ? res : ((res as any).organizations || []);
+      setOrganizations(orgs);
+      setShowOrgModal(true);
+    } catch (err: any) {
+      setNotification({
+        type: "error",
+        message: err.message || "Failed to fetch Zoho organizations.",
+      });
+    } finally {
+      setIsSelectingOrg(false);
+    }
+  };
+
+  const handleSelectOrg = async (orgId: string, orgName: string) => {
+    try {
+      setIsSelectingOrg(true);
+      await selectZohoOrganization(orgId, orgName);
+      setShowOrgModal(false);
+      setNotification({
+        type: "success",
+        message: `Switched active organization to ${orgName}! Syncing master data...`,
+      });
+      await handleSyncZohoNow();
+    } catch (err: any) {
+      setNotification({
+        type: "error",
+        message: err.message || `Failed to select organization ${orgName}.`,
+      });
+    } finally {
+      setIsSelectingOrg(false);
+    }
+  };
+
+  const handleConfirmDisconnectZoho = async () => {
+    try {
+      setIsDisconnectingZoho(true);
+      await disconnectZoho();
+      setShowDisconnectZohoModal(false);
+      setNotification({
+        type: "info",
+        message: "Zoho Books integration has been disconnected.",
+      });
+      loadAllData();
+    } catch (err: any) {
+      setNotification({
+        type: "error",
+        message: err.message || "Failed to disconnect Zoho.",
+      });
+    } finally {
+      setIsDisconnectingZoho(false);
+    }
+  };
+
+  // ==========================================
+  // IMAP Handlers
+  // ==========================================
   const handleEmailSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!emailForm.host || !emailForm.port || !emailForm.email) {
@@ -123,7 +304,7 @@ export default function IntegrationsPage() {
       });
       return;
     }
-    setIsConnecting(true);
+    setIsConnectingEmail(true);
     try {
       await configureIMAPSettings({
         imap_server: emailForm.host.trim(),
@@ -137,14 +318,14 @@ export default function IntegrationsPage() {
         type: "success",
         message: `Email integration connected successfully to ${emailForm.email}!`,
       });
-      loadData();
+      loadAllData();
     } catch (err: any) {
       setNotification({
         type: "error",
         message: err.message || "Failed to configure IMAP connection. Check server credentials.",
       });
     } finally {
-      setIsConnecting(false);
+      setIsConnectingEmail(false);
     }
   };
 
@@ -160,7 +341,7 @@ export default function IntegrationsPage() {
         type: "info",
         message: "Email integration disconnected.",
       });
-      loadData();
+      loadAllData();
     } catch (err: any) {
       setNotification({
         type: "error",
@@ -187,23 +368,41 @@ export default function IntegrationsPage() {
     }
   };
 
+  // Filter master data items
+  const filteredAccounts = (masterData?.chart_of_accounts || []).filter((acc) =>
+    (acc.account_name || "").toLowerCase().includes(masterDataSearch.toLowerCase()) ||
+    (acc.account_code || "").toLowerCase().includes(masterDataSearch.toLowerCase()) ||
+    (acc.account_type || "").toLowerCase().includes(masterDataSearch.toLowerCase())
+  );
+
+  const filteredTaxes = (masterData?.tax_rates || []).filter((t) =>
+    (t.tax_name || "").toLowerCase().includes(masterDataSearch.toLowerCase()) ||
+    String(t.tax_percentage).includes(masterDataSearch)
+  );
+
+  const filteredVendors = (masterData?.vendors || []).filter((v) =>
+    (v.vendor_name || "").toLowerCase().includes(masterDataSearch.toLowerCase()) ||
+    (v.gst_treatment || "").toLowerCase().includes(masterDataSearch.toLowerCase()) ||
+    (v.contact_name || "").toLowerCase().includes(masterDataSearch.toLowerCase())
+  );
+
   return (
     <AppShell
       title="Integrations Hub"
       subtitle="Corporate Ingestion Pipelines & ERP Connections"
       actions={
         <button
-          onClick={loadData}
+          onClick={loadAllData}
           className="btn btn-secondary"
           style={{ display: "flex", alignItems: "center", gap: "8px" }}
-          disabled={loading}
+          disabled={isLoading}
         >
-          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-          Refresh
+          <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
+          Refresh Status
         </button>
       }
     >
-      <div style={{ maxWidth: "960px", margin: "0 auto", paddingBottom: "60px" }}>
+      <div style={{ maxWidth: "1060px", margin: "0 auto", paddingBottom: "80px" }}>
         {/* Notification Banner */}
         {notification && (
           <div
@@ -257,114 +456,351 @@ export default function IntegrationsPage() {
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: "24px" }}>
-          {/* ========================================================================= */}
-          {/* 1. IMAP EMAIL INGESTION CARD */}
-          {/* ========================================================================= */}
-          <div
-            className="card"
+        {/* Top-Level Navigation Segmented Tabs */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            borderBottom: "1px solid var(--border-subtle)",
+            marginBottom: "28px",
+            paddingBottom: "12px",
+          }}
+        >
+          <button
+            onClick={() => setActiveTab("overview")}
             style={{
-              padding: "28px",
+              padding: "8px 16px",
+              borderRadius: "var(--radius-sm)",
+              background: activeTab === "overview" ? "var(--accent)" : "transparent",
+              color: activeTab === "overview" ? "#ffffff" : "var(--text-secondary)",
+              border: "none",
+              fontWeight: "600",
+              fontSize: "14px",
+              cursor: "pointer",
               display: "flex",
-              flexDirection: "column",
-              justifyContent: "space-between",
-              background: "#ffffff",
-              border: "1px solid var(--border-subtle)",
-              borderRadius: "var(--radius-md)",
-              boxShadow: "var(--shadow-sm)",
+              alignItems: "center",
+              gap: "8px",
+              transition: "all 0.15s ease",
             }}
           >
-            <div>
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-                  <div
-                    style={{
-                      width: "48px",
-                      height: "48px",
-                      borderRadius: "12px",
-                      background: isEmailConnected ? "rgba(16, 185, 129, 0.1)" : "rgba(0, 113, 227, 0.08)",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: isEmailConnected ? "#10b981" : "var(--accent)",
-                    }}
-                  >
-                    <Mail size={24} />
+            <Database size={16} />
+            All Integrations Overview
+          </button>
+
+          <button
+            onClick={() => setActiveTab("zoho")}
+            style={{
+              padding: "8px 16px",
+              borderRadius: "var(--radius-sm)",
+              background: activeTab === "zoho" ? "var(--accent)" : "transparent",
+              color: activeTab === "zoho" ? "#ffffff" : "var(--text-secondary)",
+              border: "none",
+              fontWeight: "600",
+              fontSize: "14px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <Layers size={16} />
+            Zoho Books ERP
+            <span
+              style={{
+                fontSize: "11px",
+                padding: "2px 8px",
+                borderRadius: "10px",
+                background: activeTab === "zoho" ? "rgba(255, 255, 255, 0.25)" : zohoStatus?.connected ? "#e6f4ea" : "#f1f3f4",
+                color: activeTab === "zoho" ? "#ffffff" : zohoStatus?.connected ? "#137333" : "#5f6368",
+                fontWeight: "700",
+              }}
+            >
+              {zohoStatus?.connected ? "Active" : "Disconnected"}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab("imap")}
+            style={{
+              padding: "8px 16px",
+              borderRadius: "var(--radius-sm)",
+              background: activeTab === "imap" ? "var(--accent)" : "transparent",
+              color: activeTab === "imap" ? "#ffffff" : "var(--text-secondary)",
+              border: "none",
+              fontWeight: "600",
+              fontSize: "14px",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              transition: "all 0.15s ease",
+            }}
+          >
+            <Mail size={16} />
+            Corporate Email (IMAP)
+            <span
+              style={{
+                fontSize: "11px",
+                padding: "2px 8px",
+                borderRadius: "10px",
+                background: activeTab === "imap" ? "rgba(255, 255, 255, 0.25)" : isEmailConnected ? "#e6f4ea" : "#f1f3f4",
+                color: activeTab === "imap" ? "#ffffff" : isEmailConnected ? "#137333" : "#5f6368",
+                fontWeight: "700",
+              }}
+            >
+              {isEmailConnected ? "Active" : "Inactive"}
+            </span>
+          </button>
+        </div>
+
+        {/* ========================================================================= */}
+        {/* TAB 1: OVERVIEW SUMMARY CARDS */}
+        {/* ========================================================================= */}
+        {activeTab === "overview" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(460px, 1fr))", gap: "24px" }}>
+            {/* Zoho Card */}
+            <div
+              className="card"
+              style={{
+                padding: "28px",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                background: "#ffffff",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-md)",
+                boxShadow: "var(--shadow-sm)",
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+                    <div
+                      style={{
+                        width: "48px",
+                        height: "48px",
+                        borderRadius: "12px",
+                        background: zohoStatus?.connected ? "rgba(0, 113, 227, 0.08)" : "#f1f3f4",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "var(--accent)",
+                      }}
+                    >
+                      <Layers size={24} />
+                    </div>
+                    <div>
+                      <h2 style={{ fontSize: "17px", fontWeight: "700", color: "var(--text-primary)", margin: 0 }}>
+                        Zoho Books ERP Integration
+                      </h2>
+                      <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                        Chart of Accounts, Tax Rates & Bill Synchronization
+                      </span>
+                    </div>
                   </div>
-                  <div>
-                    <h2 style={{ fontSize: "17px", fontWeight: "700", color: "var(--text-primary)", margin: 0 }}>
-                      Corporate Email Ingestion (IMAP)
-                    </h2>
-                    <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-                      Auto-ingest vendor invoice PDF attachments
-                    </span>
-                  </div>
-                </div>
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "4px 10px",
-                    borderRadius: "12px",
-                    fontSize: "12px",
-                    fontWeight: "600",
-                    background: isEmailConnected ? "#e6f4ea" : "#f1f3f4",
-                    color: isEmailConnected ? "#137333" : "#5f6368",
-                  }}
-                >
                   <span
                     style={{
-                      width: "6px",
-                      height: "6px",
-                      borderRadius: "50%",
-                      background: isEmailConnected ? "#137333" : "#5f6368",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "4px 10px",
+                      borderRadius: "12px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      background: zohoStatus?.connected ? "#e6f4ea" : "#fef2f2",
+                      color: zohoStatus?.connected ? "#137333" : "#b91c1c",
                     }}
-                  />
-                  {isEmailConnected ? "Connected" : "Not Configured"}
-                </span>
+                  >
+                    <span
+                      style={{
+                        width: "6px",
+                        height: "6px",
+                        borderRadius: "50%",
+                        background: zohoStatus?.connected ? "#137333" : "#b91c1c",
+                      }}
+                    />
+                    {zohoStatus?.connected ? "Connected" : "Disconnected"}
+                  </span>
+                </div>
+
+                <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: "1.5", marginBottom: "20px" }}>
+                  Live integration with Zoho Books. Reads active Chart of Accounts for AI classification context and exports approved bills directly with PDF attachments.
+                </p>
+
+                {zohoStatus?.connected ? (
+                  <div
+                    style={{
+                      background: "var(--bg-main)",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: "var(--radius-sm)",
+                      padding: "16px",
+                      fontSize: "13px",
+                      marginBottom: "20px",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ color: "var(--text-secondary)" }}>Connected Organization:</span>
+                      <strong style={{ color: "var(--text-primary)" }}>
+                        {zohoStatus.organization_name || "carkit"} ({zohoStatus.organization_id})
+                      </strong>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ color: "var(--text-secondary)" }}>Synced Chart of Accounts:</span>
+                      <span>{masterData?.chart_of_accounts_count ?? zohoStatus.accounts_count ?? 67} Accounts</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--text-secondary)" }}>Synced Vendors:</span>
+                      <span>{masterData?.vendors_count ?? zohoStatus.vendors_count ?? 19} Contacts</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    style={{
+                      background: "#fef2f2",
+                      border: "1px solid #fecaca",
+                      borderRadius: "var(--radius-sm)",
+                      padding: "14px",
+                      fontSize: "13px",
+                      color: "#991b1b",
+                      marginBottom: "20px",
+                    }}
+                  >
+                    Connect your Zoho Books organization to enable automated ledger mapping and direct bill posting.
+                  </div>
+                )}
               </div>
 
-              <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: "1.5", marginBottom: "20px" }}>
-                Connect your accounts payable mailbox (e.g. <code>invoices@company.com</code>) via secure SSL IMAP. Incoming attachments are automatically staged for AI extraction.
-              </p>
-
-              {isEmailConnected && emailForm.email ? (
-                <div
-                  style={{
-                    background: "var(--bg-main)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "16px",
-                    fontSize: "13px",
-                    marginBottom: "20px",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                    <span style={{ color: "var(--text-secondary)" }}>Connected Mailbox:</span>
-                    <strong style={{ color: "var(--text-primary)" }}>{emailForm.email}</strong>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                    <span style={{ color: "var(--text-secondary)" }}>Server:</span>
-                    <span>{emailForm.host}:{emailForm.port}</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "var(--text-secondary)" }}>Encryption:</span>
-                    <span style={{ color: "#10b981", fontWeight: "600" }}>SSL / TLS (AES at rest)</span>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
-              <div style={{ display: "flex", gap: "10px" }}>
+              <div style={{ display: "flex", gap: "10px", marginTop: "12px" }}>
                 <button
-                  onClick={() => setShowEmailModal(true)}
+                  onClick={() => setActiveTab("zoho")}
                   className="btn btn-primary"
                   style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
                 >
-                  <Server size={15} />
-                  {isEmailConnected ? "Edit Credentials" : "Configure IMAP"}
+                  <Layers size={15} />
+                  Manage Zoho ERP →
+                </button>
+
+                {zohoStatus?.connected && (
+                  <button
+                    onClick={handleSyncZohoNow}
+                    className="btn btn-secondary"
+                    disabled={isSyncingZoho}
+                    style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                    title="Sync Chart of Accounts and Vendors now"
+                  >
+                    <RefreshCw size={14} className={isSyncingZoho ? "animate-spin" : ""} />
+                    {isSyncingZoho ? "Syncing..." : "Sync Data"}
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* IMAP Card */}
+            <div
+              className="card"
+              style={{
+                padding: "28px",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between",
+                background: "#ffffff",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-md)",
+                boxShadow: "var(--shadow-sm)",
+              }}
+            >
+              <div>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+                    <div
+                      style={{
+                        width: "48px",
+                        height: "48px",
+                        borderRadius: "12px",
+                        background: isEmailConnected ? "rgba(16, 185, 129, 0.1)" : "rgba(0, 113, 227, 0.08)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: isEmailConnected ? "#10b981" : "var(--accent)",
+                      }}
+                    >
+                      <Mail size={24} />
+                    </div>
+                    <div>
+                      <h2 style={{ fontSize: "17px", fontWeight: "700", color: "var(--text-primary)", margin: 0 }}>
+                        Corporate Email Ingestion (IMAP)
+                      </h2>
+                      <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                        Auto-ingest vendor invoice PDF attachments
+                      </span>
+                    </div>
+                  </div>
+                  <span
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "4px 10px",
+                      borderRadius: "12px",
+                      fontSize: "12px",
+                      fontWeight: "600",
+                      background: isEmailConnected ? "#e6f4ea" : "#f1f3f4",
+                      color: isEmailConnected ? "#137333" : "#5f6368",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: "6px",
+                        height: "6px",
+                        borderRadius: "50%",
+                        background: isEmailConnected ? "#137333" : "#5f6368",
+                      }}
+                    />
+                    {isEmailConnected ? "Connected" : "Not Configured"}
+                  </span>
+                </div>
+
+                <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: "1.5", marginBottom: "20px" }}>
+                  Connect your accounts payable mailbox (e.g. <code>invoices@company.com</code>) via secure SSL IMAP. Incoming attachments are automatically staged for AI extraction.
+                </p>
+
+                {isEmailConnected && emailForm.email ? (
+                  <div
+                    style={{
+                      background: "var(--bg-main)",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: "var(--radius-sm)",
+                      padding: "16px",
+                      fontSize: "13px",
+                      marginBottom: "20px",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ color: "var(--text-secondary)" }}>Connected Mailbox:</span>
+                      <strong style={{ color: "var(--text-primary)" }}>{emailForm.email}</strong>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ color: "var(--text-secondary)" }}>Server:</span>
+                      <span>{emailForm.host}:{emailForm.port}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ color: "var(--text-secondary)" }}>Encryption:</span>
+                      <span style={{ color: "#10b981", fontWeight: "600" }}>SSL / TLS (AES at rest)</span>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              <div style={{ display: "flex", gap: "10px", marginTop: "12px" }}>
+                <button
+                  onClick={() => setActiveTab("imap")}
+                  className="btn btn-primary"
+                  style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
+                >
+                  <Mail size={15} />
+                  Manage Email Pipeline →
                 </button>
 
                 {isEmailConnected && (
@@ -380,21 +816,588 @@ export default function IntegrationsPage() {
                   </button>
                 )}
               </div>
+            </div>
+          </div>
+        )}
 
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: "8px" }}>
-                <Link
-                  href="/inbox"
+        {/* ========================================================================= */}
+        {/* TAB 2: ZOHO BOOKS ERP INTEGRATION VIEW */}
+        {/* ========================================================================= */}
+        {activeTab === "zoho" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+            {/* Zoho Connection Hero Card */}
+            <div
+              className="card"
+              style={{
+                padding: "28px",
+                background: "#ffffff",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-md)",
+                boxShadow: "var(--shadow-sm)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "20px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                  <div
+                    style={{
+                      width: "52px",
+                      height: "52px",
+                      borderRadius: "14px",
+                      background: zohoStatus?.connected ? "rgba(0, 113, 227, 0.08)" : "#f1f3f4",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "var(--accent)",
+                    }}
+                  >
+                    <Layers size={28} />
+                  </div>
+                  <div>
+                    <h2 style={{ fontSize: "19px", fontWeight: "700", color: "var(--text-primary)", margin: 0 }}>
+                      Zoho Books ERP Master Connection
+                    </h2>
+                    <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+                      OAuth 2.0 Token Exchange, Live COA Caching & Vendor Bill Direct Posting
+                    </span>
+                  </div>
+                </div>
+
+                <span
                   style={{
-                    fontSize: "13px",
-                    fontWeight: "600",
-                    color: "var(--accent)",
-                    textDecoration: "none",
                     display: "inline-flex",
                     alignItems: "center",
-                    gap: "4px",
+                    gap: "6px",
+                    padding: "6px 12px",
+                    borderRadius: "16px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    background: zohoStatus?.connected ? "#e6f4ea" : "#fef2f2",
+                    color: zohoStatus?.connected ? "#137333" : "#b91c1c",
                   }}
                 >
-                  <Inbox size={14} />
+                  <span
+                    style={{
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      background: zohoStatus?.connected ? "#137333" : "#b91c1c",
+                    }}
+                  />
+                  {zohoStatus?.connected ? "Connected & Active" : "Disconnected"}
+                </span>
+              </div>
+
+              {zohoStatus?.connected ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                    gap: "16px",
+                    background: "var(--bg-main)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-sm)",
+                    padding: "18px",
+                    marginBottom: "24px",
+                  }}
+                >
+                  <div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)", display: "block" }}>
+                      Active Organization
+                    </span>
+                    <strong style={{ fontSize: "15px", color: "var(--text-primary)" }}>
+                      {zohoStatus.organization_name || "carkit"}
+                    </strong>
+                    <span style={{ fontSize: "11px", color: "var(--text-secondary)", display: "block" }}>
+                      ID: {zohoStatus.organization_id}
+                    </span>
+                  </div>
+
+                  <div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)", display: "block" }}>
+                      Chart of Accounts
+                    </span>
+                    <strong style={{ fontSize: "15px", color: "var(--text-primary)" }}>
+                      {masterData?.chart_of_accounts_count ?? zohoStatus.accounts_count ?? 67} Accounts Synced
+                    </strong>
+                    <span style={{ fontSize: "11px", color: "#10b981", display: "block" }}>
+                      ● Active for AI Context
+                    </span>
+                  </div>
+
+                  <div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)", display: "block" }}>
+                      Vendor Contacts
+                    </span>
+                    <strong style={{ fontSize: "15px", color: "var(--text-primary)" }}>
+                      {masterData?.vendors_count ?? zohoStatus.vendors_count ?? 19} Contacts Synced
+                    </strong>
+                    <span style={{ fontSize: "11px", color: "var(--text-secondary)", display: "block" }}>
+                      GSTIN / PAN Matching
+                    </span>
+                  </div>
+
+                  <div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)", display: "block" }}>
+                      Last Synchronized
+                    </span>
+                    <strong style={{ fontSize: "13px", color: "var(--text-primary)" }}>
+                      {zohoStatus.last_synced_at ? new Date(zohoStatus.last_synced_at).toLocaleString() : "Recently"}
+                    </strong>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "var(--radius-sm)",
+                    padding: "20px",
+                    marginBottom: "24px",
+                    fontSize: "14px",
+                    color: "var(--text-secondary)",
+                    lineHeight: "1.6",
+                  }}
+                >
+                  <strong style={{ color: "var(--text-primary)", display: "block", marginBottom: "6px" }}>
+                    Connect to Zoho Books to unlock:
+                  </strong>
+                  <ul style={{ paddingLeft: "20px", margin: "4px 0" }}>
+                    <li>Live Chart of Accounts injection into Qwen3-4B accounting categorization.</li>
+                    <li>Dynamic GST Tax Rate resolution with zero hardcoding.</li>
+                    <li>One-click export of approved invoices to Zoho Books Vendor Bills with original attachments.</li>
+                  </ul>
+                </div>
+              )}
+
+              {/* Action Buttons Row */}
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center" }}>
+                {zohoStatus?.connected ? (
+                  <>
+                    <button
+                      onClick={handleSyncZohoNow}
+                      className="btn btn-primary"
+                      disabled={isSyncingZoho}
+                      style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                    >
+                      <RefreshCw size={15} className={isSyncingZoho ? "animate-spin" : ""} />
+                      {isSyncingZoho ? "Syncing Master Data..." : "Sync Master Data Now"}
+                    </button>
+
+                    <button
+                      onClick={handleOpenOrgModal}
+                      className="btn btn-secondary"
+                      disabled={isSelectingOrg}
+                      style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                    >
+                      <Building2 size={15} />
+                      Switch Organization
+                    </button>
+
+                    <button
+                      onClick={() => setShowZohoConnectModal(true)}
+                      className="btn btn-secondary"
+                      style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                    >
+                      <RefreshCw size={15} />
+                      Reauthorize OAuth
+                    </button>
+
+                    <button
+                      onClick={() => setShowDisconnectZohoModal(true)}
+                      style={{
+                        marginLeft: "auto",
+                        background: "none",
+                        border: "none",
+                        color: "#dc2626",
+                        fontSize: "13px",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      <Unlink size={14} />
+                      Disconnect Zoho
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setShowZohoConnectModal(true)}
+                    className="btn btn-primary"
+                    style={{ display: "flex", alignItems: "center", gap: "8px", padding: "10px 20px" }}
+                  >
+                    <Link2 size={16} />
+                    Connect Zoho Books
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Synced Master Data Browser */}
+            {zohoStatus?.connected && (
+              <div
+                className="card"
+                style={{
+                  background: "#ffffff",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "var(--radius-md)",
+                  boxShadow: "var(--shadow-sm)",
+                  overflow: "hidden",
+                }}
+              >
+                {/* Header with Subtabs and Search */}
+                <div
+                  style={{
+                    padding: "20px 24px",
+                    borderBottom: "1px solid var(--border-subtle)",
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    gap: "16px",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      onClick={() => setMasterDataTab("coa")}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: "var(--radius-sm)",
+                        background: masterDataTab === "coa" ? "var(--bg-main)" : "transparent",
+                        color: masterDataTab === "coa" ? "var(--text-primary)" : "var(--text-secondary)",
+                        fontWeight: masterDataTab === "coa" ? "700" : "500",
+                        border: `1px solid ${masterDataTab === "coa" ? "var(--border-subtle)" : "transparent"}`,
+                        fontSize: "13px",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      <Layers size={14} />
+                      Chart of Accounts ({masterData?.chart_of_accounts?.length ?? 67})
+                    </button>
+
+                    <button
+                      onClick={() => setMasterDataTab("taxes")}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: "var(--radius-sm)",
+                        background: masterDataTab === "taxes" ? "var(--bg-main)" : "transparent",
+                        color: masterDataTab === "taxes" ? "var(--text-primary)" : "var(--text-secondary)",
+                        fontWeight: masterDataTab === "taxes" ? "700" : "500",
+                        border: `1px solid ${masterDataTab === "taxes" ? "var(--border-subtle)" : "transparent"}`,
+                        fontSize: "13px",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      <Percent size={14} />
+                      Tax Rates ({masterData?.tax_rates?.length ?? 4})
+                    </button>
+
+                    <button
+                      onClick={() => setMasterDataTab("vendors")}
+                      style={{
+                        padding: "6px 14px",
+                        borderRadius: "var(--radius-sm)",
+                        background: masterDataTab === "vendors" ? "var(--bg-main)" : "transparent",
+                        color: masterDataTab === "vendors" ? "var(--text-primary)" : "var(--text-secondary)",
+                        fontWeight: masterDataTab === "vendors" ? "700" : "500",
+                        border: `1px solid ${masterDataTab === "vendors" ? "var(--border-subtle)" : "transparent"}`,
+                        fontSize: "13px",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      <Users size={14} />
+                      Vendors ({masterData?.vendors?.length ?? 19})
+                    </button>
+                  </div>
+
+                  <div style={{ position: "relative", minWidth: "260px" }}>
+                    <Search
+                      size={15}
+                      style={{ position: "absolute", left: "10px", top: "50%", transform: "translateY(-50%)", color: "var(--text-secondary)" }}
+                    />
+                    <input
+                      type="text"
+                      className="input-field"
+                      placeholder={`Search ${masterDataTab}...`}
+                      value={masterDataSearch}
+                      onChange={(e) => setMasterDataSearch(e.target.value)}
+                      style={{ paddingLeft: "32px", fontSize: "13px", padding: "6px 12px 6px 32px" }}
+                    />
+                  </div>
+                </div>
+
+                {/* Table Content */}
+                <div style={{ maxHeight: "400px", overflowY: "auto" }}>
+                  {masterDataTab === "coa" && (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                      <thead>
+                        <tr style={{ background: "var(--bg-main)", borderBottom: "1px solid var(--border-subtle)", textAlign: "left" }}>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Account Name</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Code</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Type</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Zoho Account ID</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredAccounts.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} style={{ padding: "32px", textAlign: "center", color: "var(--text-secondary)" }}>
+                              No Chart of Accounts found matching search.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredAccounts.map((acc, idx) => (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                              <td style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-primary)" }}>{acc.account_name}</td>
+                              <td style={{ padding: "10px 16px", color: "var(--text-secondary)" }}>{acc.account_code || "—"}</td>
+                              <td style={{ padding: "10px 16px" }}>
+                                <span style={{ padding: "2px 8px", borderRadius: "8px", fontSize: "11px", fontWeight: "600", background: "rgba(0, 113, 227, 0.08)", color: "var(--accent)" }}>
+                                  {acc.account_type}
+                                </span>
+                              </td>
+                              <td style={{ padding: "10px 16px", fontFamily: "monospace", fontSize: "12px", color: "var(--text-secondary)" }}>
+                                {acc.account_id || acc.zoho_account_id}
+                              </td>
+                              <td style={{ padding: "10px 16px", color: "#10b981", fontWeight: "600", fontSize: "12px" }}>
+                                ● Active
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {masterDataTab === "taxes" && (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                      <thead>
+                        <tr style={{ background: "var(--bg-main)", borderBottom: "1px solid var(--border-subtle)", textAlign: "left" }}>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Tax Name</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Percentage</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Type</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Zoho Tax ID</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredTaxes.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} style={{ padding: "32px", textAlign: "center", color: "var(--text-secondary)" }}>
+                              No Tax Rates found.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredTaxes.map((tax, idx) => (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                              <td style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-primary)" }}>{tax.tax_name}</td>
+                              <td style={{ padding: "10px 16px", fontWeight: "700" }}>{tax.tax_percentage}%</td>
+                              <td style={{ padding: "10px 16px", color: "var(--text-secondary)" }}>{tax.tax_type || "GST"}</td>
+                              <td style={{ padding: "10px 16px", fontFamily: "monospace", fontSize: "12px", color: "var(--text-secondary)" }}>
+                                {tax.tax_id || tax.zoho_tax_id}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+
+                  {masterDataTab === "vendors" && (
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+                      <thead>
+                        <tr style={{ background: "var(--bg-main)", borderBottom: "1px solid var(--border-subtle)", textAlign: "left" }}>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Vendor / Company Name</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>GST Treatment</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Zoho Contact ID</th>
+                          <th style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-secondary)" }}>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredVendors.length === 0 ? (
+                          <tr>
+                            <td colSpan={4} style={{ padding: "32px", textAlign: "center", color: "var(--text-secondary)" }}>
+                              No Vendors found.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredVendors.map((v, idx) => (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                              <td style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-primary)" }}>
+                                {v.vendor_name || v.contact_name}
+                              </td>
+                              <td style={{ padding: "10px 16px", color: "var(--text-secondary)" }}>{v.gst_treatment || "Registered Business"}</td>
+                              <td style={{ padding: "10px 16px", fontFamily: "monospace", fontSize: "12px", color: "var(--text-secondary)" }}>
+                                {v.vendor_id || v.contact_id}
+                              </td>
+                              <td style={{ padding: "10px 16px", color: "#10b981", fontWeight: "600", fontSize: "12px" }}>
+                                ● Active
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* TAB 3: IMAP EMAIL PIPELINE VIEW */}
+        {/* ========================================================================= */}
+        {activeTab === "imap" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+            <div
+              className="card"
+              style={{
+                padding: "28px",
+                background: "#ffffff",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-md)",
+                boxShadow: "var(--shadow-sm)",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "20px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+                  <div
+                    style={{
+                      width: "52px",
+                      height: "52px",
+                      borderRadius: "14px",
+                      background: isEmailConnected ? "rgba(16, 185, 129, 0.1)" : "rgba(0, 113, 227, 0.08)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: isEmailConnected ? "#10b981" : "var(--accent)",
+                    }}
+                  >
+                    <Mail size={28} />
+                  </div>
+                  <div>
+                    <h2 style={{ fontSize: "19px", fontWeight: "700", color: "var(--text-primary)", margin: 0 }}>
+                      Corporate Email Ingestion (IMAP)
+                    </h2>
+                    <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+                      Continuous Polling & Automated Attachment Extraction
+                    </span>
+                  </div>
+                </div>
+
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    padding: "6px 12px",
+                    borderRadius: "16px",
+                    fontSize: "13px",
+                    fontWeight: "600",
+                    background: isEmailConnected ? "#e6f4ea" : "#f1f3f4",
+                    color: isEmailConnected ? "#137333" : "#5f6368",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: "8px",
+                      height: "8px",
+                      borderRadius: "50%",
+                      background: isEmailConnected ? "#137333" : "#5f6368",
+                    }}
+                  />
+                  {isEmailConnected ? "Connected" : "Not Configured"}
+                </span>
+              </div>
+
+              {isEmailConnected && emailForm.email ? (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                    gap: "16px",
+                    background: "var(--bg-main)",
+                    border: "1px solid var(--border-subtle)",
+                    borderRadius: "var(--radius-sm)",
+                    padding: "18px",
+                    marginBottom: "24px",
+                  }}
+                >
+                  <div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)", display: "block" }}>
+                      Connected Mailbox
+                    </span>
+                    <strong style={{ fontSize: "15px", color: "var(--text-primary)" }}>{emailForm.email}</strong>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)", display: "block" }}>
+                      IMAP Server
+                    </span>
+                    <strong style={{ fontSize: "15px", color: "var(--text-primary)" }}>
+                      {emailForm.host}:{emailForm.port}
+                    </strong>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: "12px", color: "var(--text-secondary)", display: "block" }}>
+                      Security Protocol
+                    </span>
+                    <strong style={{ fontSize: "15px", color: "#10b981" }}>SSL / TLS (AES-256)</strong>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  style={{
+                    background: "#f8fafc",
+                    border: "1px solid #e2e8f0",
+                    borderRadius: "var(--radius-sm)",
+                    padding: "20px",
+                    marginBottom: "24px",
+                    fontSize: "14px",
+                    color: "var(--text-secondary)",
+                    lineHeight: "1.6",
+                  }}
+                >
+                  Configure your corporate accounts payable mailbox to automatically extract invoice attachments from suppliers.
+                </div>
+              )}
+
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center" }}>
+                <button
+                  onClick={() => setShowEmailModal(true)}
+                  className="btn btn-primary"
+                  style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                >
+                  <Server size={15} />
+                  {isEmailConnected ? "Edit Credentials" : "Configure IMAP"}
+                </button>
+
+                {isEmailConnected && (
+                  <button
+                    onClick={handleManualPoll}
+                    className="btn btn-secondary"
+                    disabled={isPolling}
+                    style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                  >
+                    <RefreshCw size={14} className={isPolling ? "animate-spin" : ""} />
+                    {isPolling ? "Polling..." : "Poll Mailbox Now"}
+                  </button>
+                )}
+
+                <Link
+                  href="/inbox"
+                  className="btn btn-secondary"
+                  style={{ display: "flex", alignItems: "center", gap: "8px", textDecoration: "none" }}
+                >
+                  <Inbox size={15} />
                   Open Staged Inbox →
                 </Link>
 
@@ -402,12 +1405,12 @@ export default function IntegrationsPage() {
                   <button
                     onClick={handleDisconnectEmail}
                     style={{
+                      marginLeft: "auto",
                       background: "none",
                       border: "none",
                       color: "#dc2626",
-                      fontSize: "12px",
+                      fontSize: "13px",
                       cursor: "pointer",
-                      padding: "4px 8px",
                     }}
                   >
                     Disconnect
@@ -416,144 +1419,302 @@ export default function IntegrationsPage() {
               </div>
             </div>
           </div>
-
-          {/* ========================================================================= */}
-          {/* 2. ZOHO BOOKS ERP CARD */}
-          {/* ========================================================================= */}
-          <div
-            className="card"
-            style={{
-              padding: "28px",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "space-between",
-              background: "#ffffff",
-              border: "1px solid var(--border-subtle)",
-              borderRadius: "var(--radius-md)",
-              boxShadow: "var(--shadow-sm)",
-            }}
-          >
-            <div>
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "16px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-                  <div
-                    style={{
-                      width: "48px",
-                      height: "48px",
-                      borderRadius: "12px",
-                      background: zohoStatus?.connected ? "rgba(0, 113, 227, 0.08)" : "#f1f3f4",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      color: "var(--accent)",
-                    }}
-                  >
-                    <Layers size={24} />
-                  </div>
-                  <div>
-                    <h2 style={{ fontSize: "17px", fontWeight: "700", color: "var(--text-primary)", margin: 0 }}>
-                      Zoho Books ERP
-                    </h2>
-                    <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
-                      Chart of Accounts, Tax Rates & Bill Synchronization
-                    </span>
-                  </div>
-                </div>
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "6px",
-                    padding: "4px 10px",
-                    borderRadius: "12px",
-                    fontSize: "12px",
-                    fontWeight: "600",
-                    background: zohoStatus?.connected ? "#e6f4ea" : "#fef2f2",
-                    color: zohoStatus?.connected ? "#137333" : "#b91c1c",
-                  }}
-                >
-                  <span
-                    style={{
-                      width: "6px",
-                      height: "6px",
-                      borderRadius: "50%",
-                      background: zohoStatus?.connected ? "#137333" : "#b91c1c",
-                    }}
-                  />
-                  {zohoStatus?.connected ? "Connected" : "Disconnected"}
-                </span>
-              </div>
-
-              <p style={{ fontSize: "13px", color: "var(--text-secondary)", lineHeight: "1.5", marginBottom: "20px" }}>
-                Synchronize Chart of Accounts and Vendor master data from Zoho Books. Approved invoices are exported directly as Vendor Bills with original attachments.
-              </p>
-
-              {zohoStatus?.connected ? (
-                <div
-                  style={{
-                    background: "var(--bg-main)",
-                    border: "1px solid var(--border-subtle)",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "16px",
-                    fontSize: "13px",
-                    marginBottom: "20px",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                    <span style={{ color: "var(--text-secondary)" }}>Active Organization:</span>
-                    <strong style={{ color: "var(--text-primary)" }}>
-                      {zohoStatus.organization_name || "carkit"} ({zohoStatus.organization_id})
-                    </strong>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
-                    <span style={{ color: "var(--text-secondary)" }}>Chart of Accounts:</span>
-                    <span>{masterData?.chart_of_accounts_count ?? zohoStatus.accounts_count ?? 67} Accounts Synced</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "var(--text-secondary)" }}>Vendors:</span>
-                    <span>{masterData?.vendors_count ?? zohoStatus.vendors_count ?? 19} Contacts Synced</span>
-                  </div>
-                </div>
-              ) : (
-                <div
-                  style={{
-                    background: "#fef2f2",
-                    border: "1px solid #fecaca",
-                    borderRadius: "var(--radius-sm)",
-                    padding: "14px",
-                    fontSize: "13px",
-                    color: "#991b1b",
-                    marginBottom: "20px",
-                  }}
-                >
-                  Connect your Zoho Books organization to enable automated ledger mapping and direct bill posting.
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
-              <Link
-                href="/finance/settings"
-                className="btn btn-secondary"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "8px",
-                  textDecoration: "none",
-                  textAlign: "center",
-                }}
-              >
-                <ShieldCheck size={15} />
-                Manage Zoho Settings & Master Data
-              </Link>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* ========================================================================= */}
-      {/* 3. IMAP CONFIGURATION MODAL */}
+      {/* MODAL 1: ZOHO OAUTH CONNECT MODAL */}
+      {/* ========================================================================= */}
+      {showZohoConnectModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            backdropFilter: "blur(4px)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              background: "#ffffff",
+              borderRadius: "var(--radius-md)",
+              maxWidth: "520px",
+              width: "100%",
+              boxShadow: "var(--shadow-lg)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "20px 24px",
+                borderBottom: "1px solid var(--border-subtle)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <Layers size={20} color="var(--accent)" />
+                <h3 style={{ fontSize: "17px", fontWeight: "700", margin: 0 }}>Connect to Zoho Books</h3>
+              </div>
+              <button
+                onClick={() => setShowZohoConnectModal(false)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)" }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "8px" }}>
+                  Select Zoho Regional Data Center
+                </label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
+                  {DATA_CENTERS.map((dc) => (
+                    <button
+                      key={dc.id}
+                      type="button"
+                      onClick={() => setSelectedAccountsUrl(dc.url)}
+                      style={{
+                        padding: "12px",
+                        borderRadius: "var(--radius-sm)",
+                        border: `2px solid ${selectedAccountsUrl === dc.url ? "var(--accent)" : "var(--border-subtle)"}`,
+                        background: selectedAccountsUrl === dc.url ? "rgba(0, 113, 227, 0.05)" : "#ffffff",
+                        color: selectedAccountsUrl === dc.url ? "var(--accent)" : "var(--text-primary)",
+                        fontWeight: "600",
+                        fontSize: "13px",
+                        textAlign: "left",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {dc.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "6px" }}>
+                  OAuth Redirect URI (Registered in Zoho Developer Console)
+                </label>
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <input
+                    type="text"
+                    className="input-field"
+                    value={customRedirectUri}
+                    readOnly
+                    style={{ background: "var(--bg-main)", fontSize: "12px", fontFamily: "monospace" }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      navigator.clipboard.writeText(customRedirectUri);
+                      setCopiedUri(true);
+                      setTimeout(() => setCopiedUri(false), 2000);
+                    }}
+                  >
+                    {copiedUri ? <Check size={14} /> : <KeyRound size={14} />}
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "10px" }}>
+                <button
+                  type="button"
+                  onClick={() => setShowZohoConnectModal(false)}
+                  className="btn btn-secondary"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleInitiateZohoConnect}
+                  className="btn btn-primary"
+                  disabled={isConnectingZoho}
+                  style={{ display: "flex", alignItems: "center", gap: "8px" }}
+                >
+                  {isConnectingZoho ? (
+                    <>
+                      <RefreshCw size={14} className="animate-spin" />
+                      Redirecting to Zoho...
+                    </>
+                  ) : (
+                    <>
+                      <ExternalLink size={14} />
+                      Proceed to Zoho Authorization
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 2: ZOHO ORGANIZATION PICKER MODAL */}
+      {/* ========================================================================= */}
+      {showOrgModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            backdropFilter: "blur(4px)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              background: "#ffffff",
+              borderRadius: "var(--radius-md)",
+              maxWidth: "520px",
+              width: "100%",
+              boxShadow: "var(--shadow-lg)",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "20px 24px",
+                borderBottom: "1px solid var(--border-subtle)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <Building2 size={20} color="var(--accent)" />
+                <h3 style={{ fontSize: "17px", fontWeight: "700", margin: 0 }}>Select Active Zoho Organization</h3>
+              </div>
+              <button
+                onClick={() => setShowOrgModal(false)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)" }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "12px", maxHeight: "360px", overflowY: "auto" }}>
+              {organizations.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "24px", color: "var(--text-secondary)" }}>
+                  No organizations found on this Zoho account.
+                </div>
+              ) : (
+                organizations.map((org) => {
+                  const isCurrent = org.organization_id === zohoStatus?.organization_id;
+                  return (
+                    <div
+                      key={org.organization_id}
+                      style={{
+                        padding: "16px",
+                        borderRadius: "var(--radius-sm)",
+                        border: `1px solid ${isCurrent ? "var(--accent)" : "var(--border-subtle)"}`,
+                        background: isCurrent ? "rgba(0, 113, 227, 0.04)" : "#ffffff",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                      }}
+                    >
+                      <div>
+                        <strong style={{ fontSize: "15px", display: "block" }}>{org.name}</strong>
+                        <span style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                          ID: {org.organization_id} • {org.currency_code}
+                        </span>
+                      </div>
+                      {isCurrent ? (
+                        <span style={{ fontSize: "12px", fontWeight: "700", color: "var(--accent)" }}>
+                          Active
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleSelectOrg(org.organization_id, org.name)}
+                          className="btn btn-secondary"
+                          style={{ fontSize: "12px", padding: "6px 12px" }}
+                        >
+                          Select
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 3: ZOHO DISCONNECT MODAL */}
+      {/* ========================================================================= */}
+      {showDisconnectZohoModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.5)",
+            backdropFilter: "blur(4px)",
+            zIndex: 1000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              background: "#ffffff",
+              borderRadius: "var(--radius-md)",
+              maxWidth: "460px",
+              width: "100%",
+              padding: "24px",
+              boxShadow: "var(--shadow-lg)",
+            }}
+          >
+            <h3 style={{ fontSize: "18px", fontWeight: "700", color: "#dc2626", marginBottom: "8px" }}>
+              Disconnect Zoho Books?
+            </h3>
+            <p style={{ fontSize: "14px", color: "var(--text-secondary)", lineHeight: "1.6", marginBottom: "20px" }}>
+              Disconnecting will revoke stored OAuth tokens. Automated Bill exports to Zoho Books will be paused until reconnected.
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setShowDisconnectZohoModal(false)}
+                className="btn btn-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDisconnectZoho}
+                className="btn btn-danger"
+                disabled={isDisconnectingZoho}
+              >
+                {isDisconnectingZoho ? "Disconnecting..." : "Confirm Disconnect"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL 4: IMAP EMAIL CONFIGURATION MODAL */}
       {/* ========================================================================= */}
       {showEmailModal && (
         <div
@@ -578,10 +1739,8 @@ export default function IntegrationsPage() {
               width: "100%",
               boxShadow: "var(--shadow-lg)",
               overflow: "hidden",
-              animation: "fadeIn 0.2s ease-out",
             }}
           >
-            {/* Modal Header */}
             <div
               style={{
                 padding: "20px 24px",
@@ -593,9 +1752,7 @@ export default function IntegrationsPage() {
             >
               <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                 <Mail size={20} color="var(--accent)" />
-                <h3 style={{ fontSize: "17px", fontWeight: "700", color: "var(--text-primary)", margin: 0 }}>
-                  Configure IMAP Email Ingestion
-                </h3>
+                <h3 style={{ fontSize: "17px", fontWeight: "700", margin: 0 }}>Configure IMAP Email Ingestion</h3>
               </div>
               <button
                 onClick={() => setShowEmailModal(false)}
@@ -605,7 +1762,6 @@ export default function IntegrationsPage() {
               </button>
             </div>
 
-            {/* Modal Form */}
             <form onSubmit={handleEmailSave} style={{ padding: "24px" }}>
               <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                 <div>
@@ -620,9 +1776,6 @@ export default function IntegrationsPage() {
                     onChange={(e) => setEmailForm({ ...emailForm, host: e.target.value })}
                     required
                   />
-                  <span style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "4px", display: "block" }}>
-                    Examples: <code>imap.gmail.com</code>, <code>outlook.office365.com</code>
-                  </span>
                 </div>
 
                 <div>
@@ -655,9 +1808,7 @@ export default function IntegrationsPage() {
 
                 <div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                    <label style={{ fontSize: "13px", fontWeight: "600" }}>
-                      App Password
-                    </label>
+                    <label style={{ fontSize: "13px", fontWeight: "600" }}>App Password</label>
                     <button
                       type="button"
                       onClick={() => setShowGuide(!showGuide)}
@@ -673,7 +1824,7 @@ export default function IntegrationsPage() {
                       }}
                     >
                       <BookOpen size={12} />
-                      {showGuide ? "Hide Guide" : "How to generate App Password?"}
+                      {showGuide ? "Hide Guide" : "App Password Guide"}
                     </button>
                   </div>
 
@@ -706,7 +1857,6 @@ export default function IntegrationsPage() {
                   </div>
                 </div>
 
-                {/* Collapsible Setup Guide */}
                 {showGuide && (
                   <div
                     style={{
@@ -723,42 +1873,33 @@ export default function IntegrationsPage() {
                       🔑 Gmail App Password Instructions:
                     </strong>
                     <ol style={{ paddingLeft: "18px", margin: "4px 0" }}>
-                      <li>Go to your Google Account Security settings (2-Step Verification must be enabled).</li>
+                      <li>Go to Google Account Security (2-Step Verification required).</li>
                       <li>Search for <strong>"App passwords"</strong>.</li>
-                      <li>Name the app (e.g. <em>Sakshi Finance</em>) and click Create.</li>
-                      <li>Copy the generated 16-character password into the field above.</li>
+                      <li>Generate a new password and paste it above.</li>
                     </ol>
                   </div>
                 )}
               </div>
 
-              {/* Modal Actions */}
-              <div
-                style={{
-                  marginTop: "24px",
-                  display: "flex",
-                  justifyContent: "flex-end",
-                  gap: "10px",
-                }}
-              >
+              <div style={{ marginTop: "24px", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
                 <button
                   type="button"
                   onClick={() => setShowEmailModal(false)}
                   className="btn btn-secondary"
-                  disabled={isConnecting}
+                  disabled={isConnectingEmail}
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   className="btn btn-primary"
-                  disabled={isConnecting}
+                  disabled={isConnectingEmail}
                   style={{ display: "flex", alignItems: "center", gap: "8px" }}
                 >
-                  {isConnecting ? (
+                  {isConnectingEmail ? (
                     <>
                       <RefreshCw size={14} className="animate-spin" />
-                      Testing & Saving...
+                      Saving & Testing...
                     </>
                   ) : (
                     <>
@@ -776,3 +1917,10 @@ export default function IntegrationsPage() {
   );
 }
 
+export default function IntegrationsPage() {
+  return (
+    <Suspense fallback={<div className="container" style={{ padding: "40px 0" }}>Loading integrations hub...</div>}>
+      <IntegrationsContent />
+    </Suspense>
+  );
+}
