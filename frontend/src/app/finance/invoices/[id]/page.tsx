@@ -991,7 +991,7 @@ export default function InvoiceWorkspacePage() {
                 overflow: "hidden",
               }}
             >
-              {/* Review Panel Header with Action Buttons */}
+              {/* Review Panel Header */}
               <div
                 style={{
                   display: "flex",
@@ -1029,58 +1029,6 @@ export default function InvoiceWorkspacePage() {
                   <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)" }}>
                     Final Invoice & Accounting Workspace
                   </div>
-                </div>
-
-                {/* Top Right Action Buttons: Reject, Approve, Export */}
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  {invoice?.approval_status !== "APPROVED" && (
-                    <button
-                      type="button"
-                      onClick={() => setRejectModalOpen(true)}
-                      className="btn btn-secondary"
-                      style={{
-                        padding: "6px 12px",
-                        fontSize: "12px",
-                        color: "var(--danger)",
-                        borderColor: "var(--border-subtle)",
-                      }}
-                    >
-                      <X size={14} />
-                      <span>Reject</span>
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={handleApprove}
-                    disabled={isApproving || invoice?.approval_status === "APPROVED"}
-                    className="btn btn-secondary"
-                    style={{
-                      padding: "6px 12px",
-                      fontSize: "12px",
-                      color: invoice?.approval_status === "APPROVED" ? "#34c759" : "var(--success)",
-                      borderColor: "var(--border-subtle)",
-                      background: invoice?.approval_status === "APPROVED" ? "#f0fdf4" : undefined,
-                    }}
-                  >
-                    <Check size={14} />
-                    <span>{isApproving ? "Approving..." : invoice?.approval_status === "APPROVED" ? "Approved ✓" : "Approve"}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleExport}
-                    disabled={isExporting || invoice?.approval_status !== "APPROVED" || invoice?.export_status === "EXPORTED"}
-                    className="btn btn-secondary"
-                    style={{
-                      padding: "6px 14px",
-                      fontSize: "12px",
-                      color: invoice?.export_status === "EXPORTED" ? "#34c759" : "var(--accent)",
-                      borderColor: "var(--border-subtle)",
-                    }}
-                    title={invoice?.approval_status !== "APPROVED" ? "Approve the invoice first to export to Zoho Books" : "Export approved bill to Zoho Books"}
-                  >
-                    <Send size={14} />
-                    <span>{isExporting ? "Exporting..." : invoice?.export_status === "EXPORTED" ? "Exported ✓" : "Export"}</span>
-                  </button>
                 </div>
               </div>
 
