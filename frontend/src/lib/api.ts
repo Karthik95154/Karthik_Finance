@@ -345,7 +345,14 @@ export interface HealthResponse {
   timestamp: string;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
+const rawApiBase =
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  "http://127.0.0.1:8000/api/v1";
+
+export const API_BASE = rawApiBase.endsWith("/api/v1")
+  ? rawApiBase.replace(/\/+$/, "")
+  : `${rawApiBase.replace(/\/+$/, "")}/api/v1`;
 
 export async function uploadInvoice(file: File): Promise<UploadResponse> {
   const formData = new FormData();

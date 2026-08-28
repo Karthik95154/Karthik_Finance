@@ -42,6 +42,7 @@ import {
   ZohoMasterDataSummary,
   UserProfile,
   ZohoConnectionState,
+  API_BASE,
 } from "@/lib/api";
 
 const DATA_CENTERS = [
@@ -76,7 +77,7 @@ function SettingsContent() {
   const [showOrgModal, setShowOrgModal] = useState<boolean>(false);
   const [showDisconnectModal, setShowDisconnectModal] = useState<boolean>(false);
   const [selectedAccountsUrl, setSelectedAccountsUrl] = useState<string>("https://accounts.zoho.in");
-  const [customRedirectUri, setCustomRedirectUri] = useState<string>("http://localhost:8000/api/v1/zoho/callback");
+  const [customRedirectUri, setCustomRedirectUri] = useState<string>(() => `${API_BASE}/zoho/callback`);
   const [copiedUri, setCopiedUri] = useState<boolean>(false);
 
   // Notifications
