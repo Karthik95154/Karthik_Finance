@@ -99,6 +99,7 @@ async def delete_staged_document(
 
 
 @router.post("/email/poll")
+@router.post("/inbox/poll")
 async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(get_db)):
     """Triggers live polling of the configured IMAP mailbox to ingest new attachments."""
     import time
