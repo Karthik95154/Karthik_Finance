@@ -36,11 +36,22 @@ export default function InboxPage() {
   } | null>(null);
   const [previewDoc, setPreviewDoc] = useState<StagedDocument | null>(null);
 
+  // Pagination State
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
+
   const loadDocuments = async () => {
     setIsLoading(true);
     try {
       const docs = await listStagedDocuments();
-      setStagedDocs(docs);
+      // Sort docs by received date or created date from latest to oldest
+      const sortedDocs = [...docs].sort((a, b) => {
+        const dateA = new Date(a.email_received_at || a.created_at).getTime();
+        const dateB = new Date(b.email_received_at || b.created_at).getTime();
+        return dateB - dateA;
+      });
+      setStagedDocs(sortedDocs);
+      setCurrentPage(1); // Reset page on load
     } catch (err: any) {
       setNotification({ type: "error", message: err.message || "Failed to load staging queue." });
     } finally {
@@ -125,6 +136,12 @@ export default function InboxPage() {
       {isPolling ? "Checking..." : "Check Mail"}
     </button>
   );
+
+  // Pagination Slice
+  const indexOfLastItem = currentPage * itemsPerPage;
+  const indexOfFirstItem = indexOfLastItem - itemsPerPage;
+  const currentItems = stagedDocs.slice(indexOfFirstItem, indexOfLastItem);
+  const totalPages = Math.ceil(stagedDocs.length / itemsPerPage);
 
   return (
     <AppShell title="Inbox" subtitle="Email Staging Queue" actions={checkMailAction}>
@@ -215,103 +232,153 @@ export default function InboxPage() {
             </p>
           </div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left" }}>
-              <thead>
-                <tr
-                  style={{
-                    background: "#fafafa",
-                    borderBottom: "1px solid var(--border-subtle)",
-                    color: "var(--text-secondary)",
-                    fontWeight: "600",
-                    fontSize: "11px",
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  <th style={{ padding: "14px 20px" }}>Email Source</th>
-                  <th style={{ padding: "14px 20px" }}>Attachment</th>
-                  <th style={{ padding: "14px 20px" }}>Received</th>
-                  <th style={{ padding: "14px 20px", textAlign: "right" }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stagedDocs.map((doc) => (
+          <div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px", textAlign: "left" }}>
+                <thead>
                   <tr
-                    key={doc.id}
-                    style={{ borderBottom: "1px solid var(--border-subtle)" }}
-                    className="hover-row"
+                    style={{
+                      background: "#fafafa",
+                      borderBottom: "1px solid var(--border-subtle)",
+                      color: "var(--text-secondary)",
+                      fontWeight: "600",
+                      fontSize: "11px",
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
+                    }}
                   >
-                    <td style={{ padding: "16px 20px", verticalAlign: "top", maxWidth: "280px" }}>
-                      <div
-                        style={{
-                          fontWeight: "600",
-                          color: "var(--text-primary)",
-                          marginBottom: "4px",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {doc.email_subject || "(No Subject)"}
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                        <User size={11} />
-                        <span>{doc.email_sender}</span>
-                      </div>
-                    </td>
-                    <td style={{ padding: "16px 20px", verticalAlign: "top" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "7px", fontWeight: "500", color: "var(--text-primary)", marginBottom: "4px" }}>
-                        <FileText size={13} color="var(--accent)" />
-                        <span>{doc.file_name}</span>
-                      </div>
-                      <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                        {formatSize(doc.file_size || 0)} · {doc.mime_type}
-                      </div>
-                    </td>
-                    <td style={{ padding: "16px 20px", verticalAlign: "top", color: "var(--text-secondary)", fontSize: "12px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
-                        <Clock size={11} />
-                        <span>{formatTime(doc.email_received_at || doc.created_at)}</span>
-                      </div>
-                    </td>
-                    <td style={{ padding: "16px 20px", verticalAlign: "top", textAlign: "right" }}>
-                      <div style={{ display: "flex", gap: "6px", justifyContent: "flex-end" }}>
-                        <button
-                          onClick={() => setPreviewDoc(doc)}
-                          className="btn btn-secondary"
-                          style={{ padding: "5px 10px", fontSize: "12px", display: "flex", alignItems: "center", gap: "4px" }}
-                          title="Preview file"
-                        >
-                          <Eye size={12} /> Preview
-                        </button>
-                        <button
-                          onClick={() => handleDelete(doc.id)}
-                          className="btn btn-secondary"
-                          style={{ padding: "5px 10px", fontSize: "12px", color: "#dc2626", display: "flex", alignItems: "center", gap: "4px" }}
-                          title="Delete from queue"
-                        >
-                          <Trash2 size={12} />
-                        </button>
-                        <button
-                          onClick={() => handleProcess(doc.id)}
-                          disabled={processingIds.has(doc.id)}
-                          className="btn btn-primary"
-                          style={{ padding: "5px 12px", fontSize: "12px", display: "flex", alignItems: "center", gap: "4px" }}
-                          title="Send to AI pipeline"
-                        >
-                          {processingIds.has(doc.id) ? (
-                            <><RefreshCw size={11} className="animate-spin" /> Queuing...</>
-                          ) : (
-                            <><Play size={11} /> Process</>
-                          )}
-                        </button>
-                      </div>
-                    </td>
+                    <th style={{ padding: "14px 20px" }}>Email Source</th>
+                    <th style={{ padding: "14px 20px" }}>Attachment</th>
+                    <th style={{ padding: "14px 20px" }}>Received</th>
+                    <th style={{ padding: "14px 20px", textAlign: "right" }}>Actions</th>
                   </tr>
+                </thead>
+                <tbody>
+                  {currentItems.map((doc) => (
+                    <tr
+                      key={doc.id}
+                      style={{ borderBottom: "1px solid var(--border-subtle)" }}
+                      className="hover-row"
+                    >
+                      <td style={{ padding: "16px 20px", verticalAlign: "top", maxWidth: "280px" }}>
+                        <div
+                          style={{
+                            fontWeight: "600",
+                            color: "var(--text-primary)",
+                            marginBottom: "4px",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {doc.email_subject || "(No Subject)"}
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                          <User size={11} />
+                          <span>{doc.email_sender}</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: "16px 20px", verticalAlign: "top" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "7px", fontWeight: "500", color: "var(--text-primary)", marginBottom: "4px" }}>
+                          <FileText size={13} color="var(--accent)" />
+                          <span>{doc.file_name}</span>
+                        </div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                          {formatSize(doc.file_size || 0)} · {doc.mime_type}
+                        </div>
+                      </td>
+                      <td style={{ padding: "16px 20px", verticalAlign: "top", color: "var(--text-secondary)", fontSize: "12px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "5px" }}>
+                          <Clock size={11} />
+                          <span>{formatTime(doc.email_received_at || doc.created_at)}</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: "16px 20px", verticalAlign: "top", textAlign: "right" }}>
+                        <div style={{ display: "flex", gap: "6px", justifyContent: "flex-end" }}>
+                          <button
+                            onClick={() => setPreviewDoc(doc)}
+                            className="btn btn-secondary"
+                            style={{ padding: "5px 10px", fontSize: "12px", display: "flex", alignItems: "center", gap: "4px" }}
+                            title="Preview file"
+                          >
+                            <Eye size={12} /> Preview
+                          </button>
+                          <button
+                            onClick={() => handleDelete(doc.id)}
+                            className="btn btn-secondary"
+                            style={{ padding: "5px 10px", fontSize: "12px", color: "#dc2626", display: "flex", alignItems: "center", gap: "4px" }}
+                            title="Delete from queue"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                          <button
+                            onClick={() => handleProcess(doc.id)}
+                            disabled={processingIds.has(doc.id)}
+                            className="btn btn-primary"
+                            style={{ padding: "5px 12px", fontSize: "12px", display: "flex", alignItems: "center", gap: "4px" }}
+                            title="Send to AI pipeline"
+                          >
+                            {processingIds.has(doc.id) ? (
+                              <><RefreshCw size={11} className="animate-spin" /> Queuing...</>
+                            ) : (
+                              <><Play size={11} /> Process</>
+                            )}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "16px 24px",
+                  borderTop: "1px solid var(--border-subtle)",
+                  background: "#fafafa",
+                  gap: "8px",
+                }}
+              >
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="btn btn-secondary"
+                  style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                >
+                  Previous
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNumber) => (
+                  <button
+                    key={pageNumber}
+                    onClick={() => setCurrentPage(pageNumber)}
+                    className={`btn ${currentPage === pageNumber ? "btn-primary" : "btn-secondary"}`}
+                    style={{
+                      padding: "6px 12px",
+                      fontSize: "12.5px",
+                      background: currentPage === pageNumber ? "var(--accent)" : "#ffffff",
+                      color: currentPage === pageNumber ? "#ffffff" : "var(--text-primary)",
+                      minWidth: "36px",
+                    }}
+                  >
+                    {pageNumber}
+                  </button>
                 ))}
-              </tbody>
-            </table>
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="btn btn-secondary"
+                  style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
