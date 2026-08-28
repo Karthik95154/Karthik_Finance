@@ -1720,122 +1720,104 @@ function IntegrationsContent() {
         <div
           style={{
             position: "fixed",
-            inset: 0,
-            background: "rgba(0, 0, 0, 0.5)",
-            backdropFilter: "blur(4px)",
-            zIndex: 1000,
+            top: 0, left: 0, right: 0, bottom: 0,
+            background: "rgba(0,0,0,0.4)",
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
+            zIndex: 1000,
+            backdropFilter: "blur(2px)",
             padding: "20px",
           }}
         >
           <div
-            className="card"
             style={{
+              display: "flex",
+              alignItems: "stretch",
               background: "#ffffff",
               borderRadius: "var(--radius-md)",
-              maxWidth: "520px",
-              width: "100%",
-              boxShadow: "var(--shadow-lg)",
               overflow: "hidden",
+              boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1)",
+              maxWidth: showGuide ? "900px" : "460px",
+              width: "100%",
+              transition: "max-width 0.25s ease-in-out",
+              position: "relative",
             }}
           >
-            <div
-              style={{
-                padding: "20px 24px",
-                borderBottom: "1px solid var(--border-subtle)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <Mail size={20} color="var(--accent)" />
-                <h3 style={{ fontSize: "17px", fontWeight: "700", margin: 0 }}>Configure IMAP Email Ingestion</h3>
-              </div>
+            {/* Form Panel */}
+            <div style={{ flex: 1, padding: "28px", minWidth: "320px", position: "relative" }}>
+              {/* Setup Guide toggle */}
               <button
-                onClick={() => setShowEmailModal(false)}
-                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)" }}
+                type="button"
+                onClick={() => setShowGuide(!showGuide)}
+                style={{
+                  position: "absolute", top: "22px", left: "24px",
+                  background: "#f5f5f7", border: "none", cursor: "pointer",
+                  color: showGuide ? "var(--accent)" : "var(--text-secondary)",
+                  display: "flex", alignItems: "center", gap: "6px",
+                  fontSize: "12px", fontWeight: "600",
+                  padding: "4px 8px", borderRadius: "4px",
+                }}
               >
-                <X size={18} />
+                <BookOpen size={14} /> Setup Guide
               </button>
-            </div>
 
-            <form onSubmit={handleEmailSave} style={{ padding: "24px" }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                <div>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "6px" }}>
-                    IMAP Host Server
-                  </label>
-                  <input
-                    type="text"
-                    className="input-field"
-                    placeholder="imap.gmail.com"
-                    value={emailForm.host}
-                    onChange={(e) => setEmailForm({ ...emailForm, host: e.target.value })}
-                    required
-                  />
-                </div>
+              {/* Close */}
+              <button
+                type="button"
+                onClick={() => setShowEmailModal(false)}
+                style={{
+                  position: "absolute", top: "22px", right: "24px",
+                  background: "none", border: "none", cursor: "pointer",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                <X size={20} />
+              </button>
 
-                <div>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "6px" }}>
-                    Port (SSL/TLS)
-                  </label>
-                  <input
-                    type="number"
-                    className="input-field"
-                    placeholder="993"
-                    value={emailForm.port}
-                    onChange={(e) => setEmailForm({ ...emailForm, port: e.target.value })}
-                    required
-                  />
-                </div>
+              <div style={{ marginTop: "36px", marginBottom: "20px" }}>
+                <h3 style={{ fontSize: "18px", fontWeight: "700", marginBottom: "4px" }}>
+                  Configure Email Integration
+                </h3>
+                <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+                  Enter your IMAP server connection details.
+                </p>
+              </div>
 
-                <div>
-                  <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "6px" }}>
-                    Email Address
-                  </label>
-                  <input
-                    type="email"
-                    className="input-field"
-                    placeholder="invoices@company.com"
-                    value={emailForm.email}
-                    onChange={(e) => setEmailForm({ ...emailForm, email: e.target.value })}
-                    required
-                  />
-                </div>
-
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                    <label style={{ fontSize: "13px", fontWeight: "600" }}>App Password</label>
-                    <button
-                      type="button"
-                      onClick={() => setShowGuide(!showGuide)}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        fontSize: "12px",
-                        color: "var(--accent)",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "4px",
-                      }}
-                    >
-                      <BookOpen size={12} />
-                      {showGuide ? "Hide Guide" : "App Password Guide"}
-                    </button>
+              <form onSubmit={handleEmailSave}>
+                {[
+                  { label: "IMAP Server Host", key: "host", type: "text", placeholder: "imap.gmail.com" },
+                  { label: "IMAP Port", key: "port", type: "text", placeholder: "993" },
+                  { label: "Email Address", key: "email", type: "email", placeholder: "finance@company.com" },
+                ].map(({ label, key, type, placeholder }) => (
+                  <div key={key} style={{ marginBottom: "14px" }}>
+                    <label style={{ display: "block", marginBottom: "6px", fontSize: "13px", fontWeight: "500" }}>
+                      {label}
+                    </label>
+                    <input
+                      type={type}
+                      className="form-input"
+                      value={(emailForm as any)[key]}
+                      onChange={(e) => setEmailForm((p) => ({ ...p, [key]: e.target.value }))}
+                      placeholder={placeholder}
+                      style={{ width: "100%", padding: "8px 12px", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-sm)" }}
+                      required
+                    />
                   </div>
+                ))}
 
+                <div style={{ marginBottom: "24px" }}>
+                  <label style={{ display: "block", marginBottom: "6px", fontSize: "13px", fontWeight: "500" }}>
+                    App Password
+                  </label>
                   <div style={{ position: "relative" }}>
                     <input
                       type={showPassword ? "text" : "password"}
-                      className="input-field"
-                      placeholder={isEmailConnected ? "•••••••••••••••• (Leave blank to keep existing)" : "16-character App Password"}
+                      className="form-input"
+                      placeholder={isEmailConnected ? "••••••••••••••••" : "Enter 16-character app password"}
                       value={emailForm.password}
-                      onChange={(e) => setEmailForm({ ...emailForm, password: e.target.value })}
-                      style={{ paddingRight: "40px" }}
+                      onChange={(e) => setEmailForm((p) => ({ ...p, password: e.target.value }))}
+                      style={{ width: "100%", padding: "8px 12px", paddingRight: "40px", border: "1px solid var(--border-subtle)", borderRadius: "var(--radius-sm)" }}
                       required={!isEmailConnected}
                     />
                     <button
@@ -1857,59 +1839,85 @@ function IntegrationsContent() {
                   </div>
                 </div>
 
-                {showGuide && (
+                <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowEmailModal(false)}
+                    className="btn btn-secondary"
+                    disabled={isConnectingEmail}
+                  >
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn btn-primary" disabled={isConnectingEmail}>
+                    {isConnectingEmail ? "Connecting..." : "Save Connection"}
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            {/* Expandable Setup Guide */}
+            {showGuide && (
+              <div
+                style={{
+                  width: "400px",
+                  borderLeft: "1px solid var(--border-subtle)",
+                  backgroundColor: "#fafafa",
+                  padding: "28px",
+                  overflowY: "auto",
+                  maxHeight: "520px",
+                }}
+              >
+                <h4 style={{ fontSize: "15px", fontWeight: "700", marginBottom: "14px", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <BookOpen size={15} color="var(--accent)" />
+                  Setup Guide (Gmail / M365)
+                </h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: "14px", fontSize: "12.5px", lineHeight: "1.5" }}>
+                  <div>
+                    <div style={{ fontWeight: "600", marginBottom: "3px" }}>1. Enable IMAP Access</div>
+                    <div style={{ color: "var(--text-secondary)" }}>
+                      Turn on IMAP in Gmail Settings (Forwarding and POP/IMAP) or Office 365 dashboard.
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: "600", marginBottom: "3px" }}>2. Enable Two-Step Verification</div>
+                    <div style={{ color: "var(--text-secondary)" }}>
+                      Go to{" "}
+                      <a href="https://myaccount.google.com/" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                        Google Settings
+                      </a>{" "}
+                      → Security → Turn on 2-Step Verification.
+                    </div>
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: "600", marginBottom: "3px" }}>3. Generate an App Password</div>
+                    <div style={{ color: "var(--text-secondary)" }}>
+                      Go to{" "}
+                      <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                        App Passwords
+                      </a>
+                      , select Mail, and click Create to get your 16-character code.
+                    </div>
+                  </div>
                   <div
                     style={{
-                      background: "#f8fafc",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: "var(--radius-sm)",
-                      padding: "14px",
-                      fontSize: "12px",
-                      color: "var(--text-secondary)",
-                      lineHeight: "1.6",
+                      background: "#fffbeb",
+                      border: "1px solid #fef3c7",
+                      color: "#b45309",
+                      padding: "8px 10px",
+                      borderRadius: "4px",
+                      display: "flex",
+                      gap: "6px",
+                      fontSize: "11px",
                     }}
                   >
-                    <strong style={{ color: "var(--text-primary)", display: "block", marginBottom: "4px" }}>
-                      🔑 Gmail App Password Instructions:
-                    </strong>
-                    <ol style={{ paddingLeft: "18px", margin: "4px 0" }}>
-                      <li>Go to Google Account Security (2-Step Verification required).</li>
-                      <li>Search for <strong>"App passwords"</strong>.</li>
-                      <li>Generate a new password and paste it above.</li>
-                    </ol>
+                    <ShieldCheck size={13} style={{ flexShrink: 0, marginTop: "2px" }} />
+                    <div>
+                      <strong>Warning:</strong> Never use your normal Gmail password. Only use the generated 16-character App Password.
+                    </div>
                   </div>
-                )}
+                </div>
               </div>
-
-              <div style={{ marginTop: "24px", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
-                <button
-                  type="button"
-                  onClick={() => setShowEmailModal(false)}
-                  className="btn btn-secondary"
-                  disabled={isConnectingEmail}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="btn btn-primary"
-                  disabled={isConnectingEmail}
-                  style={{ display: "flex", alignItems: "center", gap: "8px" }}
-                >
-                  {isConnectingEmail ? (
-                    <>
-                      <RefreshCw size={14} className="animate-spin" />
-                      Saving & Testing...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 size={14} />
-                      Save & Test Connection
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
+            )}
           </div>
         </div>
       )}
