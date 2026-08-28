@@ -22,7 +22,13 @@ export default function RootLayout({
                 <span className="brand-badge">Stage 1 Foundation</span>
               </a>
             </div>
-            <nav>
+            <nav style={{ display: "flex", gap: "10px" }}>
+              <a href="/finance/integrations" className="btn btn-secondary" style={{ padding: "6px 12px", fontSize: "13px" }}>
+                Integrations
+              </a>
+              <a href="/finance/inbox" className="btn btn-secondary" style={{ padding: "6px 12px", fontSize: "13px" }}>
+                Staging Queue
+              </a>
               <a href="/finance/upload" className="btn btn-secondary" style={{ padding: "6px 12px", fontSize: "13px" }}>
                 Upload Invoice
               </a>

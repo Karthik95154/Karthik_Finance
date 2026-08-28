@@ -4,6 +4,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.health import router as health_router
 from app.api.v1.invoices import router as invoices_router
+from app.api.v1.settings import router as settings_router
+from app.api.v1.inbox import router as inbox_router
 from app.core.config import settings
 
 logging.basicConfig(
@@ -40,6 +42,8 @@ app.add_middleware(
 # API v1 routes
 app.include_router(health_router, prefix=settings.API_V1_STR)
 app.include_router(invoices_router, prefix=settings.API_V1_STR)
+app.include_router(settings_router, prefix=settings.API_V1_STR)
+app.include_router(inbox_router, prefix=settings.API_V1_STR)
 
 
 @app.get("/")
