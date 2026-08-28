@@ -108,22 +108,19 @@ def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str
         if total_messages > 0:
             start_seq = max(1, total_messages - scan_limit + 1)
             end_seq = total_messages
-            # Fetch headers and BODYSTRUCTURE for range in a single batch request
-            logger.info(f"Fetching headers & BODYSTRUCTURE in batch for messages {start_seq} to {end_seq}...")
+            # Fetch headers for range in a single batch request
+            logger.info(f"Fetching headers in batch for messages {start_seq} to {end_seq}...")
             range_str = f"{start_seq}:{end_seq}"
             try:
-                res, batch_data = mail.fetch(range_str, "(BODYSTRUCTURE BODY[HEADER.FIELDS (DATE SUBJECT FROM MESSAGE-ID CONTENT-TYPE)])")
+                res, batch_data = mail.fetch(range_str, "(BODY[HEADER.FIELDS (DATE SUBJECT FROM MESSAGE-ID CONTENT-TYPE)])")
                 if res == "OK" and batch_data:
                     for item in batch_data:
                         if isinstance(item, tuple):
-                            # Parse sequence number from response header prefix (e.g. b'5538 (BODYSTRUCTURE ...')
+                            # Parse sequence number from response header prefix (e.g. b'5538 (BODY[HEADER...')
                             meta_part = item[0].decode("utf-8", errors="ignore").strip()
                             seq_num = meta_part.split()[0]
                             header_bytes = item[1]
-                            headers_map[seq_num] = {
-                                "header_bytes": header_bytes,
-                                "meta_str": meta_part
-                            }
+                            headers_map[seq_num] = header_bytes
             except Exception as batch_err:
                 logger.error(f"Failed to fetch headers in batch: {batch_err}. Falling back to sequential fetch.")
             
@@ -133,53 +130,74 @@ def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str
         logger.info(f"MESSAGES RETURNED = {len(email_ids)}")
         header_fetch_time_ms = (time.perf_counter() - start_header) * 1000.0
         
-        # Iterate over emails in reverse order (most recent first)
-        for msg_id_str in reversed(email_ids):
+        # Parse dates and filter sequence numbers within the window
+        candidate_ids = []
+        email_metadata_map = {}
+        
+        for msg_id_str in email_ids:
+            header_bytes = headers_map.get(msg_id_str)
+            if not header_bytes:
+                continue
             try:
-                # Retrieve header bytes and meta_str
-                batch_entry = headers_map.get(msg_id_str)
-                header_bytes = None
-                meta_str = ""
-                if batch_entry:
-                    header_bytes = batch_entry.get("header_bytes")
-                    meta_str = batch_entry.get("meta_str", "")
-                
-                if not header_bytes:
-                    start_single_header = time.perf_counter()
-                    logger.info(f"Header missing from batch for message {msg_id_str}. Fetching sequentially...")
-                    res, header_data = mail.fetch(msg_id_str.encode("utf-8"), "(BODYSTRUCTURE BODY[HEADER.FIELDS (DATE SUBJECT FROM MESSAGE-ID CONTENT-TYPE)])")
-                    if res == "OK" and header_data and header_data[0]:
-                        meta_str = header_data[0][0].decode("utf-8", errors="ignore")
-                        header_bytes = header_data[0][1]
-                    header_fetch_time_ms += (time.perf_counter() - start_single_header) * 1000.0
-                        
-                if not header_bytes:
-                    logger.warning(f"Could not retrieve header bytes for ID {msg_id_str}.")
-                    continue
-                    
                 msg_headers = email.message_from_bytes(header_bytes)
-                
-                # Extract headers
-                subject = clean_header(msg_headers.get("Subject", "(No Subject)"))
-                sender = clean_header(msg_headers.get("From", ""))
                 raw_date_header = msg_headers.get("Date", "")
                 received_date = parse_email_date(raw_date_header)
-                message_id = msg_headers.get("Message-ID", "")
-                content_type_header = clean_header(msg_headers.get("Content-Type", ""))
                 
-                logger.info(f"MESSAGE {msg_id_str} | date: {raw_date_header} | subject: {subject} | sender: {sender}")
+                # Check if it is within the window hours
+                if received_date >= poll_start_time:
+                    candidate_ids.append(msg_id_str)
+                    email_metadata_map[msg_id_str] = {
+                        "subject": clean_header(msg_headers.get("Subject", "(No Subject)")),
+                        "sender": clean_header(msg_headers.get("From", "")),
+                        "received_date": received_date,
+                        "message_id": msg_headers.get("Message-ID", ""),
+                    }
+            except Exception as e:
+                logger.warning(f"Error pre-parsing headers for message {msg_id_str}: {e}")
                 
-                # Enforce the window hours application-side
-                is_within_start = (received_date >= poll_start_time)
-                if not is_within_start:
-                    logger.info(f"  EMAIL EXCLUDED: Date {received_date.isoformat()} is older than the polling start window {poll_start_time.isoformat()}")
+        # Batch fetch BODYSTRUCTURE for candidate sequence numbers
+        bodystructures_map = {}
+        if candidate_ids:
+            seqs_str = ",".join(candidate_ids)
+            logger.info(f"Fetching BODYSTRUCTURE in batch for {len(candidate_ids)} candidate messages...")
+            try:
+                res, bs_data = mail.fetch(seqs_str.encode("utf-8"), "(BODYSTRUCTURE)")
+                if res == "OK" and bs_data:
+                    for item in bs_data:
+                        raw_bytes = item[0] if isinstance(item, tuple) else item
+                        if isinstance(raw_bytes, bytes):
+                            meta_part = raw_bytes.decode("utf-8", errors="ignore").strip()
+                            parts = meta_part.split(maxsplit=2)
+                            if len(parts) >= 3:
+                                seq_num = parts[0]
+                                bs_str = parts[2]
+                                bodystructures_map[seq_num] = bs_str
+            except Exception as bs_err:
+                logger.error(f"Failed to fetch BODYSTRUCTURE in batch: {bs_err}")
+
+        # Iterate over candidate emails in reverse order (most recent first)
+        for msg_id_str in reversed(candidate_ids):
+            try:
+                metadata = email_metadata_map.get(msg_id_str)
+                if not metadata:
                     continue
                 
-                # Optimize: Check if BODYSTRUCTURE contains any allowed attachment extensions
-                import re
+                subject = metadata["subject"]
+                sender = metadata["sender"]
+                received_date = metadata["received_date"]
+                message_id = metadata["message_id"]
+                
+                logger.info(f"MESSAGE {msg_id_str} | date: {received_date} | subject: {subject} | sender: {sender}")
+                
+                # Retrieve BODYSTRUCTURE
+                meta_str = bodystructures_map.get(msg_id_str)
+                
+                # Optimize: Check if BODYSTRUCTURE contains any allowed attachment extensions.
+                # Loose case-insensitive search to guarantee ZERO false negatives.
                 has_candidate = False
                 if meta_str:
-                    if re.search(r'\.(pdf|png|jpg|jpeg|tif|tiff)(?:\s|"|\))', meta_str, re.IGNORECASE):
+                    meta_lower = meta_str.lower()
+                    if any(ext in meta_lower for ext in ("pdf", "png", "jpg", "jpeg", "tif", "tiff")):
                         has_candidate = True
                 
                 if not has_candidate:
