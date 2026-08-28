@@ -18,6 +18,7 @@ class Settings(BaseSettings):
         "http://localhost:3002",
         "http://127.0.0.1:3002",
     ]
+    FRONTEND_URL: str = "http://localhost:3002"
 
     # Supabase Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/postgres"

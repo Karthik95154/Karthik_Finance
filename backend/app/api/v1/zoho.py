@@ -87,9 +87,7 @@ async def zoho_oauth_callback(
     encrypts tokens at rest, and saves connection details.
     Redirects browser seamlessly back to the frontend settings/connection page.
     """
-    frontend_base = "http://localhost:3000/finance/settings"
-    if settings.CORS_ORIGINS and len(settings.CORS_ORIGINS) > 0:
-        frontend_base = f"{settings.CORS_ORIGINS[0].rstrip('/')}/finance/settings"
+    frontend_base = f"{settings.FRONTEND_URL.rstrip('/')}/finance/settings"
 
     # Handle user denial or OAuth error
     if error:
