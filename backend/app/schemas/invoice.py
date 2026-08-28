@@ -1,6 +1,6 @@
 from datetime import datetime
 from uuid import UUID
-from typing import Optional, Any, Dict
+from typing import Optional, Any, Dict, List
 from pydantic import BaseModel, ConfigDict
 
 
@@ -22,6 +22,8 @@ class InvoiceStatusResponse(BaseModel):
     invoice_id: UUID
     status: str
     accounting_status: Optional[str] = None
+    approval_status: Optional[str] = "PENDING_REVIEW"
+    export_status: Optional[str] = "NOT_EXPORTED"
     error_message: Optional[str] = None
     confidence_score: Optional[float] = None
     accounting_confidence: Optional[float] = None
@@ -32,6 +34,7 @@ class InvoiceResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    tenant_id: Optional[str] = "default-tenant-001"
     file_path: str
     file_name: str
     file_size: int
@@ -39,6 +42,13 @@ class InvoiceResponse(BaseModel):
     file_hash: str
     status: str
     accounting_status: Optional[str] = None
+    approval_status: Optional[str] = "PENDING_REVIEW"
+    export_status: Optional[str] = "NOT_EXPORTED"
+    invoice_type: Optional[str] = "VENDOR_INVOICE"
+    zoho_bill_id: Optional[str] = None
+    zoho_bill_number: Optional[str] = None
+    exported_at: Optional[datetime] = None
+    locked_at: Optional[datetime] = None
     error_message: Optional[str] = None
     confidence_score: Optional[float] = None
     accounting_confidence: Optional[float] = None
@@ -59,11 +69,16 @@ class InvoiceListItemResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    tenant_id: Optional[str] = "default-tenant-001"
     file_name: str
     file_size: int
     mime_type: str
     status: str
     accounting_status: Optional[str] = None
+    approval_status: Optional[str] = "PENDING_REVIEW"
+    export_status: Optional[str] = "NOT_EXPORTED"
+    zoho_bill_id: Optional[str] = None
+    zoho_bill_number: Optional[str] = None
     vendor_name: Optional[str] = None
     invoice_number: Optional[str] = None
     total_amount: Optional[float] = None

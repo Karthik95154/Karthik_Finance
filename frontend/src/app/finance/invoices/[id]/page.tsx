@@ -8,6 +8,10 @@ import {
   updateInvoiceExtraction,
   triggerAccountingCategorization,
   listInvoices,
+  getJournalPreview,
+  approveInvoice,
+  rejectInvoice,
+  exportInvoiceToZoho,
   Invoice,
   InvoiceListItem,
   ExtractedInvoiceData,
@@ -17,6 +21,7 @@ import {
   AccountingOutput,
   AccountingLineItem,
   TdsResult,
+  JournalPreviewResponse,
 } from "@/lib/api";
 import {
   ArrowLeft,
@@ -40,6 +45,10 @@ import {
   BookOpen,
   Scale,
   RefreshCw,
+  CheckCircle,
+  AlertTriangle,
+  Link as LinkIcon,
+  ShieldCheck,
 } from "lucide-react";
 
 // Helper to parse clean numeric values including currency strings like "Rupees 35,36,917.24" or "Rs. 248,417.88"
@@ -208,9 +217,15 @@ export default function InvoiceWorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isCategorizing, setIsCategorizing] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [journalPreview, setJournalPreview] = useState<JournalPreviewResponse | null>(null);
 
   // Editable form state
   const [formData, setFormData] = useState<ExtractedInvoiceData>({});
@@ -223,13 +238,15 @@ export default function InvoiceWorkspacePage() {
     async function loadData() {
       try {
         setLoading(true);
-        const [invData, listData] = await Promise.all([
+        const [invData, listData, jPreview] = await Promise.all([
           getInvoice(invoiceId),
           listInvoices().catch(() => []),
+          getJournalPreview(invoiceId).catch(() => null),
         ]);
 
         setInvoice(invData);
         setWorkflowInvoices(listData);
+        if (jPreview) setJournalPreview(jPreview);
 
         // If still in initial stages, route to processing page
         if (
@@ -436,6 +453,10 @@ export default function InvoiceWorkspacePage() {
       );
       setInvoice(updated);
       setSaveSuccess(true);
+
+      // Refresh journal preview with saved changes
+      getJournalPreview(invoiceId).then(setJournalPreview).catch(() => null);
+
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
       setError(err.message || "Failed to save changes.");
@@ -444,12 +465,125 @@ export default function InvoiceWorkspacePage() {
     }
   };
 
-  // Dummy action buttons notice
-  const handleDummyAction = (actionName: string) => {
-    setActionNotice(
-      `"${actionName}" action triggered (Stage 3 Dummy UI). Real accounting sync will activate in later stages.`
-    );
-    setTimeout(() => setActionNotice(null), 4000);
+  // Real Approval Action Handler
+  const handleApprove = async () => {
+    try {
+      setIsApproving(true);
+      setError(null);
+
+      // 1. Ensure all line items have Finance-approved Chart of Accounts populated
+      const currentLines = [...(accountingData.accounting || [])];
+      if (!currentLines || currentLines.length === 0) {
+        throw new Error("No accounting classifications available. Please click 'Re-run Accounting' first.");
+      }
+
+      const updatedLines = currentLines.map((item, idx) => {
+        const approvedId =
+          item.approved_account_id ||
+          item.final_account_id ||
+          item.ai_account_id ||
+          `ACC_${idx + 1}`;
+        const approvedName =
+          item.approved_account_name ||
+          item.final_account_name ||
+          item.ai_account_name ||
+          "General Expenses";
+        return {
+          ...item,
+          approved_account_id: approvedId,
+          approved_account_name: approvedName,
+          final_account_id: approvedId,
+          final_account_name: approvedName,
+        };
+      });
+
+      const updatedAccounting = {
+        ...accountingData,
+        accounting: updatedLines,
+      };
+
+      // 2. Persist the approved accounts and form data to backend
+      let parsedAdditional = formData.additional_fields || {};
+      if (additionalFieldsText.trim()) {
+        try {
+          parsedAdditional = JSON.parse(additionalFieldsText);
+        } catch {
+          parsedAdditional = { raw_notes: additionalFieldsText };
+        }
+      }
+
+      const updatedVlmPayload: RawVlmOutput = {
+        ...(invoice?.current_vlm_output || invoice?.raw_vlm_output || {}),
+        data: {
+          ...formData,
+          additional_fields: parsedAdditional,
+        },
+      };
+
+      await updateInvoiceExtraction(
+        invoiceId,
+        updatedVlmPayload,
+        updatedAccounting
+      );
+      setAccountingData(updatedAccounting);
+
+      // 3. Execute authoritative Finance Approval and generate General Ledger Journal
+      await approveInvoice(invoiceId);
+      setActionNotice("Invoice approved and balanced double-entry journal created!");
+      setTimeout(() => setActionNotice(null), 4000);
+      
+      const [updatedInv, updatedJournal] = await Promise.all([
+        getInvoice(invoiceId),
+        getJournalPreview(invoiceId).catch(() => null),
+      ]);
+      setInvoice(updatedInv);
+      if (updatedJournal) setJournalPreview(updatedJournal);
+    } catch (err: any) {
+      setError(err.message || "Failed to approve invoice.");
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  // Real Rejection Action Handler
+  const handleRejectConfirm = async () => {
+    if (!rejectReason.trim()) {
+      setError("Please enter a rejection reason.");
+      return;
+    }
+    try {
+      setIsRejecting(true);
+      setError(null);
+      await rejectInvoice(invoiceId, rejectReason);
+      setRejectModalOpen(false);
+      setRejectReason("");
+      setActionNotice("Invoice rejected.");
+      setTimeout(() => setActionNotice(null), 4000);
+      
+      const updatedInv = await getInvoice(invoiceId);
+      setInvoice(updatedInv);
+    } catch (err: any) {
+      setError(err.message || "Failed to reject invoice.");
+    } finally {
+      setIsRejecting(false);
+    }
+  };
+
+  // Real Zoho Export Action Handler
+  const handleExport = async () => {
+    try {
+      setIsExporting(true);
+      setError(null);
+      const res = await exportInvoiceToZoho(invoiceId);
+      setActionNotice(`Successfully exported to Zoho Books! Bill #${res.zoho_bill_number || res.zoho_bill_id}`);
+      
+      const updatedInv = await getInvoice(invoiceId);
+      setInvoice(updatedInv);
+    } catch (err: any) {
+      setError(err.message || "Failed to export invoice to Zoho Books.");
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   // Categorized invoice workflow lists
@@ -460,7 +594,10 @@ export default function InvoiceWorkspacePage() {
       inv.status === "PROCESSING_ACCOUNTING"
   );
   const extractedInvoices = workflowInvoices.filter(
-    (inv) => inv.status === "COMPLETED"
+    (inv) => inv.status === "COMPLETED" && inv.export_status !== "EXPORTED"
+  );
+  const exportedInvoices = workflowInvoices.filter(
+    (inv) => inv.export_status === "EXPORTED" || Boolean(inv.zoho_bill_id)
   );
 
   const accountingLines: AccountingLineItem[] =
@@ -689,8 +826,25 @@ export default function InvoiceWorkspacePage() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: "11px", fontWeight: "700", letterSpacing: "0.06em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
-                    AI Extraction Review
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: "700", letterSpacing: "0.06em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                      AI Extraction Review
+                    </span>
+                    {invoice?.approval_status === "APPROVED" && (
+                      <span className="badge badge-success" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                        <Check size={10} /> Approved
+                      </span>
+                    )}
+                    {invoice?.approval_status === "REJECTED" && (
+                      <span className="badge badge-danger" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                        <X size={10} /> Rejected
+                      </span>
+                    )}
+                    {invoice?.export_status === "EXPORTED" && (
+                      <span className="badge badge-uploaded" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                        <Send size={10} /> Zoho Synced
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)" }}>
                     Final Invoice & Accounting Workspace
@@ -701,7 +855,8 @@ export default function InvoiceWorkspacePage() {
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <button
                     type="button"
-                    onClick={() => handleDummyAction("Reject")}
+                    onClick={() => setRejectModalOpen(true)}
+                    disabled={isRejecting || isApproving || isExporting}
                     className="btn btn-secondary"
                     style={{
                       padding: "6px 12px",
@@ -711,35 +866,44 @@ export default function InvoiceWorkspacePage() {
                     }}
                   >
                     <X size={14} />
-                    <span>Reject</span>
+                    <span>{isRejecting ? "Rejecting..." : "Reject"}</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleDummyAction("Approve")}
+                    onClick={handleApprove}
+                    disabled={isApproving || isRejecting || isExporting || invoice?.approval_status === "APPROVED"}
                     className="btn btn-secondary"
                     style={{
                       padding: "6px 12px",
                       fontSize: "12px",
-                      color: "var(--success)",
+                      color: invoice?.approval_status === "APPROVED" ? "#16a34a" : "var(--success)",
                       borderColor: "var(--border-subtle)",
+                      background: invoice?.approval_status === "APPROVED" ? "#f0fdf4" : undefined,
                     }}
                   >
                     <Check size={14} />
-                    <span>Approve</span>
+                    <span>{isApproving ? "Approving..." : invoice?.approval_status === "APPROVED" ? "Approved ✓" : "Approve"}</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleDummyAction("Export")}
-                    className="btn btn-secondary"
+                    onClick={handleExport}
+                    disabled={isExporting || isApproving || invoice?.approval_status !== "APPROVED" || invoice?.export_status === "EXPORTED"}
+                    className="btn btn-primary"
                     style={{
-                      padding: "6px 12px",
+                      padding: "6px 14px",
                       fontSize: "12px",
-                      color: "var(--accent)",
-                      borderColor: "var(--border-subtle)",
+                      opacity: invoice?.approval_status !== "APPROVED" && invoice?.export_status !== "EXPORTED" ? 0.6 : 1,
                     }}
+                    title={invoice?.approval_status !== "APPROVED" ? "Approve the invoice first to export to Zoho Books" : "Export approved bill to Zoho Books"}
                   >
                     <Send size={14} />
-                    <span>Export</span>
+                    <span>
+                      {isExporting
+                        ? "Exporting to Zoho..."
+                        : invoice?.export_status === "EXPORTED"
+                        ? `Zoho Bill: ${invoice.zoho_bill_number || invoice.zoho_bill_id || "Exported"}`
+                        : "Export to Zoho"}
+                    </span>
                   </button>
                 </div>
               </div>
@@ -1412,17 +1576,59 @@ export default function InvoiceWorkspacePage() {
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={handleRunAccounting}
-                      disabled={isCategorizing}
-                      className="btn btn-secondary"
-                      style={{ padding: "4px 10px", fontSize: "12px" }}
-                      title="Send current invoice JSON to Qwen3-4B without re-running VLM"
-                    >
-                      <RefreshCw size={12} className={isCategorizing ? "animate-spin" : ""} />
-                      <span>{isCategorizing ? "Running..." : "Re-run Accounting"}</span>
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAccountingData((prev) => {
+                            const list = (prev.accounting || []).map((acc, i) => {
+                              const approvedId =
+                                acc.approved_account_id ||
+                                acc.final_account_id ||
+                                acc.ai_account_id ||
+                                `ACC_${i + 1}`;
+                              const approvedName =
+                                acc.approved_account_name ||
+                                acc.final_account_name ||
+                                acc.ai_account_name ||
+                                "General Expenses";
+                              return {
+                                ...acc,
+                                approved_account_id: approvedId,
+                                approved_account_name: approvedName,
+                                final_account_id: approvedId,
+                                final_account_name: approvedName,
+                              };
+                            });
+                            return { ...prev, accounting: list };
+                          });
+                        }}
+                        className="btn btn-secondary"
+                        style={{
+                          padding: "4px 10px",
+                          fontSize: "12px",
+                          background: "#f0fdf4",
+                          color: "#166534",
+                          borderColor: "#bbf7d0",
+                        }}
+                        title="Accept and approve all AI suggested Chart of Accounts line items"
+                      >
+                        <Check size={12} />
+                        <span>Accept All Accounts</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleRunAccounting}
+                        disabled={isCategorizing}
+                        className="btn btn-secondary"
+                        style={{ padding: "4px 10px", fontSize: "12px" }}
+                        title="Send current invoice JSON to Qwen3-4B without re-running VLM"
+                      >
+                        <RefreshCw size={12} className={isCategorizing ? "animate-spin" : ""} />
+                        <span>{isCategorizing ? "Running..." : "Re-run Accounting"}</span>
+                      </button>
+                    </div>
                   </div>
 
                   <div
@@ -1438,64 +1644,106 @@ export default function InvoiceWorkspacePage() {
                         <tr style={{ background: "#f9f9fb", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", textAlign: "left" }}>
                           <th style={{ padding: "8px 8px", width: "30px" }}>#</th>
                           <th style={{ padding: "8px 8px", minWidth: "180px" }}>Item Description</th>
-                          <th style={{ padding: "8px 8px", minWidth: "220px" }}>Suggested Account (COA)</th>
-                          <th style={{ padding: "8px 8px", width: "90px" }}>Account Code</th>
-                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Confidence</th>
-                          <th style={{ padding: "8px 8px", width: "90px", textAlign: "center" }}>Status</th>
+                          <th style={{ padding: "8px 8px", minWidth: "220px" }}>Finance-Approved Account (COA)</th>
+                          <th style={{ padding: "8px 8px", width: "110px" }}>Account ID</th>
+                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>AI Confidence</th>
+                          <th style={{ padding: "8px 8px", width: "130px", textAlign: "center" }}>Approval Status</th>
                         </tr>
                       </thead>
                       <tbody>
                         {accountingLines && accountingLines.length > 0 ? (
-                          accountingLines.map((acc, idx) => (
-                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                              <td style={{ padding: "8px", color: "var(--text-tertiary)", textAlign: "center" }}>
-                                {acc.line_index || idx + 1}
-                              </td>
-                              <td style={{ padding: "8px", fontWeight: "500" }}>
-                                {acc.source_description || formData.line_items?.[idx]?.description || "-"}
-                              </td>
-                              <td style={{ padding: "8px" }}>
-                                <input
-                                  type="text"
-                                  className="table-input"
-                                  value={acc.final_account_name ?? acc.ai_account_name ?? ""}
-                                  placeholder="Suggested Account"
-                                  onChange={(e) => handleAccountingItemChange(idx, "final_account_name", e.target.value)}
-                                />
-                              </td>
-                              <td style={{ padding: "8px" }}>
-                                <code>{acc.final_account_id ?? acc.ai_account_id ?? "-"}</code>
-                              </td>
-                              <td style={{ padding: "8px", textAlign: "center" }}>
-                                {acc.ai_confidence !== undefined && acc.ai_confidence !== null ? (
-                                  <span
-                                    className={`badge ${acc.ai_confidence >= 0.85
-                                        ? "badge-success"
-                                        : acc.ai_confidence >= 0.6
-                                          ? "badge-uploaded"
-                                          : "badge-danger"
-                                      }`}
-                                    style={{ fontSize: "11px" }}
-                                  >
-                                    {Math.round(acc.ai_confidence * 100)}%
-                                  </span>
-                                ) : (
-                                  "-"
-                                )}
-                              </td>
-                              <td style={{ padding: "8px", textAlign: "center" }}>
-                                {acc.ai_needs_review ? (
-                                  <span className="badge badge-danger" style={{ fontSize: "10px" }}>
-                                    Review
-                                  </span>
-                                ) : (
-                                  <span className="badge badge-success" style={{ fontSize: "10px" }}>
-                                    Matched
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          ))
+                          accountingLines.map((acc, idx) => {
+                            const isApproved = Boolean(acc.approved_account_id || acc.approved_account_name || acc.final_account_id || acc.final_account_name);
+                            const currentName = acc.approved_account_name ?? acc.final_account_name ?? acc.ai_account_name ?? "";
+                            const currentId = acc.approved_account_id ?? acc.final_account_id ?? acc.ai_account_id ?? "-";
+
+                            return (
+                              <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                                <td style={{ padding: "8px", color: "var(--text-tertiary)", textAlign: "center" }}>
+                                  {acc.line_index || idx + 1}
+                                </td>
+                                <td style={{ padding: "8px", fontWeight: "500" }}>
+                                  {acc.source_description || formData.line_items?.[idx]?.description || "-"}
+                                </td>
+                                <td style={{ padding: "8px" }}>
+                                  <input
+                                    type="text"
+                                    className="table-input"
+                                    value={currentName}
+                                    placeholder="Assign / Approve Account"
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      handleAccountingItemChange(idx, "approved_account_name", val);
+                                      handleAccountingItemChange(idx, "final_account_name", val);
+                                      if (!acc.approved_account_id && acc.ai_account_id) {
+                                        handleAccountingItemChange(idx, "approved_account_id", acc.ai_account_id);
+                                        handleAccountingItemChange(idx, "final_account_id", acc.ai_account_id);
+                                      }
+                                    }}
+                                  />
+                                </td>
+                                <td style={{ padding: "8px" }}>
+                                  <code>{currentId}</code>
+                                </td>
+                                <td style={{ padding: "8px", textAlign: "center" }}>
+                                  {acc.ai_confidence !== undefined && acc.ai_confidence !== null ? (
+                                    <span
+                                      className={`badge ${acc.ai_confidence >= 0.85
+                                          ? "badge-success"
+                                          : acc.ai_confidence >= 0.6
+                                            ? "badge-uploaded"
+                                            : "badge-danger"
+                                        }`}
+                                      style={{ fontSize: "11px" }}
+                                    >
+                                      {Math.round(acc.ai_confidence * 100)}%
+                                    </span>
+                                  ) : (
+                                    "-"
+                                  )}
+                                </td>
+                                <td style={{ padding: "8px", textAlign: "center" }}>
+                                  {isApproved ? (
+                                    <span className="badge badge-success" style={{ fontSize: "10px" }}>
+                                      Approved ✓
+                                    </span>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const approvedId =
+                                          acc.approved_account_id ||
+                                          acc.final_account_id ||
+                                          acc.ai_account_id ||
+                                          `ACC_${idx + 1}`;
+                                        const approvedName =
+                                          acc.approved_account_name ||
+                                          acc.final_account_name ||
+                                          acc.ai_account_name ||
+                                          "General Expenses";
+                                        handleAccountingItemChange(idx, "approved_account_id", approvedId);
+                                        handleAccountingItemChange(idx, "approved_account_name", approvedName);
+                                        handleAccountingItemChange(idx, "final_account_id", approvedId);
+                                        handleAccountingItemChange(idx, "final_account_name", approvedName);
+                                      }}
+                                      className="btn btn-secondary"
+                                      style={{
+                                        padding: "2px 8px",
+                                        fontSize: "11px",
+                                        background: "#f0fdf4",
+                                        color: "#166534",
+                                        borderColor: "#bbf7d0",
+                                      }}
+                                      title="Accept this AI suggestion as approved account"
+                                    >
+                                      <Check size={11} />
+                                      <span>Accept</span>
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
                         ) : (
                           <tr>
                             <td colSpan={6} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
@@ -1593,12 +1841,115 @@ export default function InvoiceWorkspacePage() {
                   </section>
                 )}
 
-                {/* 10. ADDITIONAL EXTRACTED INFORMATION (ZERO DATA LOSS) */}
+                {/* 10. DOUBLE-ENTRY GENERAL LEDGER (JOURNAL PREVIEW) */}
+                <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <Scale size={16} color="var(--accent)" />
+                      <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
+                        10. Double-Entry General Ledger (Journal Preview)
+                      </h3>
+                      {journalPreview && (
+                        <span
+                          className={`badge ${journalPreview.is_balanced ? "badge-success" : "badge-danger"}`}
+                          style={{ fontSize: "11px" }}
+                        >
+                          {journalPreview.is_balanced ? "Balanced (Dr = Cr)" : `Unbalanced (Δ ₹${journalPreview.difference})`}
+                        </span>
+                      )}
+                      {journalPreview?.supply_type && (
+                        <span className="badge badge-uploaded" style={{ fontSize: "11px" }}>
+                          {journalPreview.supply_type === "INTRA_STATE" ? "Intra-State (CGST+SGST)" : "Inter-State (IGST)"}
+                        </span>
+                      )}
+                      {journalPreview?.has_unapproved_lines && (
+                        <span className="badge badge-danger" style={{ fontSize: "11px" }}>
+                          ⚠ Unapproved Suggestions (Approval Locked)
+                        </span>
+                      )}
+                    </div>
+
+                    {journalPreview && (
+                      <div style={{ fontSize: "12px", color: "var(--text-secondary)", display: "flex", gap: "12px" }}>
+                        <span>Total DR: <strong>₹{journalPreview.total_debit?.toLocaleString()}</strong></span>
+                        <span>Total CR: <strong>₹{journalPreview.total_credit?.toLocaleString()}</strong></span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div
+                    style={{
+                      overflowX: "auto",
+                      border: "1px solid var(--border-subtle)",
+                      borderRadius: "var(--radius-sm)",
+                      background: "#ffffff",
+                    }}
+                  >
+                    <table style={{ width: "100%", minWidth: "750px", borderCollapse: "collapse", fontSize: "12px" }}>
+                      <thead>
+                        <tr style={{ background: "#f9f9fb", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", textAlign: "left" }}>
+                          <th style={{ padding: "8px 8px", width: "40px", textAlign: "center" }}>#</th>
+                          <th style={{ padding: "8px 8px", width: "70px", textAlign: "center" }}>Type</th>
+                          <th style={{ padding: "8px 8px", minWidth: "220px" }}>Account Name</th>
+                          <th style={{ padding: "8px 8px", width: "120px" }}>Account ID</th>
+                          <th style={{ padding: "8px 8px", minWidth: "160px" }}>Description</th>
+                          <th style={{ padding: "8px 8px", width: "110px", textAlign: "right" }}>Amount (₹)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {journalPreview && journalPreview.lines && journalPreview.lines.length > 0 ? (
+                          journalPreview.lines.map((line, idx) => (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                              <td style={{ padding: "8px", color: "var(--text-tertiary)", textAlign: "center" }}>
+                                {line.line_number}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "center" }}>
+                                <span
+                                  style={{
+                                    display: "inline-block",
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    fontWeight: "700",
+                                    fontSize: "10px",
+                                    background: line.line_type === "DR" ? "#dcfce7" : "#e0e7ff",
+                                    color: line.line_type === "DR" ? "#166534" : "#3730a3",
+                                  }}
+                                >
+                                  {line.line_type}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px", fontWeight: "600", color: "var(--text-primary)" }}>
+                                {line.account_name}
+                              </td>
+                              <td style={{ padding: "8px", color: "var(--text-secondary)" }}>
+                                <code>{line.account_id || "-"}</code>
+                              </td>
+                              <td style={{ padding: "8px", color: "var(--text-secondary)" }}>
+                                {line.description || "-"}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontWeight: "600" }}>
+                                ₹{line.amount?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={6} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
+                              Journal entry preview will calculate automatically when invoice is loaded.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+
+                {/* 11. ADDITIONAL EXTRACTED INFORMATION (ZERO DATA LOSS) */}
                 <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
                     <Layers size={16} color="var(--text-secondary)" />
                     <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      10. Additional Extracted Information
+                      11. Additional Extracted Information
                     </h3>
                   </div>
                   <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px" }}>
@@ -1615,7 +1966,7 @@ export default function InvoiceWorkspacePage() {
                   />
                 </section>
 
-                {/* 11. SAVE CHANGES (WORKING BUTTON) */}
+                {/* 12. SAVE CHANGES (WORKING BUTTON) */}
                 <section
                   style={{
                     borderTop: "1px solid var(--border-subtle)",
@@ -1773,33 +2124,145 @@ export default function InvoiceWorkspacePage() {
                   <div style={{ fontSize: "13px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.04em" }}>
                     Exported to Zoho
                   </div>
-                  <span className="badge badge-uploaded">0</span>
+                  <span className="badge badge-uploaded" style={{ background: "#e8f4fd", color: "#0066cc", border: "1px solid #cce5ff" }}>
+                    {exportedInvoices.length}
+                  </span>
                 </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: "40px 16px",
-                    textAlign: "center",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  <Send size={28} color="var(--text-tertiary)" style={{ marginBottom: "10px", opacity: 0.6 }} />
-                  <div style={{ fontSize: "13px", fontWeight: "500", color: "var(--text-secondary)" }}>
-                    No invoices exported yet.
-                  </div>
-                  <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "4px" }}>
-                    Zoho Books synchronization activates in later Finance stages.
-                  </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "300px", overflowY: "auto" }}>
+                  {exportedInvoices.length > 0 ? (
+                    exportedInvoices.map((item) => (
+                      <div
+                        key={item.id}
+                        onClick={() => router.push(`/finance/invoices/${item.id}`)}
+                        style={{
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          background: item.id === invoiceId ? "#f0f7ff" : "var(--bg-main)",
+                          border: item.id === invoiceId ? "1px solid var(--accent)" : "1px solid var(--border-subtle)",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+                          <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)" }}>
+                            {item.zoho_bill_number ? `Bill #${item.zoho_bill_number}` : (item.invoice_number ? `INV #${item.invoice_number}` : item.file_name)}
+                          </span>
+                          {item.total_amount && (
+                            <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-primary)" }}>
+                              ₹{item.total_amount.toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--text-secondary)" }}>
+                          <span>{item.vendor_name || item.file_name}</span>
+                          <span className="badge" style={{ fontSize: "10px", background: "#e8f4fd", color: "#0066cc", border: "1px solid #cce5ff" }}>
+                            ZOHO BILL ✓
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: "36px 16px",
+                        textAlign: "center",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      <Send size={24} color="var(--text-tertiary)" style={{ marginBottom: "8px", opacity: 0.5 }} />
+                      <div style={{ fontSize: "12px", fontWeight: "500", color: "var(--text-secondary)" }}>
+                        No invoices exported yet.
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "2px" }}>
+                        Approve an invoice and click "Export to Zoho" to sync.
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           </div>
         </>
       ) : null}
+
+      {/* Rejection Modal Dialog */}
+      {rejectModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.4)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "var(--radius-md)",
+              padding: "24px",
+              width: "100%",
+              maxWidth: "460px",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              border: "1px solid var(--border-subtle)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+              <div style={{ padding: "8px", background: "#fef2f2", borderRadius: "50%", color: "var(--danger)" }}>
+                <AlertTriangle size={20} />
+              </div>
+              <h3 style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-primary)" }}>
+                Reject Invoice
+              </h3>
+            </div>
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "16px" }}>
+              Please specify the reason for rejecting this invoice. This will be permanently recorded in the audit trail.
+            </p>
+            <textarea
+              className="form-input"
+              rows={3}
+              placeholder="e.g. Incorrect GSTIN, missing PO number, or price mismatch..."
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              style={{ width: "100%", marginBottom: "18px", fontSize: "13px" }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setRejectModalOpen(false)}
+                className="btn btn-secondary"
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRejectConfirm}
+                disabled={isRejecting || !rejectReason.trim()}
+                className="btn btn-primary"
+                style={{
+                  padding: "8px 16px",
+                  fontSize: "13px",
+                  background: "var(--danger)",
+                  borderColor: "var(--danger)",
+                }}
+              >
+                {isRejecting ? "Rejecting..." : "Confirm Rejection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx global>{`
         .form-label {

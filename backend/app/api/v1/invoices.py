@@ -15,6 +15,11 @@ from fastapi import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
+from app.core.security import (
+    AuthenticatedUser,
+    get_current_user,
+    require_roles,
+)
 from app.db.database import get_db
 from app.db.models import Invoice
 from app.schemas.invoice import (
@@ -29,6 +34,7 @@ from app.services.invoice_processing import (
     process_invoice_background,
     process_accounting_only_background,
 )
+from app.services.duplicate_detector import duplicate_detector
 
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
 
@@ -47,9 +53,16 @@ def sanitize_filename(filename: str) -> str:
 async def upload_invoice(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Uploads an invoice to Supabase Storage, records initial metadata, and triggers background extraction pipeline."""
+    """
+    Uploads an invoice to Supabase Storage, checks for duplicates, records metadata,
+    and triggers background extraction pipeline.
+    Requires ADMIN or FINANCE role.
+    """
+    tenant_id = current_user.tenant_id
+
     content_type = file.content_type or "application/octet-stream"
     if content_type not in settings.ALLOWED_MIME_TYPES:
         raise HTTPException(
@@ -77,6 +90,23 @@ async def upload_invoice(
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()
 
+    # Check for duplicate hash within this tenant
+    existing_duplicate = await duplicate_detector.check_file_hash_duplicate(
+        file_hash=file_hash,
+        tenant_id=tenant_id,
+        db=db,
+    )
+    if existing_duplicate:
+        return InvoiceUploadResponse(
+            invoice_id=existing_duplicate.id,
+            file_name=existing_duplicate.file_name,
+            file_size=existing_duplicate.file_size,
+            mime_type=existing_duplicate.mime_type,
+            file_hash=existing_duplicate.file_hash,
+            status=existing_duplicate.status,
+            created_at=existing_duplicate.created_at,
+        )
+
     invoice_id = uuid.uuid4()
     original_name = file.filename or "invoice"
     clean_name = sanitize_filename(original_name)
@@ -96,6 +126,7 @@ async def upload_invoice(
 
     invoice = Invoice(
         id=invoice_id,
+        tenant_id=tenant_id,
         file_path=storage_path,
         file_name=original_name,
         file_size=file_size,
@@ -103,6 +134,8 @@ async def upload_invoice(
         file_hash=file_hash,
         status="PENDING",
         accounting_status="PENDING",
+        approval_status="PENDING_REVIEW",
+        export_status="NOT_EXPORTED",
     )
     db.add(invoice)
     await db.commit()
@@ -130,13 +163,16 @@ async def upload_invoice(
 async def categorize_invoice_accounting(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Triggers Stage 3 (Qwen3-4B Accounting & TDS reasoning) on an existing invoice
-    using its current extraction JSON. Does NOT rerun Qwen3-VL.
+    Triggers Stage 3 (Qwen3-4B Accounting & TDS reasoning) on an existing invoice.
+    Requires ADMIN or FINANCE role.
     """
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    tenant_id = current_user.tenant_id
+
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -164,6 +200,8 @@ async def categorize_invoice_accounting(
         invoice_id=invoice.id,
         status=invoice.status,
         accounting_status=invoice.accounting_status,
+        approval_status=invoice.approval_status,
+        export_status=invoice.export_status,
         error_message=invoice.error_message,
         confidence_score=invoice.confidence_score,
         accounting_confidence=invoice.accounting_confidence,
@@ -173,10 +211,15 @@ async def categorize_invoice_accounting(
 
 @router.get("", response_model=list[InvoiceListItemResponse])
 async def list_invoices(
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lists all invoices ordered by creation date descending for workflow tracking."""
-    query = select(Invoice).order_by(Invoice.created_at.desc())
+    """
+    Lists all invoices for the authenticated user's tenant.
+    Accessible to ADMIN, FINANCE, and VIEWER roles.
+    """
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.tenant_id == tenant_id).order_by(Invoice.created_at.desc())
     result = await db.execute(query)
     invoices = result.scalars().all()
 
@@ -189,11 +232,16 @@ async def list_invoices(
         items.append(
             InvoiceListItemResponse(
                 id=inv.id,
+                tenant_id=inv.tenant_id,
                 file_name=inv.file_name,
                 file_size=inv.file_size,
                 mime_type=inv.mime_type,
                 status=inv.status,
                 accounting_status=inv.accounting_status,
+                approval_status=inv.approval_status,
+                export_status=inv.export_status,
+                zoho_bill_id=inv.zoho_bill_id,
+                zoho_bill_number=inv.zoho_bill_number,
                 vendor_name=data.get("vendor_name"),
                 invoice_number=data.get("invoice_number"),
                 total_amount=data.get("total_amount"),
@@ -207,10 +255,15 @@ async def list_invoices(
 @router.get("/{invoice_id}/status", response_model=InvoiceStatusResponse)
 async def get_invoice_status(
     invoice_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lightweight polling endpoint for tracking invoice processing status."""
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    """
+    Polling endpoint for tracking invoice processing, approval, and export status.
+    Accessible to ADMIN, FINANCE, and VIEWER roles.
+    """
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -224,6 +277,8 @@ async def get_invoice_status(
         invoice_id=invoice.id,
         status=invoice.status,
         accounting_status=invoice.accounting_status,
+        approval_status=invoice.approval_status,
+        export_status=invoice.export_status,
         error_message=invoice.error_message,
         confidence_score=invoice.confidence_score,
         accounting_confidence=invoice.accounting_confidence,
@@ -234,10 +289,15 @@ async def get_invoice_status(
 @router.get("/{invoice_id}", response_model=InvoiceResponse)
 async def get_invoice(
     invoice_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieves full stored invoice metadata including complete raw_vlm_output, current_vlm_output, and accounting_output."""
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    """
+    Retrieves full stored invoice metadata.
+    Accessible to ADMIN, FINANCE, and VIEWER roles.
+    """
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -254,10 +314,15 @@ async def get_invoice(
 async def update_invoice_extraction(
     invoice_id: uuid.UUID,
     update_data: InvoiceUpdateRequest,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Saves user-edited invoice values into current_vlm_output and current_accounting_output while preserving raw outputs."""
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    """
+    Saves user-edited invoice values into current_vlm_output and current_accounting_output.
+    Requires ADMIN or FINANCE role. Blocked if invoice is APPROVED.
+    """
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -265,6 +330,12 @@ async def update_invoice_extraction(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    if invoice.locked_at is not None and invoice.approval_status == "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invoice is APPROVED and locked against modification. Reject or unapprove first to edit.",
         )
 
     if update_data.current_vlm_output is not None:
@@ -282,10 +353,15 @@ async def update_invoice_extraction(
 @router.get("/{invoice_id}/file")
 async def get_invoice_file(
     invoice_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Streams the original unmodified file for in-browser rendering."""
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    """
+    Streams original unmodified invoice binary from Supabase Storage.
+    Accessible to ADMIN, FINANCE, and VIEWER roles.
+    """
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -336,70 +412,3 @@ async def get_invoice_file(
             "Cache-Control": "public, max-age=3600",
         },
     )
-
-
-@router.get("/{invoice_id}/pages")
-async def get_invoice_pdf_pages(
-    invoice_id: uuid.UUID,
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Renders all pages of a PDF invoice to PNG images using PyMuPDF (fitz)
-    and returns a JSON list of base64 data URLs for in-browser rendering.
-    """
-    query = select(Invoice).where(Invoice.id == invoice_id)
-    result = await db.execute(query)
-    invoice = result.scalar_one_or_none()
-
-    if not invoice:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Invoice with ID {invoice_id} not found.",
-        )
-
-    try:
-        content = await storage_service.download_file(invoice.file_path)
-    except FileNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invoice file not found in storage.",
-        )
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Storage retrieval error: {str(e)}",
-        )
-
-    # Verify if it is a PDF
-    ext = invoice.file_name.lower().split(".")[-1]
-    if ext != "pdf":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only PDF documents can be rendered to multi-page previews.",
-        )
-
-    import fitz
-    import base64
-    
-    try:
-        doc = fitz.open(stream=content, filetype="pdf")
-        pages = []
-        for page_num in range(doc.page_count):
-            page = doc.load_page(page_num)
-            # Render page to PNG bytes (150 DPI is crisp and fast)
-            pix = page.get_pixmap(dpi=150)
-            png_bytes = pix.tobytes("png")
-            # Encode to base64 data URL
-            b64_str = base64.b64encode(png_bytes).decode("utf-8")
-            pages.append(f"data:image/png;base64,{b64_str}")
-        doc.close()
-        return {"pages": pages}
-    except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Failed to render PDF pages using PyMuPDF: {e}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to render PDF document: {str(e)}",
-        )
-

@@ -1,8 +1,20 @@
 import pytest
-from httpx import AsyncClient, ASGITransport
 import hashlib
+import uuid
+from httpx import AsyncClient, ASGITransport
 from app.main import app
-from app.schemas.invoice import InvoiceUploadResponse, InvoiceResponse
+from app.core.security import create_access_token
+
+
+@pytest.fixture
+def auth_headers():
+    token = create_access_token(
+        user_id=str(uuid.uuid4()),
+        email="finance@default-org.com",
+        tenant_id="default-tenant-001",
+        role="FINANCE",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio
@@ -17,21 +29,21 @@ async def test_root_endpoint():
 
 
 @pytest.mark.asyncio
-async def test_upload_invalid_mime_type():
+async def test_upload_invalid_mime_type(auth_headers):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         files = {"file": ("test.txt", b"plain text content", "text/plain")}
-        response = await client.post("/api/v1/invoices/upload", files=files)
+        response = await client.post("/api/v1/invoices/upload", files=files, headers=auth_headers)
         assert response.status_code == 400
         assert "Unsupported file format" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
-async def test_upload_empty_file():
+async def test_upload_empty_file(auth_headers):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         files = {"file": ("empty.pdf", b"", "application/pdf")}
-        response = await client.post("/api/v1/invoices/upload", files=files)
+        response = await client.post("/api/v1/invoices/upload", files=files, headers=auth_headers)
         assert response.status_code == 400
         assert "empty" in response.json()["detail"]
 
