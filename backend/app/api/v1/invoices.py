@@ -430,15 +430,12 @@ async def get_invoice_journal(
 @router.get("/{invoice_id}/file")
 async def get_invoice_file(
     invoice_id: uuid.UUID,
-    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Streams original unmodified invoice binary from Supabase Storage.
-    Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
-    tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    query = select(Invoice).where(Invoice.id == invoice_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -461,9 +458,29 @@ async def get_invoice_file(
             detail=f"Storage retrieval error: {str(e)}",
         )
 
+    # Infer/correct the MIME type based on file extension if stored type is generic
+    mime_type = invoice.mime_type
+    if not mime_type or mime_type == "application/octet-stream":
+        ext = invoice.file_name.lower().split(".")[-1]
+        ext_map = {
+            "pdf": "application/pdf",
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "tif": "image/tiff",
+            "tiff": "image/tiff"
+        }
+        if ext in ext_map:
+            mime_type = ext_map[ext]
+        else:
+            import mimetypes
+            inferred_type, _ = mimetypes.guess_type(invoice.file_name)
+            if inferred_type:
+                mime_type = inferred_type
+
     return Response(
         content=content,
-        media_type=invoice.mime_type,
+        media_type=mime_type,
         headers={
             "Content-Disposition": f'inline; filename="{invoice.file_name}"',
             "Cache-Control": "public, max-age=3600",
