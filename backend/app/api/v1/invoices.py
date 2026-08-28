@@ -97,6 +97,15 @@ async def upload_invoice(
         db=db,
     )
     if existing_duplicate:
+        # If the duplicate is currently STAGED (e.g. from email inbox) or FAILED,
+        # the user is manually uploading to process it. Promote to PENDING and start processing.
+        if existing_duplicate.status in ["STAGED", "FAILED"]:
+            existing_duplicate.status = "PENDING"
+            existing_duplicate.error_message = None
+            await db.commit()
+            await db.refresh(existing_duplicate)
+            background_tasks.add_task(process_invoice_background, existing_duplicate.id)
+            
         return InvoiceUploadResponse(
             invoice_id=existing_duplicate.id,
             file_name=existing_duplicate.file_name,
