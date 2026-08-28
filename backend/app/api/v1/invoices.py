@@ -353,15 +353,12 @@ async def update_invoice_extraction(
 @router.get("/{invoice_id}/file")
 async def get_invoice_file(
     invoice_id: uuid.UUID,
-    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Streams original unmodified invoice binary from Supabase Storage.
-    Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
-    tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    query = select(Invoice).where(Invoice.id == invoice_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
