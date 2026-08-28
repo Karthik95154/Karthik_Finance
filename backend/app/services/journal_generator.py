@@ -66,16 +66,20 @@ class JournalLine(BaseModel):
     account_name: str
     line_type: str = Field(
         ...,
-        description="EXPENSE, ASSET, INPUT_TAX, TDS_PAYABLE, ACCOUNTS_PAYABLE, ROUND_OFF, OTHER",
+        description="EXPENSE, ASSET, INPUT_TAX, TDS_PAYABLE, ACCOUNTS_PAYABLE, ROUND_OFF, OTHER, DR, CR",
     )
     debit: float = 0.0
     credit: float = 0.0
+    amount: float = 0.0
     source_line_index: Optional[int] = None
     provenance: str = Field(
         default="DETERMINISTIC",
         description="AI_PREDICTED, HITL_OVERRIDE, DETERMINISTIC",
     )
     description: Optional[str] = None
+    cost_center: Optional[str] = None
+    project: Optional[str] = None
+    department: Optional[str] = None
 
 
 class JournalValidation(BaseModel):
@@ -131,7 +135,6 @@ class JournalGenerator:
         # ----------------------------------------------------
         # 1. UPSTREAM GATES & VALIDATION STATUS CHECKS
         # ----------------------------------------------------
-        # Financial Validation Gate
         if financial_validation_result:
             fin_status = financial_validation_result.get("overall_status")
             if fin_status == "MISMATCH":
@@ -147,7 +150,6 @@ class JournalGenerator:
                     "Stage 5 Financial Validation requires review."
                 )
 
-        # GST Engine Gate
         if gst_result:
             gst_val_status = gst_result.get("validation_status")
             if gst_val_status in ("GST_MISMATCH", "REVIEW_REQUIRED"):
@@ -172,7 +174,6 @@ class JournalGenerator:
 
         line_items = inv.get("line_items") or []
 
-        # Check for sufficient financial data
         if total_amount is None and subtotal is None and not line_items:
             errors.append("Invoice lacks financial amounts to construct journal entry.")
             return JournalEntryResult(
@@ -200,7 +201,6 @@ class JournalGenerator:
                 or []
             )
 
-        # Map classification by line index
         acc_by_index: Dict[int, Dict[str, Any]] = {}
         for item in accounting_list:
             idx = item.get("line_index")
@@ -212,8 +212,6 @@ class JournalGenerator:
         if line_items:
             for idx, line in enumerate(line_items):
                 desc = line.get("description") or f"Line {idx + 1}"
-                
-                # Determine line taxable amount
                 taxable = self._clean_num(
                     line.get("taxable_amount")
                     or line.get("taxable")
@@ -222,7 +220,6 @@ class JournalGenerator:
                     or line.get("amount")
                 )
                 if taxable is None:
-                    # Try unit_price * qty - discount
                     qty = self._clean_num(line.get("quantity"))
                     price = self._clean_num(line.get("unit_price"))
                     line_disc = self._clean_num(line.get("discount") or line.get("discount_amount")) or 0.0
@@ -233,10 +230,7 @@ class JournalGenerator:
                     else:
                         taxable = 0.0
 
-                # Determine COA account
                 acc_info = acc_by_index.get(idx) or (accounting_list[idx] if idx < len(accounting_list) else {})
-                
-                # Priority: final_account (Finance override) > account > ai_account (AI prediction)
                 final_acc_id = acc_info.get("final_account_id")
                 final_acc_name = acc_info.get("final_account_name")
                 ai_acc_id = acc_info.get("ai_account_id") or acc_info.get("account_id")
@@ -255,7 +249,6 @@ class JournalGenerator:
                     account_name = ai_acc_name or ai_acc_id
                     provenance = "AI_PREDICTED"
                 else:
-                    # Missing COA
                     account_id = f"UNCLASSIFIED_EXPENSE_{idx + 1}"
                     account_name = f"Unclassified Expense ({desc})"
                     provenance = "UNRESOLVED"
@@ -271,6 +264,7 @@ class JournalGenerator:
                         line_type=line_type,
                         debit=taxable,
                         credit=0.0,
+                        amount=taxable,
                         source_line_index=idx,
                         provenance=provenance,
                         description=desc,
@@ -278,7 +272,6 @@ class JournalGenerator:
                 )
                 total_line_taxable_debits += taxable
         elif subtotal is not None and subtotal > 0:
-            # Single aggregated expense debit if no line items exist
             acc_info = accounting_list[0] if accounting_list else {}
             final_acc_id = acc_info.get("final_account_id")
             final_acc_name = acc_info.get("final_acc_name") or acc_info.get("final_account_name")
@@ -301,6 +294,7 @@ class JournalGenerator:
                     line_type="EXPENSE",
                     debit=subtotal,
                     credit=0.0,
+                    amount=subtotal,
                     source_line_index=0,
                     provenance=prov,
                     description="Invoice Taxable Amount",
@@ -340,7 +334,6 @@ class JournalGenerator:
                 cgst_amt = round(tax_total / 2.0, 2)
                 sgst_amt = round(tax_total - cgst_amt, 2)
 
-        # Check ITC Eligibility
         itc_status = "ELIGIBLE"
         eligible_tax = total_extracted_gst
         ineligible_tax = 0.0
@@ -353,7 +346,6 @@ class JournalGenerator:
             ineligible_tax = self._clean_num(itc_result.get("ineligible_amount")) or 0.0
 
         if itc_status == "INELIGIBLE":
-            # 100% Blocked ITC under Sec 17(5)
             if total_extracted_gst > 0:
                 lines.append(
                     JournalLine(
@@ -362,12 +354,12 @@ class JournalGenerator:
                         line_type="EXPENSE",
                         debit=total_extracted_gst,
                         credit=0.0,
+                        amount=total_extracted_gst,
                         provenance="DETERMINISTIC",
                         description=f"Ineligible/Blocked Input Tax under Sec 17(5) ({itc_result.get('rule_reference') if itc_result else 'Sec 17(5)'})",
                     )
                 )
         elif itc_status == "ELIGIBLE":
-            # 100% Eligible Input Tax
             if cgst_amt > 0:
                 lines.append(
                     JournalLine(
@@ -376,6 +368,7 @@ class JournalGenerator:
                         line_type="INPUT_TAX",
                         debit=cgst_amt,
                         credit=0.0,
+                        amount=cgst_amt,
                         provenance="DETERMINISTIC",
                         description="Input CGST (Eligible)",
                     )
@@ -388,6 +381,7 @@ class JournalGenerator:
                         line_type="INPUT_TAX",
                         debit=sgst_amt,
                         credit=0.0,
+                        amount=sgst_amt,
                         provenance="DETERMINISTIC",
                         description="Input SGST / UTGST (Eligible)",
                     )
@@ -400,6 +394,7 @@ class JournalGenerator:
                         line_type="INPUT_TAX",
                         debit=igst_amt,
                         credit=0.0,
+                        amount=igst_amt,
                         provenance="DETERMINISTIC",
                         description="Input IGST (Eligible)",
                     )
@@ -412,12 +407,12 @@ class JournalGenerator:
                         line_type="INPUT_TAX",
                         debit=cess_amt,
                         credit=0.0,
+                        amount=cess_amt,
                         provenance="DETERMINISTIC",
                         description="Input Cess (Eligible)",
                     )
                 )
         else:
-            # Partial or REVIEW_REQUIRED ITC
             requires_review = True
             warnings.append(f"ITC status is {itc_status}. Input tax eligibility requires verification.")
             if eligible_tax > 0:
@@ -430,6 +425,7 @@ class JournalGenerator:
                             line_type="INPUT_TAX",
                             debit=round(cgst_amt * ratio, 2),
                             credit=0.0,
+                            amount=round(cgst_amt * ratio, 2),
                             provenance="DETERMINISTIC",
                             description="Input CGST (Eligible Portion)",
                         )
@@ -442,6 +438,7 @@ class JournalGenerator:
                             line_type="INPUT_TAX",
                             debit=round(sgst_amt * ratio, 2),
                             credit=0.0,
+                            amount=round(sgst_amt * ratio, 2),
                             provenance="DETERMINISTIC",
                             description="Input SGST (Eligible Portion)",
                         )
@@ -454,6 +451,7 @@ class JournalGenerator:
                             line_type="INPUT_TAX",
                             debit=round(igst_amt * ratio, 2),
                             credit=0.0,
+                            amount=round(igst_amt * ratio, 2),
                             provenance="DETERMINISTIC",
                             description="Input IGST (Eligible Portion)",
                         )
@@ -466,6 +464,7 @@ class JournalGenerator:
                         line_type="EXPENSE",
                         debit=ineligible_tax,
                         credit=0.0,
+                        amount=ineligible_tax,
                         provenance="DETERMINISTIC",
                         description="Ineligible Input Tax Expense",
                     )
@@ -482,6 +481,7 @@ class JournalGenerator:
                     line_type="EXPENSE",
                     debit=shipping,
                     credit=0.0,
+                    amount=shipping,
                     provenance="DETERMINISTIC",
                     description="Shipping & Freight Charges",
                 )
@@ -495,6 +495,7 @@ class JournalGenerator:
                     line_type="EXPENSE",
                     debit=other_charges,
                     credit=0.0,
+                    amount=other_charges,
                     provenance="DETERMINISTIC",
                     description="Other Direct Expenses / Handling",
                 )
@@ -502,7 +503,6 @@ class JournalGenerator:
 
         if round_off != 0.0:
             if round_off > 0:
-                # Positive round off is a debit to reach grand total
                 lines.append(
                     JournalLine(
                         account_id=STANDARD_ACCOUNTS["ROUND_OFF"]["account_id"],
@@ -510,12 +510,12 @@ class JournalGenerator:
                         line_type="ROUND_OFF",
                         debit=round_off,
                         credit=0.0,
+                        amount=round_off,
                         provenance="DETERMINISTIC",
                         description="Round Off Adjustment (+)",
                     )
                 )
             else:
-                # Negative round off is a credit
                 lines.append(
                     JournalLine(
                         account_id=STANDARD_ACCOUNTS["ROUND_OFF"]["account_id"],
@@ -523,6 +523,7 @@ class JournalGenerator:
                         line_type="ROUND_OFF",
                         debit=0.0,
                         credit=abs(round_off),
+                        amount=abs(round_off),
                         provenance="DETERMINISTIC",
                         description="Round Off Adjustment (-)",
                     )
@@ -555,6 +556,7 @@ class JournalGenerator:
                     line_type="TDS_PAYABLE",
                     debit=0.0,
                     credit=tds_amount,
+                    amount=tds_amount,
                     provenance="HITL_OVERRIDE" if is_approved else "AI_PREDICTED",
                     description=f"TDS Withholding under Section {tds_section}",
                 )
@@ -589,6 +591,7 @@ class JournalGenerator:
                 line_type="ACCOUNTS_PAYABLE",
                 debit=0.0,
                 credit=vendor_payable,
+                amount=vendor_payable,
                 provenance="DETERMINISTIC",
                 description=f"Payable to {vendor_name}",
             )
@@ -629,6 +632,9 @@ class JournalGenerator:
         )
 
         return result.model_dump()
+
+    # Compatibility alias for main branch calls
+    generate_journal_entry = generate_journal
 
     def _clean_num(self, val: Any) -> Optional[float]:
         """Helper to parse clean float numeric values from string, float, int or None."""
@@ -676,6 +682,7 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
             entry.total_credit = float(journal_dict.get("total_credit", 0.0))
             entry.difference = float(journal_dict.get("difference", 0.0))
             entry.balanced = bool(journal_dict.get("validation", {}).get("balanced", True))
+            entry.is_balanced = entry.balanced
             
             # Delete old lines to prevent duplication
             await session.execute(
@@ -690,6 +697,7 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
                 total_credit=float(journal_dict.get("total_credit", 0.0)),
                 difference=float(journal_dict.get("difference", 0.0)),
                 balanced=bool(journal_dict.get("validation", {}).get("balanced", True)),
+                is_balanced=bool(journal_dict.get("validation", {}).get("balanced", True)),
             )
             session.add(entry)
             await session.flush()
@@ -697,6 +705,10 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
         # Insert new lines
         raw_lines = journal_dict.get("lines") or []
         for idx, line in enumerate(raw_lines):
+            debit_val = float(line.get("debit", 0.0))
+            credit_val = float(line.get("credit", 0.0))
+            amount_val = float(line.get("amount", debit_val or credit_val or 0.0))
+            
             jl = JournalLineModel(
                 id=uuid.uuid4(),
                 journal_entry_id=entry.id,
@@ -704,8 +716,9 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
                 account_id=line.get("account_id", "ACC_UNKNOWN"),
                 account_name=line.get("account_name", "Unknown Account"),
                 line_type=line.get("line_type", "EXPENSE"),
-                debit=float(line.get("debit", 0.0)),
-                credit=float(line.get("credit", 0.0)),
+                debit=debit_val,
+                credit=credit_val,
+                amount=amount_val,
                 source_line_index=line.get("source_line_index"),
                 provenance=line.get("provenance", "DETERMINISTIC"),
                 description=line.get("description"),

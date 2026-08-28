@@ -2,7 +2,7 @@ import "../styles/globals.css";
 import React from "react";
 
 export const metadata = {
-  title: "Finance Module | Autonomous Accounts Payable & Accounting",
+  title: "Sakshi Finance | Autonomous AI Accounting & AP Automation",
   description: "AI-powered invoice extraction, deterministic GST & ITC, TDS analysis, and balanced double-entry accounting engine.",
 };
 

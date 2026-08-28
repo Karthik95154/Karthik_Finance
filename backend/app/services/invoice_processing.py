@@ -9,6 +9,9 @@ from app.services.ai_service import ai_service
 from app.services.accounting_service import accounting_service
 from app.services.gst_engine import gst_engine
 from app.services.itc_engine import itc_engine
+from app.services.financial_validator import financial_validator
+from app.services.journal_generator import journal_generator, sync_relational_journal
+from app.services.master_data_service import master_data_service
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +45,11 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
 
 async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
     """
-    Runs Stage 3 (Qwen3-4B Accounting & Tax reasoning) and Stage 4 (Deterministic GST & ITC)
-    on an existing invoice using its stored extraction. DOES NOT call Qwen3-VL again.
+    Runs Stage 3 (Qwen3-4B Accounting & Tax reasoning) and Stage 4-6 (Deterministic GST, ITC,
+    Financial Validator & Journal Generator) on an existing invoice using its stored extraction.
+    DOES NOT call Qwen3-VL again.
     """
-    logger.info(f"Starting Stage 3 & 4 processing for invoice {invoice_id}")
+    logger.info(f"Starting Stage 3, 4, 5 & 6 processing for invoice {invoice_id}")
 
     async with AsyncSessionLocal() as session:
         try:
@@ -73,9 +77,16 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
 
             # Prepare complete effective invoice JSON for Qwen3-4B and GST/ITC
             invoice_payload = get_effective_invoice_data(invoice)
+            tenant_id = invoice.tenant_id or "default-tenant-001"
+            cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
+            cached_taxes = await master_data_service.get_cached_taxes(tenant_id, session)
 
-            # 1. Call Qwen3-4B Accounting endpoint on Colab
-            accounting_result = await accounting_service.categorize_accounting(invoice_payload)
+            # 1. Call Qwen3-4B Accounting endpoint
+            accounting_result = await accounting_service.categorize_accounting(
+                invoice_json=invoice_payload,
+                chart_of_accounts=cached_coa,
+                available_taxes=cached_taxes,
+            )
 
             # 2. Call Deterministic Stage 4 GST Engine
             gst_result = gst_engine.evaluate_gst(invoice_payload)
@@ -84,11 +95,9 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             itc_result = itc_engine.evaluate_itc(invoice_payload, accounting_result)
 
             # 4. Call Deterministic Stage 5 Financial Validator
-            from app.services.financial_validator import financial_validator
             financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-            # 5. Call Deterministic Stage 6 Journal Generator
-            from app.services.journal_generator import journal_generator, sync_relational_journal
+            # 5. Call Deterministic Stage 6 Journal Generator (Double-Entry General Ledger Preview)
             journal_result = journal_generator.generate_journal(
                 invoice_data=invoice_payload,
                 accounting_classification=accounting_result,
@@ -121,13 +130,12 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
                 if confidences:
                     invoice.accounting_confidence = round(sum(confidences) / len(confidences), 2)
 
-            await session.commit()
             await sync_relational_journal(session, invoice.id, journal_result)
             await session.commit()
             logger.info(f"Invoice {invoice_id} Stage 3, 4, 5 & 6 processing completed successfully.")
 
         except Exception as exc:
-            logger.exception(f"Error during Stage 3, 4 & 5 processing for invoice {invoice_id}: {exc}")
+            logger.exception(f"Error during Stage 3, 4, 5 & 6 processing for invoice {invoice_id}: {exc}")
             try:
                 invoice.accounting_status = "FAILED"
                 invoice.status = "FAILED"
@@ -144,7 +152,8 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
     Stage 2: Qwen3-VL Extraction ->
     Stage 3: Qwen3-4B Accounting Classification & TDS Reasoning ->
     Stage 4: Deterministic GST & ITC Engine ->
-    Stage 5: Deterministic Financial Validation / Reconciliation
+    Stage 5: Deterministic Financial Validation / Reconciliation ->
+    Stage 6: Deterministic Balanced Journal Generation Preview
     """
     logger.info(f"Starting full background processing for invoice {invoice_id}")
 
@@ -158,6 +167,8 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             if not invoice:
                 logger.error(f"Invoice {invoice_id} not found in database.")
                 return
+
+            tenant_id = invoice.tenant_id or "default-tenant-001"
 
             # 2. Update status to PROCESSING_VLM (Stage 2)
             invoice.status = "PROCESSING_VLM"
@@ -182,22 +193,28 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             await session.commit()
             logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Starting Stage 3 Qwen3-4B accounting...")
 
-            # 6. Call Qwen3-4B Accounting on Colab
-            invoice_payload = extraction_result.get("data") if isinstance(extraction_result, dict) and "data" in extraction_result else extraction_result
-            accounting_result = await accounting_service.categorize_accounting(invoice_payload)
+            # 6. Fetch live tenant Chart of Accounts & Taxes
+            cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
+            cached_taxes = await master_data_service.get_cached_taxes(tenant_id, session)
 
-            # 7. Call Deterministic Stage 4 GST Engine
+            # 7. Call Qwen3-4B Accounting on Colab
+            invoice_payload = extraction_result.get("data") if isinstance(extraction_result, dict) and "data" in extraction_result else extraction_result
+            accounting_result = await accounting_service.categorize_accounting(
+                invoice_json=invoice_payload,
+                chart_of_accounts=cached_coa,
+                available_taxes=cached_taxes,
+            )
+
+            # 8. Call Deterministic Stage 4 GST Engine
             gst_result = gst_engine.evaluate_gst(invoice_payload)
 
-            # 8. Call Deterministic Stage 4 ITC Engine
+            # 9. Call Deterministic Stage 4 ITC Engine
             itc_result = itc_engine.evaluate_itc(invoice_payload, accounting_result)
 
-            # 9. Call Deterministic Stage 5 Financial Validator
-            from app.services.financial_validator import financial_validator
+            # 10. Call Deterministic Stage 5 Financial Validator
             financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-            # 10. Call Deterministic Stage 6 Journal Generator
-            from app.services.journal_generator import journal_generator, sync_relational_journal
+            # 11. Call Deterministic Stage 6 Journal Generator
             journal_result = journal_generator.generate_journal(
                 invoice_data=invoice_payload,
                 accounting_classification=accounting_result,
@@ -207,7 +224,7 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 financial_validation_result=financial_validation_result,
             )
 
-            # 11. Persist complete accounting, GST/ITC, financial validation, and journal responses
+            # 12. Persist complete accounting, GST/ITC, financial validation, and journal responses
             invoice.accounting_output = accounting_result
             invoice.current_accounting_output = accounting_result
             invoice.gst_result = gst_result
@@ -229,7 +246,6 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 if confidences:
                     invoice.accounting_confidence = round(sum(confidences) / len(confidences), 2)
 
-            await session.commit()
             await sync_relational_journal(session, invoice.id, journal_result)
             await session.commit()
             logger.info(f"Invoice {invoice_id} full Stage 2, 3, 4, 5 & 6 processing completed successfully.")

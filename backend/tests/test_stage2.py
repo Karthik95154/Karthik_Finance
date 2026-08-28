@@ -5,7 +5,18 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.services.ai_service import AIService
-from app.services.invoice_processing import process_invoice_background
+from app.core.security import create_access_token
+
+
+@pytest.fixture
+def auth_headers():
+    token = create_access_token(
+        user_id=str(uuid.uuid4()),
+        email="finance@default-org.com",
+        tenant_id="default-tenant-001",
+        role="FINANCE",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.mark.asyncio
@@ -84,7 +95,7 @@ async def test_ai_service_connection_error():
 
 
 @pytest.mark.asyncio
-async def test_invoice_status_endpoint_not_found():
+async def test_invoice_status_endpoint_not_found(auth_headers):
     """Verify 404 response on unknown invoice ID for status endpoint."""
     from app.db.database import get_db
 
@@ -101,15 +112,14 @@ async def test_invoice_status_endpoint_not_found():
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             random_id = str(uuid.uuid4())
-            response = await client.get(f"/api/v1/invoices/{random_id}/status")
+            response = await client.get(f"/api/v1/invoices/{random_id}/status", headers=auth_headers)
             assert response.status_code == 404
     finally:
         app.dependency_overrides.pop(get_db, None)
 
 
-
 @pytest.mark.asyncio
-async def test_invoice_update_endpoint():
+async def test_invoice_update_endpoint(auth_headers):
     """Verify PUT /api/v1/invoices/{id} updates current_vlm_output with CORS headers."""
     from datetime import datetime, timezone
     from app.db.database import get_db
@@ -117,6 +127,7 @@ async def test_invoice_update_endpoint():
 
     mock_invoice = Invoice(
         id=uuid.uuid4(),
+        tenant_id="default-tenant-001",
         file_path="uploads/test.png",
         file_name="test.png",
         file_size=1024,
@@ -144,9 +155,10 @@ async def test_invoice_update_endpoint():
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             payload = {"current_vlm_output": {"data": {"vendor_name": "Edited Vendor"}}}
+            headers = {**auth_headers, "Origin": "http://localhost:3002"}
             response = await client.put(
                 f"/api/v1/invoices/{mock_invoice.id}",
-                headers={"Origin": "http://localhost:3002"},
+                headers=headers,
                 json=payload,
             )
             assert response.status_code == 200
@@ -155,6 +167,3 @@ async def test_invoice_update_endpoint():
             assert mock_invoice.raw_vlm_output == {"data": {"vendor_name": "Original Vendor"}}
     finally:
         app.dependency_overrides.pop(get_db, None)
-
-
-
