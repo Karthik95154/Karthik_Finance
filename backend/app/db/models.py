@@ -224,6 +224,12 @@ class Invoice(Base):
     financial_validation_result = Column(JSONB, nullable=True)
     journal_entry = Column(JSONB, nullable=True)
     
+    # Email Ingestion Metadata
+    email_subject = Column(String(255), nullable=True)
+    email_sender = Column(String(255), nullable=True)
+    email_received_at = Column(DateTime(timezone=True), nullable=True)
+    email_message_id = Column(String(255), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -240,6 +246,29 @@ class Invoice(Base):
 
     def __repr__(self) -> str:
         return f"<Invoice(id={self.id}, file_name={self.file_name}, status={self.status}, export_status={self.export_status})>"
+
+
+class Integration(Base):
+    __tablename__ = "integrations"
+
+    id = Column(String(50), primary_key=True, default="imap_email")
+    status = Column(String(50), nullable=False, default="disconnected")
+    config = Column(JSONB, nullable=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    def __repr__(self) -> str:
+        return f"<Integration(id={self.id}, status={self.status})>"
 
 
 class JournalEntry(Base):

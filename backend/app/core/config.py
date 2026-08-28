@@ -13,6 +13,8 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str = "Finance Web Application"
     API_V1_STR: str = "/api/v1"
+    ENCRYPTION_KEY: str = ""
+
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
