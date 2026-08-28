@@ -293,6 +293,7 @@ async def get_zoho_status(
 
 
 @router.get("/master-data")
+@router.get("/master-data-summary")
 async def get_master_data_summary(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -315,40 +316,49 @@ async def get_master_data_summary(
         )
     ).scalars().all()
 
+    accounts_list = [
+        {
+            "id": str(a.id),
+            "zoho_account_id": a.zoho_account_id,
+            "account_name": a.account_name,
+            "account_code": a.account_code,
+            "account_type": a.account_type,
+            "is_active": a.is_active,
+        }
+        for a in accounts
+    ]
+    taxes_list = [
+        {
+            "id": str(t.id),
+            "zoho_tax_id": t.zoho_tax_id,
+            "tax_name": t.tax_name,
+            "tax_percentage": t.tax_percentage,
+            "tax_type": t.tax_type,
+            "is_active": t.is_active,
+        }
+        for t in taxes
+    ]
+    vendors_list = [
+        {
+            "id": str(v.id),
+            "zoho_contact_id": v.zoho_contact_id,
+            "vendor_name": v.vendor_name,
+            "gstin": v.gstin,
+            "pan": v.pan,
+            "approval_status": v.approval_status,
+        }
+        for v in vendors
+    ]
+
     return {
-        "accounts": [
-            {
-                "id": str(a.id),
-                "zoho_account_id": a.zoho_account_id,
-                "account_name": a.account_name,
-                "account_code": a.account_code,
-                "account_type": a.account_type,
-                "is_active": a.is_active,
-            }
-            for a in accounts
-        ],
-        "taxes": [
-            {
-                "id": str(t.id),
-                "zoho_tax_id": t.zoho_tax_id,
-                "tax_name": t.tax_name,
-                "tax_percentage": t.tax_percentage,
-                "tax_type": t.tax_type,
-                "is_active": t.is_active,
-            }
-            for t in taxes
-        ],
-        "vendors": [
-            {
-                "id": str(v.id),
-                "zoho_contact_id": v.zoho_contact_id,
-                "vendor_name": v.vendor_name,
-                "gstin": v.gstin,
-                "pan": v.pan,
-                "approval_status": v.approval_status,
-            }
-            for v in vendors
-        ],
+        "accounts": accounts_list,
+        "chart_of_accounts": accounts_list,
+        "chart_of_accounts_count": len(accounts_list),
+        "taxes": taxes_list,
+        "tax_rates": taxes_list,
+        "tax_rates_count": len(taxes_list),
+        "vendors": vendors_list,
+        "vendors_count": len(vendors_list),
     }
 
 
