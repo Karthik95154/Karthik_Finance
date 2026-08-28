@@ -46,6 +46,7 @@ import {
   Receipt,
   FileSpreadsheet,
   AlertCircle,
+  AlertTriangle,
   BookOpen,
   Scale,
   RefreshCw,
