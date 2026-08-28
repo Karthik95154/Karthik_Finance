@@ -139,8 +139,8 @@ export default function InboxPage() {
   };
 
   // Format file size
-  const formatSize = (bytes: number) => {
-    if (bytes === 0) return "0 Bytes";
+  const formatSize = (bytes: number | null | undefined) => {
+    if (!bytes || bytes === 0) return "0 Bytes";
     const k = 1024;
     const sizes = ["Bytes", "KB", "MB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));

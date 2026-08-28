@@ -486,3 +486,50 @@ async def get_invoice_file(
             "Cache-Control": "public, max-age=3600",
         },
     )
+
+
+@router.get("/{invoice_id}/pages")
+async def get_invoice_pages(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Renders multi-page PDF invoices into a list of base64 PNG images.
+    """
+    query = select(Invoice).where(Invoice.id == invoice_id)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    content = await storage_service.download_file(invoice.file_path)
+    ext = (invoice.file_name or "").lower().split(".")[-1]
+
+    if ext == "pdf" or invoice.mime_type == "application/pdf":
+        try:
+            import fitz
+            import base64
+            doc = fitz.open(stream=content, filetype="pdf")
+            pages = []
+            for page_num in range(doc.page_count):
+                page = doc.load_page(page_num)
+                pix = page.get_pixmap()
+                img_bytes = pix.tobytes("png")
+                b64_str = base64.b64encode(img_bytes).decode("utf-8")
+                pages.append(f"data:image/png;base64,{b64_str}")
+            return {"invoice_id": str(invoice_id), "page_count": doc.page_count, "pages": pages}
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to render PDF pages: {str(e)}",
+            )
+    else:
+        import base64
+        b64_str = base64.b64encode(content).decode("utf-8")
+        media_type = invoice.mime_type or "image/png"
+        return {"invoice_id": str(invoice_id), "page_count": 1, "pages": [f"data:{media_type};base64,{b64_str}"]}
+

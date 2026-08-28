@@ -35,7 +35,7 @@ export default function IntegrationsPage() {
           setIsEmailConnected(true);
           setEmailForm({
             host: settings.config.imap_server || "imap.gmail.com",
-            port: settings.config.imap_port || "993",
+            port: String(settings.config.imap_port || "993"),
             email: settings.config.email_address || "",
             password: "",
           });
@@ -67,7 +67,12 @@ export default function IntegrationsPage() {
     }
     setIsConnecting(true);
     try {
-      await configureIMAPSettings(emailForm);
+      await configureIMAPSettings({
+        imap_server: emailForm.host,
+        imap_port: parseInt(emailForm.port, 10) || 993,
+        email_address: emailForm.email,
+        password: emailForm.password,
+      });
       setIsEmailConnected(true);
       setShowEmailModal(false);
       setNotification({

@@ -756,3 +756,144 @@ export async function getJournalPreview(id: string): Promise<JournalPreviewRespo
   return res.json();
 }
 
+// ----------------------------------------------------
+// IMAP Email & Inbox Staging API Methods
+// ----------------------------------------------------
+export interface StagedDocument {
+  id: string;
+  file_name: string;
+  file_size?: number | null;
+  mime_type?: string | null;
+  file_path: string;
+  status: string;
+  email_sender?: string | null;
+  email_subject?: string | null;
+  email_received_at?: string | null;
+  created_at: string;
+}
+
+export interface IMAPSettings {
+  id?: string;
+  status?: string;
+  is_connected?: boolean;
+  config?: {
+    imap_server?: string;
+    imap_port?: number | string;
+    email_address?: string;
+    password?: string;
+  } | null;
+  last_synced_at?: string | null;
+  imap_server?: string;
+  imap_port?: number | string;
+  email_address?: string;
+}
+
+export async function listStagedDocuments(): Promise<StagedDocument[]> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/inbox/staged`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to list staged documents");
+  }
+  return res.json();
+}
+
+export async function processStagedDocument(id: string): Promise<any> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/inbox/staged/${id}/process`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to process staged document");
+  }
+  return res.json();
+}
+
+export async function deleteStagedDocument(id: string): Promise<any> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/inbox/staged/${id}`, {
+    method: "DELETE",
+    headers: authHeaders,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to delete staged document");
+  }
+  return res.json();
+}
+
+export async function pollEmails(): Promise<{
+  success: boolean;
+  emails_checked: number;
+  attachments_found: number;
+  accepted_attachments: number;
+  duplicates: number;
+  new_documents: number;
+  failed_attachments: number;
+  errors: any[];
+}> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/inbox/poll`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to poll emails");
+  }
+  return res.json();
+}
+
+export async function getIMAPSettings(): Promise<IMAPSettings> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/settings/integrations/imap_email`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    return { imap_server: "imap.gmail.com", imap_port: 993, email_address: "", is_connected: false };
+  }
+  return res.json();
+}
+
+export async function configureIMAPSettings(data: {
+  imap_server: string;
+  imap_port: number;
+  email_address: string;
+  password?: string;
+}): Promise<any> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/settings/integrations/imap_email/configure`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+    },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to configure IMAP settings");
+  }
+  return res.json();
+}
+
+export async function disconnectIMAP(): Promise<any> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/settings/integrations/imap_email/disconnect`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to disconnect IMAP");
+  }
+  return res.json();
+}
+
+
