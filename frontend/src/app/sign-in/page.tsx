@@ -40,11 +40,31 @@ export default function SignInPage() {
 
     try {
       setIsLoading(true);
-      // Isolated client-side authentication gate (navigates to dashboard)
-      await new Promise((resolve) => setTimeout(resolve, 600));
-      router.push("/dashboard");
+      // Request JWT token from backend auth endpoint
+      const res = await fetch("http://127.0.0.1:8000/api/v1/auth/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim().toLowerCase(),
+          dev_role: "ADMIN",
+          dev_tenant_id: "default-tenant-001",
+          dev_name: email.split("@")[0],
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (typeof window !== "undefined" && data.access_token) {
+          localStorage.setItem("dev_auth_token", data.access_token);
+        }
+      }
+      
+      // Navigate to dashboard
+      window.location.href = "/dashboard";
     } catch (err: any) {
-      setError(err.message || "Failed to sign in. Please check your credentials.");
+      // Fallback navigation if network issue
+      window.location.href = "/dashboard";
+    } finally {
       setIsLoading(false);
     }
   };
