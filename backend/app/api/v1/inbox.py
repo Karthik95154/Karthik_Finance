@@ -120,10 +120,16 @@ async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(ge
         # Perform IMAP polling
         poll_res = await imap_service.poll_mailbox(integration.config, window_hours=window_hours)
     except Exception as e:
-        logger.error(f"IMAP Polling failed: {e}")
+        err_msg = str(e)
+        logger.error(f"IMAP Polling failed: {err_msg}")
+        if "AUTHENTICATIONFAILED" in err_msg or "Invalid credentials" in err_msg:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="IMAP authentication failed. For Gmail accounts, please generate a 16-character Google App Password (https://myaccount.google.com/apppasswords) and update your credentials in the Integrations hub.",
+            )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to poll mailbox: {str(e)}",
+            detail=f"Failed to poll mailbox: {err_msg}",
         )
 
     attachments = poll_res.get("attachments", [])
