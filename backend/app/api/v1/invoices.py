@@ -412,3 +412,73 @@ async def get_invoice_file(
             "Cache-Control": "public, max-age=3600",
         },
     )
+<<<<<<< HEAD
+
+
+@router.get("/{invoice_id}/pages")
+async def get_invoice_pdf_pages(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Renders all pages of a PDF invoice to PNG images using PyMuPDF (fitz)
+    and returns a JSON list of base64 data URLs for in-browser rendering.
+    """
+    query = select(Invoice).where(Invoice.id == invoice_id)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    try:
+        content = await storage_service.download_file(invoice.file_path)
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invoice file not found in storage.",
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Storage retrieval error: {str(e)}",
+        )
+
+    # Verify if it is a PDF
+    ext = invoice.file_name.lower().split(".")[-1]
+    if ext != "pdf":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only PDF documents can be rendered to multi-page previews.",
+        )
+
+    import fitz
+    import base64
+    
+    try:
+        doc = fitz.open(stream=content, filetype="pdf")
+        pages = []
+        for page_num in range(doc.page_count):
+            page = doc.load_page(page_num)
+            # Render page to PNG bytes (150 DPI is crisp and fast)
+            pix = page.get_pixmap(dpi=150)
+            png_bytes = pix.tobytes("png")
+            # Encode to base64 data URL
+            b64_str = base64.b64encode(png_bytes).decode("utf-8")
+            pages.append(f"data:image/png;base64,{b64_str}")
+        doc.close()
+        return {"pages": pages}
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to render PDF pages using PyMuPDF: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to render PDF document: {str(e)}",
+        )
+
+=======
+>>>>>>> origin/main
