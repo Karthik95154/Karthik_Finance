@@ -108,19 +108,22 @@ def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str
         if total_messages > 0:
             start_seq = max(1, total_messages - scan_limit + 1)
             end_seq = total_messages
-            # Fetch headers (Date, Subject, From, Message-ID, Content-Type) for range in a single batch request
-            logger.info(f"Fetching headers in batch for messages {start_seq} to {end_seq}...")
+            # Fetch headers and BODYSTRUCTURE for range in a single batch request
+            logger.info(f"Fetching headers & BODYSTRUCTURE in batch for messages {start_seq} to {end_seq}...")
             range_str = f"{start_seq}:{end_seq}"
             try:
-                res, batch_data = mail.fetch(range_str, "(BODY[HEADER.FIELDS (DATE SUBJECT FROM MESSAGE-ID CONTENT-TYPE)])")
+                res, batch_data = mail.fetch(range_str, "(BODYSTRUCTURE BODY[HEADER.FIELDS (DATE SUBJECT FROM MESSAGE-ID CONTENT-TYPE)])")
                 if res == "OK" and batch_data:
                     for item in batch_data:
                         if isinstance(item, tuple):
-                            # Parse sequence number from response header prefix (e.g. b'5538 (BODY[HEADER...')
+                            # Parse sequence number from response header prefix (e.g. b'5538 (BODYSTRUCTURE ...')
                             meta_part = item[0].decode("utf-8", errors="ignore").strip()
                             seq_num = meta_part.split()[0]
                             header_bytes = item[1]
-                            headers_map[seq_num] = header_bytes
+                            headers_map[seq_num] = {
+                                "header_bytes": header_bytes,
+                                "meta_str": meta_part
+                            }
             except Exception as batch_err:
                 logger.error(f"Failed to fetch headers in batch: {batch_err}. Falling back to sequential fetch.")
             
@@ -133,13 +136,20 @@ def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str
         # Iterate over emails in reverse order (most recent first)
         for msg_id_str in reversed(email_ids):
             try:
-                # Retrieve header bytes
-                header_bytes = headers_map.get(msg_id_str)
+                # Retrieve header bytes and meta_str
+                batch_entry = headers_map.get(msg_id_str)
+                header_bytes = None
+                meta_str = ""
+                if batch_entry:
+                    header_bytes = batch_entry.get("header_bytes")
+                    meta_str = batch_entry.get("meta_str", "")
+                
                 if not header_bytes:
                     start_single_header = time.perf_counter()
                     logger.info(f"Header missing from batch for message {msg_id_str}. Fetching sequentially...")
-                    res, header_data = mail.fetch(msg_id_str.encode("utf-8"), "(BODY[HEADER.FIELDS (DATE SUBJECT FROM MESSAGE-ID CONTENT-TYPE)])")
+                    res, header_data = mail.fetch(msg_id_str.encode("utf-8"), "(BODYSTRUCTURE BODY[HEADER.FIELDS (DATE SUBJECT FROM MESSAGE-ID CONTENT-TYPE)])")
                     if res == "OK" and header_data and header_data[0]:
+                        meta_str = header_data[0][0].decode("utf-8", errors="ignore")
                         header_bytes = header_data[0][1]
                     header_fetch_time_ms += (time.perf_counter() - start_single_header) * 1000.0
                         
@@ -165,15 +175,20 @@ def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str
                     logger.info(f"  EMAIL EXCLUDED: Date {received_date.isoformat()} is older than the polling start window {poll_start_time.isoformat()}")
                     continue
                 
-                # Optimize: Check if message is multipart. If not, it cannot contain file attachments!
-                is_multipart = "multipart" in content_type_header.lower()
-                if not is_multipart:
-                    logger.info(f"  EMAIL EXCLUDED: Not a multipart message (Content-Type: {content_type_header or 'None'})")
+                # Optimize: Check if BODYSTRUCTURE contains any allowed attachment extensions
+                import re
+                has_candidate = False
+                if meta_str:
+                    if re.search(r'\.(pdf|png|jpg|jpeg|tif|tiff)(?:\s|"|\))', meta_str, re.IGNORECASE):
+                        has_candidate = True
+                
+                if not has_candidate:
+                    logger.info("  EMAIL EXCLUDED: No supported attachments (.pdf, .png, .jpg, .jpeg, .tif, .tiff) in BODYSTRUCTURE")
                     continue
                 
                 # 4. Full Email Fetching (RFC822)
                 start_full_fetch = time.perf_counter()
-                logger.info(f"  --> Date & Multipart check passed. Downloading full message body...")
+                logger.info(f"  --> Date & BODYSTRUCTURE check passed. Downloading full message body...")
                 res, msg_data = mail.fetch(msg_id_str.encode("utf-8"), "(RFC822)")
                 if res != "OK" or not msg_data or not msg_data[0]:
                     logger.warning(f"  Full fetch failed for ID {msg_id_str}. Status: {res}")
