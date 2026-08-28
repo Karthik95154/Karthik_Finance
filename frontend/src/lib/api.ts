@@ -763,3 +763,124 @@ export async function getJournalPreview(id: string): Promise<JournalPreviewRespo
   return res.json();
 }
 
+// ─── Email / IMAP Integration ───────────────────────────────────────────────
+
+export interface IMAPSettings {
+  status: "connected" | "disconnected";
+  config?: {
+    imap_server?: string;
+    imap_port?: string;
+    email_address?: string;
+  };
+}
+
+export interface StagedDocument {
+  id: string;
+  file_name: string;
+  file_size: number;
+  mime_type: string;
+  email_subject?: string | null;
+  email_sender?: string | null;
+  email_received_at?: string | null;
+  created_at: string;
+  storage_path?: string | null;
+}
+
+export interface EmailPollSummary {
+  success: boolean;
+  emails_checked: number;
+  attachments_found: number;
+  accepted_attachments: number;
+  duplicates: number;
+  new_documents: number;
+  failed_attachments: number;
+  errors: string[];
+}
+
+/** Fetch current IMAP integration status */
+export async function getIMAPSettings(): Promise<IMAPSettings> {
+  const res = await fetch(`${API_BASE}/settings/integrations/imap_email`, { cache: "no-store" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to fetch IMAP settings");
+  }
+  return res.json();
+}
+
+/** Configure / save IMAP credentials */
+export async function configureIMAPSettings(form: {
+  host: string;
+  port: string;
+  email: string;
+  password: string;
+}): Promise<void> {
+  const res = await fetch(`${API_BASE}/settings/integrations/imap_email/configure`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      imap_server: form.host,
+      imap_port: parseInt(form.port, 10),
+      email_address: form.email,
+      password: form.password,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to configure IMAP settings");
+  }
+}
+
+/** Disconnect the IMAP email integration */
+export async function disconnectIMAP(): Promise<void> {
+  const res = await fetch(`${API_BASE}/settings/integrations/imap_email/disconnect`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to disconnect IMAP");
+  }
+}
+
+/** Trigger an email poll/check-mail operation */
+export async function pollEmails(windowHours = 168): Promise<EmailPollSummary> {
+  const res = await fetch(`${API_BASE}/email/poll?window_hours=${windowHours}`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Email polling failed");
+  }
+  return res.json();
+}
+
+/** List all documents currently in the Staging Queue */
+export async function listStagedDocuments(): Promise<StagedDocument[]> {
+  const res = await fetch(`${API_BASE}/inbox/staged`, { cache: "no-store" });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to list staged documents");
+  }
+  return res.json();
+}
+
+/** Promote a staged document to the AI extraction pipeline */
+export async function processStagedDocument(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/inbox/staged/${id}/process`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to process staged document");
+  }
+}
+
+/** Delete a staged document from the queue */
+export async function deleteStagedDocument(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/inbox/staged/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to delete staged document");
+  }
+}
