@@ -430,6 +430,7 @@ async def get_invoice_journal(
 @router.get("/{invoice_id}/file")
 async def get_invoice_file(
     invoice_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """

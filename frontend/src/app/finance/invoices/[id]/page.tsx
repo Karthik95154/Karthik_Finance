@@ -229,6 +229,9 @@ export default function InvoiceWorkspacePage() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [journalPreview, setJournalPreview] = useState<JournalPreviewResponse | null>(null);
 
   // Editable form state
   const [formData, setFormData] = useState<ExtractedInvoiceData>({});
@@ -245,9 +248,10 @@ export default function InvoiceWorkspacePage() {
     async function loadData() {
       try {
         setLoading(true);
-        const [invData, listData] = await Promise.all([
+        const [invData, listData, jPreview] = await Promise.all([
           getInvoice(invoiceId),
           listInvoices().catch(() => []),
+          getJournalPreview(invoiceId).catch(() => null),
         ]);
 
         setInvoice(invData);
@@ -467,6 +471,10 @@ export default function InvoiceWorkspacePage() {
       if (updated.financial_validation_result) setFinancialValidationResult(updated.financial_validation_result);
       if (updated.journal_entry) setJournalEntry(updated.journal_entry);
       setSaveSuccess(true);
+
+      // Refresh journal preview with saved changes
+      getJournalPreview(invoiceId).then(setJournalPreview).catch(() => null);
+
       setTimeout(() => setSaveSuccess(false), 3000);
     } catch (err: any) {
       setError(err.message || "Failed to save changes.");
@@ -979,8 +987,25 @@ export default function InvoiceWorkspacePage() {
                 }}
               >
                 <div>
-                  <div style={{ fontSize: "11px", fontWeight: "700", letterSpacing: "0.06em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
-                    AI Extraction Review
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
+                    <span style={{ fontSize: "11px", fontWeight: "700", letterSpacing: "0.06em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                      AI Extraction Review
+                    </span>
+                    {invoice?.approval_status === "APPROVED" && (
+                      <span className="badge badge-success" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                        <Check size={10} /> Approved
+                      </span>
+                    )}
+                    {invoice?.approval_status === "REJECTED" && (
+                      <span className="badge badge-danger" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                        <X size={10} /> Rejected
+                      </span>
+                    )}
+                    {invoice?.export_status === "EXPORTED" && (
+                      <span className="badge badge-uploaded" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px" }}>
+                        <Send size={10} /> Zoho Synced
+                      </span>
+                    )}
                   </div>
                   <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)" }}>
                     Final Invoice & Accounting Workspace
@@ -1015,6 +1040,7 @@ export default function InvoiceWorkspacePage() {
                       fontSize: "12px",
                       color: invoice?.approval_status === "APPROVED" ? "#34c759" : "var(--success)",
                       borderColor: "var(--border-subtle)",
+                      background: invoice?.approval_status === "APPROVED" ? "#f0fdf4" : undefined,
                     }}
                   >
                     <Check size={14} />
@@ -1026,11 +1052,12 @@ export default function InvoiceWorkspacePage() {
                     disabled={isExporting || invoice?.approval_status !== "APPROVED" || invoice?.export_status === "EXPORTED"}
                     className="btn btn-secondary"
                     style={{
-                      padding: "6px 12px",
+                      padding: "6px 14px",
                       fontSize: "12px",
                       color: invoice?.export_status === "EXPORTED" ? "#34c759" : "var(--accent)",
                       borderColor: "var(--border-subtle)",
                     }}
+                    title={invoice?.approval_status !== "APPROVED" ? "Approve the invoice first to export to Zoho Books" : "Export approved bill to Zoho Books"}
                   >
                     <Send size={14} />
                     <span>{isExporting ? "Exporting..." : invoice?.export_status === "EXPORTED" ? "Exported ✓" : "Export"}</span>
@@ -2843,7 +2870,7 @@ export default function InvoiceWorkspacePage() {
                   />
                 </section>
 
-                {/* 11. SAVE CHANGES (WORKING BUTTON) */}
+                {/* 12. SAVE CHANGES (WORKING BUTTON) */}
                 <section
                   style={{
                     borderTop: "1px solid var(--border-subtle)",
@@ -3001,33 +3028,145 @@ export default function InvoiceWorkspacePage() {
                   <div style={{ fontSize: "13px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.04em" }}>
                     Exported to Zoho
                   </div>
-                  <span className="badge badge-uploaded">0</span>
+                  <span className="badge badge-uploaded" style={{ background: "#e8f4fd", color: "#0066cc", border: "1px solid #cce5ff" }}>
+                    {exportedInvoices.length}
+                  </span>
                 </div>
 
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: "40px 16px",
-                    textAlign: "center",
-                    color: "var(--text-secondary)",
-                  }}
-                >
-                  <Send size={28} color="var(--text-tertiary)" style={{ marginBottom: "10px", opacity: 0.6 }} />
-                  <div style={{ fontSize: "13px", fontWeight: "500", color: "var(--text-secondary)" }}>
-                    No invoices exported yet.
-                  </div>
-                  <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "4px" }}>
-                    Zoho Books synchronization activates in later Finance stages.
-                  </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "300px", overflowY: "auto" }}>
+                  {exportedInvoices.length > 0 ? (
+                    exportedInvoices.map((item) => (
+                      <div
+                        key={item.id}
+                        onClick={() => router.push(`/finance/invoices/${item.id}`)}
+                        style={{
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          background: item.id === invoiceId ? "#f0f7ff" : "var(--bg-main)",
+                          border: item.id === invoiceId ? "1px solid var(--accent)" : "1px solid var(--border-subtle)",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+                          <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)" }}>
+                            {item.zoho_bill_number ? `Bill #${item.zoho_bill_number}` : (item.invoice_number ? `INV #${item.invoice_number}` : item.file_name)}
+                          </span>
+                          {item.total_amount && (
+                            <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-primary)" }}>
+                              ₹{item.total_amount.toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--text-secondary)" }}>
+                          <span>{item.vendor_name || item.file_name}</span>
+                          <span className="badge" style={{ fontSize: "10px", background: "#e8f4fd", color: "#0066cc", border: "1px solid #cce5ff" }}>
+                            ZOHO BILL ✓
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div
+                      style={{
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        padding: "36px 16px",
+                        textAlign: "center",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      <Send size={24} color="var(--text-tertiary)" style={{ marginBottom: "8px", opacity: 0.5 }} />
+                      <div style={{ fontSize: "12px", fontWeight: "500", color: "var(--text-secondary)" }}>
+                        No invoices exported yet.
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "2px" }}>
+                        Approve an invoice and click "Export to Zoho" to sync.
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           </div>
         </>
       ) : null}
+
+      {/* Rejection Modal Dialog */}
+      {rejectModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(0, 0, 0, 0.4)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "var(--radius-md)",
+              padding: "24px",
+              width: "100%",
+              maxWidth: "460px",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              border: "1px solid var(--border-subtle)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "12px" }}>
+              <div style={{ padding: "8px", background: "#fef2f2", borderRadius: "50%", color: "var(--danger)" }}>
+                <AlertTriangle size={20} />
+              </div>
+              <h3 style={{ fontSize: "16px", fontWeight: "700", color: "var(--text-primary)" }}>
+                Reject Invoice
+              </h3>
+            </div>
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "16px" }}>
+              Please specify the reason for rejecting this invoice. This will be permanently recorded in the audit trail.
+            </p>
+            <textarea
+              className="form-input"
+              rows={3}
+              placeholder="e.g. Incorrect GSTIN, missing PO number, or price mismatch..."
+              value={rejectReason}
+              onChange={(e) => setRejectReason(e.target.value)}
+              style={{ width: "100%", marginBottom: "18px", fontSize: "13px" }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setRejectModalOpen(false)}
+                className="btn btn-secondary"
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRejectConfirm}
+                disabled={isRejecting || !rejectReason.trim()}
+                className="btn btn-primary"
+                style={{
+                  padding: "8px 16px",
+                  fontSize: "13px",
+                  background: "var(--danger)",
+                  borderColor: "var(--danger)",
+                }}
+              >
+                {isRejecting ? "Rejecting..." : "Confirm Rejection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style jsx global>{`
         .form-label {

@@ -1,9 +1,9 @@
 import logging
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from app.db.database import AsyncSessionLocal
-from app.db.models import Invoice
+from app.db.models import Invoice, JournalEntry, JournalLine
 from app.storage.supabase_storage import storage_service
 from app.services.ai_service import ai_service
 from app.services.accounting_service import accounting_service
