@@ -57,24 +57,63 @@ export default function IntegrationsPage() {
             marginBottom: "24px",
           }}
         >
-          Connect your finance systems here.
+          Connect and synchronize your finance ERP and accounting platforms.
         </p>
 
         <div
           style={{
-            background: "var(--bg-main)",
-            border: "1px solid var(--border-subtle)",
-            borderRadius: "var(--radius-sm)",
-            padding: "12px 16px",
-            fontSize: "12px",
-            color: "var(--text-secondary)",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: "8px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+            textAlign: "left",
+            marginBottom: "20px",
           }}
         >
-          <Puzzle size={15} color="var(--accent)" />
-          <span>Accounting ERP sync (e.g. Zoho Books, Tally) is configured separately in Stage 8.</span>
+          <a
+            href="/finance/settings"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "16px",
+              background: "#ffffff",
+              border: "1px solid var(--border-subtle)",
+              borderRadius: "var(--radius-sm)",
+              textDecoration: "none",
+              transition: "border-color var(--transition-fast)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+              <div
+                style={{
+                  width: "40px",
+                  height: "40px",
+                  borderRadius: "8px",
+                  background: "rgba(0, 113, 227, 0.08)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "var(--accent)",
+                }}
+              >
+                <ShieldCheck size={22} />
+              </div>
+              <div>
+                <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)" }}>
+                  Zoho Books
+                </div>
+                <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
+                  OAuth 2.0, Chart of Accounts, Tax Rates, and Bill Export
+                </div>
+              </div>
+            </div>
+            <span
+              className="btn btn-secondary"
+              style={{ padding: "6px 12px", fontSize: "12px" }}
+            >
+              Configure →
+            </span>
+          </a>
         </div>
       </div>
     </AppShell>
