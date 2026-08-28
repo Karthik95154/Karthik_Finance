@@ -1,5 +1,6 @@
 import os
-from typing import List
+from typing import Any, List
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,12 +13,30 @@ class Settings(BaseSettings):
 
     PROJECT_NAME: str = "Finance Web Application"
     API_V1_STR: str = "/api/v1"
+    ENCRYPTION_KEY: str = ""
+
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3002",
         "http://127.0.0.1:3002",
     ]
+    FRONTEND_URL: str = "http://localhost:3000"
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: Any) -> List[str]:
+        if isinstance(v, str):
+            if v.strip().startswith("[") and v.strip().endswith("]"):
+                import json
+                try:
+                    return json.loads(v)
+                except Exception:
+                    pass
+            return [x.strip() for x in v.split(",") if x.strip()]
+        elif isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return v
 
     # Supabase Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/postgres"
@@ -39,13 +58,18 @@ class Settings(BaseSettings):
     ENABLE_DEV_AUTH: bool = True
 
     def model_post_init(self, __context) -> None:
-        if self.ENVIRONMENT == "production":
+        if self.FRONTEND_URL:
+            clean_fe = self.FRONTEND_URL.rstrip("/")
+            if clean_fe not in self.CORS_ORIGINS:
+                self.CORS_ORIGINS.append(clean_fe)
+
+        if self.ENVIRONMENT in ("production", "staging"):
             if not self.AUTH_SECRET_KEY:
-                raise ValueError("CRITICAL SECURITY ERROR: 'AUTH_SECRET_KEY' environment variable must be set in production mode.")
+                raise ValueError(f"CRITICAL SECURITY ERROR: 'AUTH_SECRET_KEY' environment variable must be set in {self.ENVIRONMENT} mode.")
             if not self.TOKEN_ENCRYPTION_KEY:
-                raise ValueError("CRITICAL SECURITY ERROR: 'TOKEN_ENCRYPTION_KEY' environment variable must be set in production mode.")
-            # Disable dev auth strictly in production
-            self.ENABLE_DEV_AUTH = False
+                raise ValueError(f"CRITICAL SECURITY ERROR: 'TOKEN_ENCRYPTION_KEY' environment variable must be set in {self.ENVIRONMENT} mode.")
+            if self.ENVIRONMENT == "production":
+                self.ENABLE_DEV_AUTH = False
         else:
             # Safe local fallback for development/testing if not specified in .env
             if not self.AUTH_SECRET_KEY:

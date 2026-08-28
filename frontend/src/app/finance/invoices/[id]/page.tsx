@@ -21,6 +21,10 @@ import {
   AccountingOutput,
   AccountingLineItem,
   TdsResult,
+  GstResult,
+  ItcResult,
+  FinancialValidationResult,
+  JournalEntry,
   JournalPreviewResponse,
 } from "@/lib/api";
 import {
@@ -45,10 +49,9 @@ import {
   BookOpen,
   Scale,
   RefreshCw,
-  CheckCircle,
-  AlertTriangle,
-  Link as LinkIcon,
   ShieldCheck,
+  Landmark,
+  Calculator,
 } from "lucide-react";
 
 // Helper to parse clean numeric values including currency strings like "Rupees 35,36,917.24" or "Rs. 248,417.88"
@@ -220,6 +223,9 @@ export default function InvoiceWorkspacePage() {
   const [isApproving, setIsApproving] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [journalPreview, setJournalPreview] = useState<JournalPreviewResponse | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -230,6 +236,10 @@ export default function InvoiceWorkspacePage() {
   // Editable form state
   const [formData, setFormData] = useState<ExtractedInvoiceData>({});
   const [accountingData, setAccountingData] = useState<AccountingOutput>({});
+  const [gstResult, setGstResult] = useState<GstResult | null>(null);
+  const [itcResult, setItcResult] = useState<ItcResult | null>(null);
+  const [financialValidationResult, setFinancialValidationResult] = useState<FinancialValidationResult | null>(null);
+  const [journalEntry, setJournalEntry] = useState<JournalEntry | null>(null);
   const [additionalFieldsText, setAdditionalFieldsText] = useState<string>("");
 
   useEffect(() => {
@@ -246,7 +256,7 @@ export default function InvoiceWorkspacePage() {
 
         setInvoice(invData);
         setWorkflowInvoices(listData);
-        if (jPreview) setJournalPreview(jPreview);
+        getJournalPreview(invoiceId).then(setJournalPreview).catch(() => null);
 
         // If still in initial stages, route to processing page
         if (
@@ -321,6 +331,10 @@ export default function InvoiceWorkspacePage() {
         const accOutput =
           invData.current_accounting_output || invData.accounting_output || {};
         setAccountingData(accOutput);
+        setGstResult(invData.gst_result || null);
+        setItcResult(invData.itc_result || null);
+        setFinancialValidationResult(invData.financial_validation_result || null);
+        setJournalEntry(invData.journal_entry || null);
       } catch (err: any) {
         setError(err.message || "Failed to load invoice details.");
       } finally {
@@ -452,6 +466,10 @@ export default function InvoiceWorkspacePage() {
         accountingData
       );
       setInvoice(updated);
+      if (updated.gst_result) setGstResult(updated.gst_result);
+      if (updated.itc_result) setItcResult(updated.itc_result);
+      if (updated.financial_validation_result) setFinancialValidationResult(updated.financial_validation_result);
+      if (updated.journal_entry) setJournalEntry(updated.journal_entry);
       setSaveSuccess(true);
 
       // Refresh journal preview with saved changes
@@ -462,6 +480,41 @@ export default function InvoiceWorkspacePage() {
       setError(err.message || "Failed to save changes.");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // Accept AI suggestions into approved fields for all lines
+  const handleAcceptAllAccounts = () => {
+    const updated = (accountingData.accounting || []).map((acc, idx) => {
+      const id = acc.final_account_id || acc.ai_account_id || `ACC_${idx + 1}`;
+      const name = acc.final_account_name || acc.ai_account_name || "General Expenses";
+      return {
+        ...acc,
+        approved_account_id: id,
+        approved_account_name: name,
+        final_account_id: id,
+        final_account_name: name,
+      };
+    });
+    setAccountingData({ ...accountingData, accounting: updated });
+    setActionNotice("Accepted all suggested Chart of Accounts.");
+    setTimeout(() => setActionNotice(null), 3000);
+  };
+
+  // Accept a single AI suggestion
+  const handleAcceptAccount = (index: number) => {
+    const updated = [...(accountingData.accounting || [])];
+    if (updated[index]) {
+      const id = updated[index].final_account_id || updated[index].ai_account_id || `ACC_${index + 1}`;
+      const name = updated[index].final_account_name || updated[index].ai_account_name || "General Expenses";
+      updated[index] = {
+        ...updated[index],
+        approved_account_id: id,
+        approved_account_name: name,
+        final_account_id: id,
+        final_account_name: name,
+      };
+      setAccountingData({ ...accountingData, accounting: updated });
     }
   };
 
@@ -617,14 +670,23 @@ export default function InvoiceWorkspacePage() {
           borderBottom: "1px solid var(--border-subtle)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <button
-            onClick={() => router.push("/finance/upload")}
+            onClick={() => router.push("/finance/invoices")}
             className="btn btn-secondary"
             style={{ padding: "6px 12px", fontSize: "13px" }}
+            title="Return to Invoice Registry"
           >
             <ArrowLeft size={14} />
-            <span>Upload New</span>
+            <span>Invoices</span>
+          </button>
+          <button
+            onClick={() => router.push("/dashboard")}
+            className="btn btn-secondary"
+            style={{ padding: "6px 10px", fontSize: "12px" }}
+            title="Return to Dashboard"
+          >
+            <span>Dashboard</span>
           </button>
           <div>
             <span style={{ fontSize: "16px", fontWeight: "700", letterSpacing: "-0.02em" }}>
@@ -638,22 +700,121 @@ export default function InvoiceWorkspacePage() {
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           {invoice?.accounting_confidence !== null && invoice?.accounting_confidence !== undefined && (
             <span className="badge badge-uploaded" style={{ fontSize: "12px", color: "var(--accent)" }}>
-              COA Confidence: {Math.round(invoice.accounting_confidence * 100)}%
+              COA: {Math.round(invoice.accounting_confidence * 100)}%
             </span>
           )}
-          <span
-            className={`badge ${invoice?.status === "COMPLETED"
-                ? "badge-success"
-                : invoice?.status === "FAILED"
+
+          {invoice?.approval_status && (
+            <span
+              className={`badge ${
+                invoice.approval_status === "APPROVED"
+                  ? "badge-success"
+                  : invoice.approval_status === "REJECTED"
                   ? "badge-danger"
                   : "badge-uploaded"
               }`}
+              style={{ fontSize: "12px" }}
+            >
+              {invoice.approval_status === "APPROVED"
+                ? "Approved ✓"
+                : invoice.approval_status === "REJECTED"
+                ? "Rejected ✗"
+                : "Pending Review"}
+            </span>
+          )}
+
+          {invoice?.export_status === "EXPORTED" ? (
+            <span className="badge badge-success" style={{ fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+              <ShieldCheck size={13} />
+              Zoho Bill: {invoice.zoho_bill_number ? `#${invoice.zoho_bill_number}` : invoice.zoho_bill_id || "Exported ✓"}
+            </span>
+          ) : (
+            <span className="badge badge-uploaded" style={{ fontSize: "12px" }}>
+              {invoice?.export_status || "NOT_EXPORTED"}
+            </span>
+          )}
+
+          {/* Action Buttons: Reject, Approve, Export to Zoho */}
+          {invoice?.approval_status !== "APPROVED" && (
+            <button
+              onClick={() => setRejectModalOpen(true)}
+              className="btn btn-secondary"
+              style={{
+                padding: "6px 12px",
+                fontSize: "12px",
+                color: "var(--danger)",
+                borderColor: "rgba(255, 69, 58, 0.3)",
+              }}
+            >
+              <X size={13} />
+              <span>Reject</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleApprove}
+            disabled={isApproving || invoice?.approval_status === "APPROVED"}
+            className="btn btn-primary"
+            style={{
+              padding: "6px 14px",
+              fontSize: "12px",
+              background:
+                invoice?.approval_status === "APPROVED"
+                  ? "#34c759"
+                  : "linear-gradient(135deg, #0071e3 0%, #005bb5 100%)",
+            }}
           >
-            {invoice?.status === "COMPLETED" ? "Qwen3-VL + Qwen3-4B Ready" : invoice?.status}
-          </span>
+            <Check size={13} />
+            <span>
+              {isApproving
+                ? "Balancing & Approving..."
+                : invoice?.approval_status === "APPROVED"
+                ? "Approved ✓"
+                : "Approve"}
+            </span>
+          </button>
+
+          <button
+            onClick={handleExport}
+            disabled={
+              isExporting ||
+              invoice?.approval_status !== "APPROVED" ||
+              invoice?.export_status === "EXPORTED"
+            }
+            className="btn btn-primary"
+            style={{
+              padding: "6px 14px",
+              fontSize: "12px",
+              background:
+                invoice?.export_status === "EXPORTED"
+                  ? "#34c759"
+                  : invoice?.approval_status === "APPROVED"
+                  ? "linear-gradient(135deg, #0071e3 0%, #005bb5 100%)"
+                  : "var(--border-subtle)",
+              color: invoice?.approval_status === "APPROVED" ? "#ffffff" : "var(--text-tertiary)",
+              cursor:
+                invoice?.approval_status === "APPROVED" && invoice?.export_status !== "EXPORTED"
+                  ? "pointer"
+                  : "not-allowed",
+            }}
+            title={
+              invoice?.approval_status !== "APPROVED"
+                ? "Must approve invoice with authoritative Chart of Accounts before exporting to Zoho Books"
+                : "Export bill to Zoho Books"
+            }
+          >
+            <Send size={13} />
+            <span>
+              {isExporting
+                ? "Syncing to Zoho..."
+                : invoice?.export_status === "EXPORTED"
+                ? "Exported to Zoho ✓"
+                : "Export to Zoho"}
+            </span>
+          </button>
         </div>
       </div>
 
@@ -853,30 +1014,31 @@ export default function InvoiceWorkspacePage() {
 
                 {/* Top Right Action Buttons: Reject, Approve, Export */}
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <button
-                    type="button"
-                    onClick={() => setRejectModalOpen(true)}
-                    disabled={isRejecting || isApproving || isExporting}
-                    className="btn btn-secondary"
-                    style={{
-                      padding: "6px 12px",
-                      fontSize: "12px",
-                      color: "var(--danger)",
-                      borderColor: "var(--border-subtle)",
-                    }}
-                  >
-                    <X size={14} />
-                    <span>{isRejecting ? "Rejecting..." : "Reject"}</span>
-                  </button>
+                  {invoice?.approval_status !== "APPROVED" && (
+                    <button
+                      type="button"
+                      onClick={() => setRejectModalOpen(true)}
+                      className="btn btn-secondary"
+                      style={{
+                        padding: "6px 12px",
+                        fontSize: "12px",
+                        color: "var(--danger)",
+                        borderColor: "var(--border-subtle)",
+                      }}
+                    >
+                      <X size={14} />
+                      <span>Reject</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={handleApprove}
-                    disabled={isApproving || isRejecting || isExporting || invoice?.approval_status === "APPROVED"}
+                    disabled={isApproving || invoice?.approval_status === "APPROVED"}
                     className="btn btn-secondary"
                     style={{
                       padding: "6px 12px",
                       fontSize: "12px",
-                      color: invoice?.approval_status === "APPROVED" ? "#16a34a" : "var(--success)",
+                      color: invoice?.approval_status === "APPROVED" ? "#34c759" : "var(--success)",
                       borderColor: "var(--border-subtle)",
                       background: invoice?.approval_status === "APPROVED" ? "#f0fdf4" : undefined,
                     }}
@@ -887,23 +1049,18 @@ export default function InvoiceWorkspacePage() {
                   <button
                     type="button"
                     onClick={handleExport}
-                    disabled={isExporting || isApproving || invoice?.approval_status !== "APPROVED" || invoice?.export_status === "EXPORTED"}
-                    className="btn btn-primary"
+                    disabled={isExporting || invoice?.approval_status !== "APPROVED" || invoice?.export_status === "EXPORTED"}
+                    className="btn btn-secondary"
                     style={{
                       padding: "6px 14px",
                       fontSize: "12px",
-                      opacity: invoice?.approval_status !== "APPROVED" && invoice?.export_status !== "EXPORTED" ? 0.6 : 1,
+                      color: invoice?.export_status === "EXPORTED" ? "#34c759" : "var(--accent)",
+                      borderColor: "var(--border-subtle)",
                     }}
                     title={invoice?.approval_status !== "APPROVED" ? "Approve the invoice first to export to Zoho Books" : "Export approved bill to Zoho Books"}
                   >
                     <Send size={14} />
-                    <span>
-                      {isExporting
-                        ? "Exporting to Zoho..."
-                        : invoice?.export_status === "EXPORTED"
-                        ? `Zoho Bill: ${invoice.zoho_bill_number || invoice.zoho_bill_id || "Exported"}`
-                        : "Export to Zoho"}
-                    </span>
+                    <span>{isExporting ? "Exporting..." : invoice?.export_status === "EXPORTED" ? "Exported ✓" : "Export"}</span>
                   </button>
                 </div>
               </div>
@@ -1563,11 +1720,11 @@ export default function InvoiceWorkspacePage() {
 
                 {/* 8. ACCOUNTING CLASSIFICATION (STAGE 3 QWEN3-4B RESULT) */}
                 <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <BookOpen size={16} color="var(--accent)" />
                       <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                        8. Accounting Classification (Qwen3-4B)
+                        8. Accounting Classification &amp; COA Review
                       </h3>
                       {accountingLines.length > 0 && (
                         <span className="badge badge-success" style={{ fontSize: "11px" }}>
@@ -1577,45 +1734,23 @@ export default function InvoiceWorkspacePage() {
                     </div>
 
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAccountingData((prev) => {
-                            const list = (prev.accounting || []).map((acc, i) => {
-                              const approvedId =
-                                acc.approved_account_id ||
-                                acc.final_account_id ||
-                                acc.ai_account_id ||
-                                `ACC_${i + 1}`;
-                              const approvedName =
-                                acc.approved_account_name ||
-                                acc.final_account_name ||
-                                acc.ai_account_name ||
-                                "General Expenses";
-                              return {
-                                ...acc,
-                                approved_account_id: approvedId,
-                                approved_account_name: approvedName,
-                                final_account_id: approvedId,
-                                final_account_name: approvedName,
-                              };
-                            });
-                            return { ...prev, accounting: list };
-                          });
-                        }}
-                        className="btn btn-secondary"
-                        style={{
-                          padding: "4px 10px",
-                          fontSize: "12px",
-                          background: "#f0fdf4",
-                          color: "#166534",
-                          borderColor: "#bbf7d0",
-                        }}
-                        title="Accept and approve all AI suggested Chart of Accounts line items"
-                      >
-                        <Check size={12} />
-                        <span>Accept All Accounts</span>
-                      </button>
+                      {accountingLines.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleAcceptAllAccounts}
+                          className="btn btn-secondary"
+                          style={{
+                            padding: "4px 10px",
+                            fontSize: "12px",
+                            color: "var(--accent)",
+                            borderColor: "var(--accent)",
+                          }}
+                          title="Accept all AI suggestions as approved accounts"
+                        >
+                          <Check size={12} />
+                          <span>Accept All Accounts</span>
+                        </button>
+                      )}
 
                       <button
                         type="button"
@@ -1639,114 +1774,92 @@ export default function InvoiceWorkspacePage() {
                       background: "#ffffff",
                     }}
                   >
-                    <table style={{ width: "100%", minWidth: "750px", borderCollapse: "collapse", fontSize: "12px" }}>
+                    <table style={{ width: "100%", minWidth: "800px", borderCollapse: "collapse", fontSize: "12px" }}>
                       <thead>
                         <tr style={{ background: "#f9f9fb", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", textAlign: "left" }}>
                           <th style={{ padding: "8px 8px", width: "30px" }}>#</th>
-                          <th style={{ padding: "8px 8px", minWidth: "180px" }}>Item Description</th>
-                          <th style={{ padding: "8px 8px", minWidth: "220px" }}>Finance-Approved Account (COA)</th>
-                          <th style={{ padding: "8px 8px", width: "110px" }}>Account ID</th>
-                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>AI Confidence</th>
-                          <th style={{ padding: "8px 8px", width: "130px", textAlign: "center" }}>Approval Status</th>
+                          <th style={{ padding: "8px 8px", minWidth: "160px" }}>Item Description</th>
+                          <th style={{ padding: "8px 8px", minWidth: "200px" }}>Suggested Account (COA)</th>
+                          <th style={{ padding: "8px 8px", width: "90px" }}>Account Code</th>
+                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Confidence</th>
+                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Action</th>
+                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Status</th>
                         </tr>
                       </thead>
                       <tbody>
                         {accountingLines && accountingLines.length > 0 ? (
-                          accountingLines.map((acc, idx) => {
-                            const isApproved = Boolean(acc.approved_account_id || acc.approved_account_name || acc.final_account_id || acc.final_account_name);
-                            const currentName = acc.approved_account_name ?? acc.final_account_name ?? acc.ai_account_name ?? "";
-                            const currentId = acc.approved_account_id ?? acc.final_account_id ?? acc.ai_account_id ?? "-";
-
-                            return (
-                              <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                                <td style={{ padding: "8px", color: "var(--text-tertiary)", textAlign: "center" }}>
-                                  {acc.line_index || idx + 1}
-                                </td>
-                                <td style={{ padding: "8px", fontWeight: "500" }}>
-                                  {acc.source_description || formData.line_items?.[idx]?.description || "-"}
-                                </td>
-                                <td style={{ padding: "8px" }}>
-                                  <input
-                                    type="text"
-                                    className="table-input"
-                                    value={currentName}
-                                    placeholder="Assign / Approve Account"
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      handleAccountingItemChange(idx, "approved_account_name", val);
-                                      handleAccountingItemChange(idx, "final_account_name", val);
-                                      if (!acc.approved_account_id && acc.ai_account_id) {
-                                        handleAccountingItemChange(idx, "approved_account_id", acc.ai_account_id);
-                                        handleAccountingItemChange(idx, "final_account_id", acc.ai_account_id);
-                                      }
-                                    }}
-                                  />
-                                </td>
-                                <td style={{ padding: "8px" }}>
-                                  <code>{currentId}</code>
-                                </td>
-                                <td style={{ padding: "8px", textAlign: "center" }}>
-                                  {acc.ai_confidence !== undefined && acc.ai_confidence !== null ? (
-                                    <span
-                                      className={`badge ${acc.ai_confidence >= 0.85
-                                          ? "badge-success"
-                                          : acc.ai_confidence >= 0.6
-                                            ? "badge-uploaded"
-                                            : "badge-danger"
-                                        }`}
-                                      style={{ fontSize: "11px" }}
-                                    >
-                                      {Math.round(acc.ai_confidence * 100)}%
-                                    </span>
-                                  ) : (
-                                    "-"
-                                  )}
-                                </td>
-                                <td style={{ padding: "8px", textAlign: "center" }}>
-                                  {isApproved ? (
-                                    <span className="badge badge-success" style={{ fontSize: "10px" }}>
-                                      Approved ✓
-                                    </span>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        const approvedId =
-                                          acc.approved_account_id ||
-                                          acc.final_account_id ||
-                                          acc.ai_account_id ||
-                                          `ACC_${idx + 1}`;
-                                        const approvedName =
-                                          acc.approved_account_name ||
-                                          acc.final_account_name ||
-                                          acc.ai_account_name ||
-                                          "General Expenses";
-                                        handleAccountingItemChange(idx, "approved_account_id", approvedId);
-                                        handleAccountingItemChange(idx, "approved_account_name", approvedName);
-                                        handleAccountingItemChange(idx, "final_account_id", approvedId);
-                                        handleAccountingItemChange(idx, "final_account_name", approvedName);
-                                      }}
-                                      className="btn btn-secondary"
-                                      style={{
-                                        padding: "2px 8px",
-                                        fontSize: "11px",
-                                        background: "#f0fdf4",
-                                        color: "#166534",
-                                        borderColor: "#bbf7d0",
-                                      }}
-                                      title="Accept this AI suggestion as approved account"
-                                    >
-                                      <Check size={11} />
-                                      <span>Accept</span>
-                                    </button>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })
+                          accountingLines.map((acc, idx) => (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                              <td style={{ padding: "8px", color: "var(--text-tertiary)", textAlign: "center" }}>
+                                {acc.line_index || idx + 1}
+                              </td>
+                              <td style={{ padding: "8px", fontWeight: "500" }}>
+                                {acc.source_description || formData.line_items?.[idx]?.description || "-"}
+                              </td>
+                              <td style={{ padding: "8px" }}>
+                                <input
+                                  type="text"
+                                  className="table-input"
+                                  value={acc.approved_account_name || acc.final_account_name || acc.ai_account_name || ""}
+                                  placeholder="Approved Account"
+                                  onChange={(e) => {
+                                    handleAccountingItemChange(idx, "final_account_name", e.target.value);
+                                    handleAccountingItemChange(idx, "approved_account_name", e.target.value);
+                                  }}
+                                />
+                              </td>
+                              <td style={{ padding: "8px" }}>
+                                <code>{acc.approved_account_id || acc.final_account_id || acc.ai_account_id || "-"}</code>
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "center" }}>
+                                {acc.ai_confidence !== undefined && acc.ai_confidence !== null ? (
+                                  <span
+                                    className={`badge ${acc.ai_confidence >= 0.85
+                                        ? "badge-success"
+                                        : acc.ai_confidence >= 0.6
+                                          ? "badge-uploaded"
+                                          : "badge-danger"
+                                      }`}
+                                    style={{ fontSize: "11px" }}
+                                  >
+                                    {Math.round(acc.ai_confidence * 100)}%
+                                  </span>
+                                ) : (
+                                  "-"
+                                )}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "center" }}>
+                                {acc.approved_account_id ? (
+                                  <span style={{ fontSize: "11px", color: "#34c759", fontWeight: "600" }}>
+                                    Approved ✓
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAcceptAccount(idx)}
+                                    className="btn btn-secondary"
+                                    style={{ padding: "2px 8px", fontSize: "11px" }}
+                                  >
+                                    Accept
+                                  </button>
+                                )}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "center" }}>
+                                {acc.ai_needs_review && !acc.approved_account_id ? (
+                                  <span className="badge badge-danger" style={{ fontSize: "10px" }}>
+                                    Review
+                                  </span>
+                                ) : (
+                                  <span className="badge badge-success" style={{ fontSize: "10px" }}>
+                                    Matched
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
                         ) : (
                           <tr>
-                            <td colSpan={6} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
+                            <td colSpan={7} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
                               No accounting classification generated yet. Click &quot;Re-run Accounting&quot; to classify with Qwen3-4B.
                             </td>
                           </tr>
@@ -1841,115 +1954,906 @@ export default function InvoiceWorkspacePage() {
                   </section>
                 )}
 
-                {/* 10. DOUBLE-ENTRY GENERAL LEDGER (JOURNAL PREVIEW) */}
-                <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <Scale size={16} color="var(--accent)" />
-                      <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                        10. Double-Entry General Ledger (Journal Preview)
-                      </h3>
-                      {journalPreview && (
-                        <span
-                          className={`badge ${journalPreview.is_balanced ? "badge-success" : "badge-danger"}`}
-                          style={{ fontSize: "11px" }}
-                        >
-                          {journalPreview.is_balanced ? "Balanced (Dr = Cr)" : `Unbalanced (Δ ₹${journalPreview.difference})`}
-                        </span>
-                      )}
-                      {journalPreview?.supply_type && (
-                        <span className="badge badge-uploaded" style={{ fontSize: "11px" }}>
-                          {journalPreview.supply_type === "INTRA_STATE" ? "Intra-State (CGST+SGST)" : "Inter-State (IGST)"}
-                        </span>
-                      )}
-                      {journalPreview?.has_unapproved_lines && (
-                        <span className="badge badge-danger" style={{ fontSize: "11px" }}>
-                          ⚠ Unapproved Suggestions (Approval Locked)
-                        </span>
-                      )}
-                    </div>
-
-                    {journalPreview && (
-                      <div style={{ fontSize: "12px", color: "var(--text-secondary)", display: "flex", gap: "12px" }}>
-                        <span>Total DR: <strong>₹{journalPreview.total_debit?.toLocaleString()}</strong></span>
-                        <span>Total CR: <strong>₹{journalPreview.total_credit?.toLocaleString()}</strong></span>
-                      </div>
-                    )}
-                  </div>
-
-                  <div
+                {/* 9. GST VALIDATION (STAGE 4 DETERMINISTIC ENGINE) */}
+                {gstResult && (
+                  <section
                     style={{
-                      overflowX: "auto",
-                      border: "1px solid var(--border-subtle)",
-                      borderRadius: "var(--radius-sm)",
-                      background: "#ffffff",
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
                     }}
                   >
-                    <table style={{ width: "100%", minWidth: "750px", borderCollapse: "collapse", fontSize: "12px" }}>
-                      <thead>
-                        <tr style={{ background: "#f9f9fb", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", textAlign: "left" }}>
-                          <th style={{ padding: "8px 8px", width: "40px", textAlign: "center" }}>#</th>
-                          <th style={{ padding: "8px 8px", width: "70px", textAlign: "center" }}>Type</th>
-                          <th style={{ padding: "8px 8px", minWidth: "220px" }}>Account Name</th>
-                          <th style={{ padding: "8px 8px", width: "120px" }}>Account ID</th>
-                          <th style={{ padding: "8px 8px", minWidth: "160px" }}>Description</th>
-                          <th style={{ padding: "8px 8px", width: "110px", textAlign: "right" }}>Amount (₹)</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {journalPreview && journalPreview.lines && journalPreview.lines.length > 0 ? (
-                          journalPreview.lines.map((line, idx) => (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <ShieldCheck size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          9. GST Structure Validation
+                        </h3>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span
+                          className={`badge ${
+                            gstResult.supply_type === "INTRA_STATE"
+                              ? "badge-success"
+                              : gstResult.supply_type === "INTER_STATE"
+                              ? "badge-uploaded"
+                              : "badge-warning"
+                          }`}
+                          style={{ fontSize: "11px", fontWeight: "600" }}
+                        >
+                          {gstResult.supply_type === "INTRA_STATE"
+                            ? "Intra-State (CGST+SGST)"
+                            : gstResult.supply_type === "INTER_STATE"
+                            ? "Inter-State (IGST)"
+                            : "Review Required"}
+                        </span>
+                        <span
+                          className={`badge ${
+                            gstResult.validation_status === "PASSED"
+                              ? "badge-success"
+                              : gstResult.validation_status === "GST_MISMATCH"
+                              ? "badge-warning"
+                              : "badge-uploaded"
+                          }`}
+                          style={{ fontSize: "11px", fontWeight: "700" }}
+                        >
+                          {gstResult.validation_status || "PENDING"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* GST Identification Grid */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(4, 1fr)",
+                        gap: "12px",
+                        background: "var(--bg-main)",
+                        padding: "12px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-subtle)",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Supplier GSTIN & State
+                        </div>
+                        <div style={{ fontWeight: "600", fontSize: "12px", fontFamily: "monospace" }}>
+                          {formData.vendor_gstin || "-"}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                          {gstResult.supplier_state_code
+                            ? `${gstResult.supplier_state_code} - ${gstResult.supplier_state_name}`
+                            : "Unresolved"}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Buyer GSTIN & State
+                        </div>
+                        <div style={{ fontWeight: "600", fontSize: "12px", fontFamily: "monospace" }}>
+                          {formData.customer_gstin || "-"}
+                        </div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                          {gstResult.buyer_state_code
+                            ? `${gstResult.buyer_state_code} - ${gstResult.buyer_state_name}`
+                            : "Unresolved"}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Place of Supply (POS)
+                        </div>
+                        <div style={{ fontWeight: "600", fontSize: "12px" }}>
+                          {gstResult.place_of_supply_state_name
+                            ? `${gstResult.place_of_supply_state_code} - ${gstResult.place_of_supply_state_name}`
+                            : "Unresolved"}
+                        </div>
+                        <div style={{ fontSize: "10px", color: "var(--accent)", marginTop: "2px" }}>
+                          Source: {gstResult.place_of_supply_source === "explicit_invoice" ? "Explicit Invoice" : gstResult.place_of_supply_source === "buyer_gstin_fallback" ? "Buyer GSTIN Fallback" : "Unresolved"}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Reverse Charge (RCM)
+                        </div>
+                        <div style={{ fontWeight: "600", fontSize: "12px" }}>
+                          {gstResult.is_reverse_charge ? "Yes (RCM Applicable)" : "No"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Extracted vs Calculated Tax Comparison Table */}
+                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
+                      <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", textAlign: "left" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
+                            <th style={{ padding: "8px" }}>Tax Component</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Extracted (Source)</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Calculated (Engine)</th>
+                            <th style={{ padding: "8px", textAlign: "center" }}>Validation</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                            <td style={{ padding: "8px", fontWeight: "600" }}>CGST (Central Tax)</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.extracted?.cgst_amount !== null && gstResult.extracted?.cgst_amount !== undefined
+                                ? `₹${gstResult.extracted.cgst_amount.toLocaleString()}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.calculated?.cgst_amount !== null && gstResult.calculated?.cgst_amount !== undefined
+                                ? `₹${gstResult.calculated.cgst_amount.toLocaleString()}`
+                                : "₹0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "center" }}>
+                              {gstResult.supply_type === "INTRA_STATE" ? (
+                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
+                              ) : gstResult.extracted?.cgst_amount ? (
+                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
+                              ) : (
+                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
+                              )}
+                            </td>
+                          </tr>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                            <td style={{ padding: "8px", fontWeight: "600" }}>SGST / UTGST (State Tax)</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.extracted?.sgst_amount !== null && gstResult.extracted?.sgst_amount !== undefined
+                                ? `₹${gstResult.extracted.sgst_amount.toLocaleString()}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.calculated?.sgst_amount !== null && gstResult.calculated?.sgst_amount !== undefined
+                                ? `₹${gstResult.calculated.sgst_amount.toLocaleString()}`
+                                : "₹0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "center" }}>
+                              {gstResult.supply_type === "INTRA_STATE" ? (
+                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
+                              ) : gstResult.extracted?.sgst_amount ? (
+                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
+                              ) : (
+                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
+                              )}
+                            </td>
+                          </tr>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                            <td style={{ padding: "8px", fontWeight: "600" }}>IGST (Integrated Tax)</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.extracted?.igst_amount !== null && gstResult.extracted?.igst_amount !== undefined
+                                ? `₹${gstResult.extracted.igst_amount.toLocaleString()}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                              {gstResult.calculated?.igst_amount !== null && gstResult.calculated?.igst_amount !== undefined
+                                ? `₹${gstResult.calculated.igst_amount.toLocaleString()}`
+                                : "₹0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "center" }}>
+                              {gstResult.supply_type === "INTER_STATE" ? (
+                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
+                              ) : gstResult.extracted?.igst_amount ? (
+                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
+                              ) : (
+                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
+                              )}
+                            </td>
+                          </tr>
+                          <tr style={{ background: "var(--bg-main)", fontWeight: "700" }}>
+                            <td style={{ padding: "8px" }}>Total GST</td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "var(--accent)" }}>
+                              {gstResult.extracted?.tax_total !== null && gstResult.extracted?.tax_total !== undefined
+                                ? `₹${gstResult.extracted.tax_total.toLocaleString()}`
+                                : "-"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "var(--accent)" }}>
+                              {gstResult.calculated?.gst_total !== null && gstResult.calculated?.gst_total !== undefined
+                                ? `₹${gstResult.calculated.gst_total.toLocaleString()}`
+                                : "₹0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "center" }}>
+                              {gstResult.validation_status === "PASSED" ? (
+                                <span style={{ color: "var(--success)", fontSize: "11px" }}>MATCH</span>
+                              ) : (
+                                <span style={{ color: "var(--danger)", fontSize: "11px" }}>CHECK</span>
+                              )}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Errors & Warnings */}
+                    {gstResult.errors && gstResult.errors.length > 0 && (
+                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginBottom: "8px", fontSize: "12px", color: "#991b1b" }}>
+                        {gstResult.errors.map((err, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < gstResult.errors!.length - 1 ? "4px" : "0" }}>
+                            <AlertCircle size={14} /> <span>{err}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {gstResult.warnings && gstResult.warnings.length > 0 && (
+                      <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontSize: "12px", color: "#854d0e" }}>
+                        {gstResult.warnings.map((w, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < gstResult.warnings!.length - 1 ? "4px" : "0" }}>
+                            <AlertCircle size={14} /> <span>{w}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* 10. INPUT TAX CREDIT (ITC) (STAGE 4 DETERMINISTIC ENGINE) */}
+                {itcResult && (
+                  <section
+                    style={{
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <Landmark size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          10. Input Tax Credit (ITC) Eligibility
+                        </h3>
+                      </div>
+                      <span
+                        className={`badge ${
+                          itcResult.status === "ELIGIBLE"
+                            ? "badge-success"
+                            : itcResult.status === "INELIGIBLE"
+                            ? "badge-warning"
+                            : "badge-uploaded"
+                        }`}
+                        style={{ fontSize: "11px", fontWeight: "700" }}
+                      >
+                        {itcResult.status}
+                      </span>
+                    </div>
+
+                    {/* ITC Summary Cards */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(3, 1fr)",
+                        gap: "12px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          background: "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Total Tax Available
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "15px" }}>
+                          ₹{itcResult.total_tax_amount?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: "#f0fdf4",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid #bbf7d0",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px" }}>
+                          Eligible ITC (Claimable)
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "15px", color: "#15803d" }}>
+                          ₹{itcResult.eligible_amount?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: itcResult.ineligible_amount > 0 ? "#fef2f2" : "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: itcResult.ineligible_amount > 0 ? "1px solid #fecaca" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: itcResult.ineligible_amount > 0 ? "#991b1b" : "var(--text-secondary)", marginBottom: "3px" }}>
+                          Blocked / Ineligible (Sec 17(5))
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "15px", color: itcResult.ineligible_amount > 0 ? "#b91c1c" : "var(--text-primary)" }}>
+                          ₹{itcResult.ineligible_amount?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Statutory Reason & Rule Reference */}
+                    <div
+                      style={{
+                        background: "var(--bg-main)",
+                        padding: "12px 14px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-subtle)",
+                        fontSize: "12px",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                        <span style={{ fontWeight: "600", color: "var(--text-primary)" }}>
+                          Statutory Assessment & Rule Reference
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: "monospace",
+                            fontWeight: "600",
+                            fontSize: "11px",
+                            color: "var(--accent)",
+                            background: "#eff6ff",
+                            padding: "2px 6px",
+                            borderRadius: "4px",
+                          }}
+                        >
+                          {itcResult.rule_reference}
+                        </span>
+                      </div>
+                      <div style={{ color: "var(--text-secondary)" }}>
+                        {itcResult.reason}
+                      </div>
+                    </div>
+
+                    {/* Line-item ITC Breakdown Table */}
+                    {itcResult.line_item_breakdown && itcResult.line_item_breakdown.length > 1 && (
+                      <div style={{ overflowX: "auto" }}>
+                        <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
+                          <thead>
+                            <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
+                              <th style={{ padding: "6px" }}>#</th>
+                              <th style={{ padding: "6px" }}>Item Description</th>
+                              <th style={{ padding: "6px" }}>Account</th>
+                              <th style={{ padding: "6px", textAlign: "right" }}>Tax (₹)</th>
+                              <th style={{ padding: "6px", textAlign: "center" }}>Status</th>
+                              <th style={{ padding: "6px" }}>Rule & Reason</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {itcResult.line_item_breakdown.map((line) => (
+                              <tr key={line.line_index} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                                <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{line.line_index}</td>
+                                <td style={{ padding: "6px", fontWeight: "600" }}>{line.description}</td>
+                                <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{line.account_name || "-"}</td>
+                                <td style={{ padding: "6px", textAlign: "right", fontFamily: "monospace" }}>
+                                  ₹{line.tax_amount?.toLocaleString() || "0.00"}
+                                </td>
+                                <td style={{ padding: "6px", textAlign: "center" }}>
+                                  <span
+                                    className={`badge ${
+                                      line.itc_status === "ELIGIBLE"
+                                        ? "badge-success"
+                                        : line.itc_status === "INELIGIBLE"
+                                        ? "badge-warning"
+                                        : "badge-uploaded"
+                                    }`}
+                                    style={{ fontSize: "10px" }}
+                                  >
+                                    {line.itc_status}
+                                  </span>
+                                </td>
+                                <td style={{ padding: "6px", fontSize: "10px", color: "var(--text-secondary)" }}>
+                                  <strong style={{ color: "var(--text-primary)" }}>{line.rule_reference}:</strong> {line.reason}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* 11. FINANCIAL VALIDATION & RECONCILIATION (STAGE 5 DETERMINISTIC ENGINE) */}
+                {financialValidationResult && (
+                  <section
+                    style={{
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <Calculator size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          11. Financial Validation & Reconciliation
+                        </h3>
+                      </div>
+                      <span
+                        className={`badge ${
+                          financialValidationResult.overall_status === "PASSED"
+                            ? "badge-success"
+                            : financialValidationResult.overall_status === "MISMATCH"
+                            ? "badge-danger"
+                            : "badge-warning"
+                        }`}
+                        style={{ fontSize: "11px", fontWeight: "700" }}
+                      >
+                        {financialValidationResult.overall_status === "PASSED"
+                          ? "✓ RECONCILED (PASSED)"
+                          : financialValidationResult.overall_status === "MISMATCH"
+                          ? "⚠ DISCREPANCY DETECTED"
+                          : "REVIEW REQUIRED"}
+                      </span>
+                    </div>
+
+                    {/* Financial Summary Cards */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(3, 1fr)",
+                        gap: "12px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      {/* Subtotal Card */}
+                      <div
+                        style={{
+                          background: "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          Subtotal (Taxable)
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: "700", fontSize: "15px" }}>
+                            ₹{financialValidationResult.source.subtotal?.toLocaleString() ?? "-"}
+                          </span>
+                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                            Calc: ₹{financialValidationResult.calculated.subtotal?.toLocaleString() ?? "-"}
+                          </span>
+                        </div>
+                        {financialValidationResult.differences?.subtotal !== undefined && financialValidationResult.differences?.subtotal !== null && financialValidationResult.differences?.subtotal !== 0 && (
+                          <div style={{ fontSize: "10px", color: "var(--danger)", fontWeight: "600", marginTop: "2px" }}>
+                            Diff: ₹{financialValidationResult.differences.subtotal.toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* GST / Tax Total Card */}
+                      <div
+                        style={{
+                          background: "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                          GST Tax Total
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: "700", fontSize: "15px" }}>
+                            ₹{financialValidationResult.source.tax_total?.toLocaleString() ?? "-"}
+                          </span>
+                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                            Calc: ₹{financialValidationResult.calculated.gst_total?.toLocaleString() ?? "-"}
+                          </span>
+                        </div>
+                        {financialValidationResult.differences?.tax_total !== undefined && financialValidationResult.differences?.tax_total !== null && financialValidationResult.differences?.tax_total !== 0 && (
+                          <div style={{ fontSize: "10px", color: "var(--danger)", fontWeight: "600", marginTop: "2px" }}>
+                            Diff: ₹{financialValidationResult.differences.tax_total.toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Grand Total Card */}
+                      <div
+                        style={{
+                          background: financialValidationResult.differences?.total_amount ? "#fef2f2" : "#f0fdf4",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: financialValidationResult.differences?.total_amount ? "1px solid #fecaca" : "1px solid #bbf7d0",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: financialValidationResult.differences?.total_amount ? "#991b1b" : "#166534", marginBottom: "3px" }}>
+                          Grand Total Equation
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                          <span style={{ fontWeight: "700", fontSize: "15px", color: financialValidationResult.differences?.total_amount ? "#b91c1c" : "#15803d" }}>
+                            ₹{financialValidationResult.source.total_amount?.toLocaleString() ?? "-"}
+                          </span>
+                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                            Expected: ₹{financialValidationResult.calculated.grand_total?.toLocaleString() ?? "-"}
+                          </span>
+                        </div>
+                        {financialValidationResult.differences?.total_amount !== undefined && financialValidationResult.differences?.total_amount !== null && financialValidationResult.differences?.total_amount !== 0 && (
+                          <div style={{ fontSize: "10px", color: "#b91c1c", fontWeight: "700", marginTop: "2px" }}>
+                            Diff: ₹{financialValidationResult.differences.total_amount.toLocaleString()}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Secondary Charges Strip */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(4, 1fr)",
+                        gap: "8px",
+                        background: "var(--bg-main)",
+                        padding: "10px 12px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-subtle)",
+                        fontSize: "11px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div>
+                        <span style={{ color: "var(--text-secondary)" }}>Discount: </span>
+                        <strong>-₹{financialValidationResult.source.discount_total?.toLocaleString() || "0.00"}</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-secondary)" }}>Shipping: </span>
+                        <strong>+₹{financialValidationResult.source.shipping_charges?.toLocaleString() || "0.00"}</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-secondary)" }}>Other Charges: </span>
+                        <strong>+₹{financialValidationResult.source.other_charges?.toLocaleString() || "0.00"}</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: "var(--text-secondary)" }}>Round Off: </span>
+                        <strong>{financialValidationResult.source.round_off !== null && financialValidationResult.source.round_off !== undefined ? (financialValidationResult.source.round_off >= 0 ? `+₹${financialValidationResult.source.round_off}` : `-₹${Math.abs(financialValidationResult.source.round_off)}`) : "₹0.00"}</strong>
+                      </div>
+                    </div>
+
+                    {/* Mathematical Checks Table */}
+                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
+                      <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
+                            <th style={{ padding: "8px" }}>Mathematical Check</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Extracted (Source)</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Calculated (Engine)</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Difference</th>
+                            <th style={{ padding: "8px", textAlign: "center" }}>Status</th>
+                            <th style={{ padding: "8px" }}>Notes / Discrepancies</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {financialValidationResult.checks?.map((chk, idx) => (
                             <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                              <td style={{ padding: "8px", color: "var(--text-tertiary)", textAlign: "center" }}>
-                                {line.line_number}
+                              <td style={{ padding: "8px", fontWeight: "600" }}>{chk.description || chk.name}</td>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                                {chk.source_value !== null && chk.source_value !== undefined ? `₹${chk.source_value.toLocaleString()}` : "-"}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
+                                {chk.calculated_value !== null && chk.calculated_value !== undefined ? `₹${chk.calculated_value.toLocaleString()}` : "-"}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: chk.difference && chk.difference > 0 ? "var(--danger)" : "var(--text-primary)" }}>
+                                {chk.difference !== null && chk.difference !== undefined ? `₹${chk.difference.toLocaleString()}` : "₹0.00"}
                               </td>
                               <td style={{ padding: "8px", textAlign: "center" }}>
                                 <span
-                                  style={{
-                                    display: "inline-block",
-                                    padding: "2px 6px",
-                                    borderRadius: "4px",
-                                    fontWeight: "700",
-                                    fontSize: "10px",
-                                    background: line.line_type === "DR" ? "#dcfce7" : "#e0e7ff",
-                                    color: line.line_type === "DR" ? "#166534" : "#3730a3",
-                                  }}
+                                  className={`badge ${
+                                    chk.status === "PASSED"
+                                      ? "badge-success"
+                                      : chk.status === "MISMATCH"
+                                      ? "badge-danger"
+                                      : chk.status === "NOT_APPLICABLE"
+                                      ? "badge-uploaded"
+                                      : "badge-warning"
+                                  }`}
+                                  style={{ fontSize: "10px" }}
+                                >
+                                  {chk.status}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px", color: "var(--text-secondary)", fontSize: "10px" }}>
+                                {chk.note || (chk.status === "PASSED" ? "Verified consistent" : "")}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Discrepancy Errors & Warnings Callout */}
+                    {financialValidationResult.errors && financialValidationResult.errors.length > 0 && (
+                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginBottom: "8px", fontSize: "12px", color: "#991b1b" }}>
+                        <div style={{ fontWeight: "700", marginBottom: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <AlertCircle size={15} /> <span>Mathematical Discrepancies Detected:</span>
+                        </div>
+                        {financialValidationResult.errors.map((err, i) => (
+                          <div key={i} style={{ marginLeft: "21px", marginBottom: i < financialValidationResult.errors.length - 1 ? "4px" : "0" }}>
+                            • {err}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {financialValidationResult.warnings && financialValidationResult.warnings.length > 0 && (
+                      <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontSize: "12px", color: "#854d0e" }}>
+                        {financialValidationResult.warnings.map((w, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < financialValidationResult.warnings!.length - 1 ? "4px" : "0" }}>
+                            <AlertCircle size={14} /> <span>{w}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* 12. ACCOUNTING JOURNAL ENTRY PREVIEW (STAGE 6 DETERMINISTIC ENGINE) */}
+                {journalEntry && (
+                  <section
+                    style={{
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <BookOpen size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          12. Accounting Journal Entry Preview (Double-Entry)
+                        </h3>
+                      </div>
+                      <span
+                        className={`badge ${
+                          journalEntry.status === "BALANCED"
+                            ? "badge-success"
+                            : journalEntry.status === "UNBALANCED"
+                            ? "badge-danger"
+                            : "badge-warning"
+                        }`}
+                        style={{ fontSize: "11px", fontWeight: "700" }}
+                      >
+                        {journalEntry.status === "BALANCED"
+                          ? "✓ BALANCED"
+                          : journalEntry.status === "UNBALANCED"
+                          ? "✕ UNBALANCED"
+                          : "⚠ REVIEW REQUIRED"}
+                      </span>
+                    </div>
+
+                    {/* Journal Balancing Metrics */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(3, 1fr)",
+                        gap: "12px",
+                        marginBottom: "14px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          background: "#f0fdf4",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid #bbf7d0",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px" }}>
+                          Total Debits (Dr)
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "16px", color: "#15803d", fontFamily: "monospace" }}>
+                          ₹{journalEntry.total_debit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: "#f0fdf4",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid #bbf7d0",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px" }}>
+                          Total Credits (Cr)
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "16px", color: "#15803d", fontFamily: "monospace" }}>
+                          ₹{journalEntry.total_credit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: journalEntry.difference !== 0 ? "#fef2f2" : "var(--bg-main)",
+                          padding: "12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: journalEntry.difference !== 0 ? "1px solid #fecaca" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: journalEntry.difference !== 0 ? "#991b1b" : "var(--text-secondary)", marginBottom: "3px" }}>
+                          Balancing Net Difference
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "16px", color: journalEntry.difference !== 0 ? "#b91c1c" : "var(--text-primary)", fontFamily: "monospace" }}>
+                          ₹{journalEntry.difference?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Journal Lines Table (Read-Only Preview) */}
+                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
+                      <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
+                        <thead>
+                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
+                            <th style={{ padding: "8px", width: "30px" }}>#</th>
+                            <th style={{ padding: "8px" }}>Account Name</th>
+                            <th style={{ padding: "8px" }}>Account Code</th>
+                            <th style={{ padding: "8px" }}>Type</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Debit (₹)</th>
+                            <th style={{ padding: "8px", textAlign: "right" }}>Credit (₹)</th>
+                            <th style={{ padding: "8px" }}>Source / Provenance</th>
+                            <th style={{ padding: "8px" }}>Description</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {journalEntry.lines?.map((line, idx) => (
+                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                              <td style={{ padding: "8px", color: "var(--text-secondary)" }}>{idx + 1}</td>
+                              <td style={{ padding: "8px", fontWeight: "600", color: "var(--text-primary)" }}>
+                                {line.account_name}
+                              </td>
+                              <td style={{ padding: "8px", fontFamily: "monospace", color: "var(--accent)" }}>
+                                {line.account_id}
+                              </td>
+                              <td style={{ padding: "8px" }}>
+                                <span
+                                  className={`badge ${
+                                    line.line_type === "INPUT_TAX"
+                                      ? "badge-uploaded"
+                                      : line.line_type === "ACCOUNTS_PAYABLE"
+                                      ? "badge-warning"
+                                      : line.line_type === "TDS_PAYABLE"
+                                      ? "badge-danger"
+                                      : "badge-success"
+                                  }`}
+                                  style={{ fontSize: "10px" }}
                                 >
                                   {line.line_type}
                                 </span>
                               </td>
-                              <td style={{ padding: "8px", fontWeight: "600", color: "var(--text-primary)" }}>
-                                {line.account_name}
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", fontWeight: line.debit > 0 ? "700" : "normal" }}>
+                                {line.debit > 0 ? `₹${line.debit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
                               </td>
-                              <td style={{ padding: "8px", color: "var(--text-secondary)" }}>
-                                <code>{line.account_id || "-"}</code>
+                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", fontWeight: line.credit > 0 ? "700" : "normal" }}>
+                                {line.credit > 0 ? `₹${line.credit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
                               </td>
-                              <td style={{ padding: "8px", color: "var(--text-secondary)" }}>
+                              <td style={{ padding: "8px", fontSize: "10px", color: "var(--text-secondary)" }}>
+                                <span
+                                  style={{
+                                    fontFamily: "monospace",
+                                    padding: "2px 6px",
+                                    borderRadius: "4px",
+                                    background: line.provenance === "HITL_OVERRIDE" ? "#fef3c7" : "#f1f5f9",
+                                    color: line.provenance === "HITL_OVERRIDE" ? "#92400e" : "var(--text-secondary)",
+                                    fontWeight: "600",
+                                  }}
+                                >
+                                  {line.provenance}
+                                </span>
+                              </td>
+                              <td style={{ padding: "8px", color: "var(--text-secondary)", fontSize: "11px" }}>
                                 {line.description || "-"}
                               </td>
-                              <td style={{ padding: "8px", textAlign: "right", fontWeight: "600" }}>
-                                ₹{line.amount?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                              </td>
                             </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td colSpan={6} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
-                              Journal entry preview will calculate automatically when invoice is loaded.
+                          ))}
+                          <tr style={{ background: "var(--bg-main)", fontWeight: "700", borderTop: "2px solid var(--border-subtle)" }}>
+                            <td colSpan={4} style={{ padding: "8px", textAlign: "right" }}>
+                              Total (INR)
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "#15803d" }}>
+                              ₹{journalEntry.total_debit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                            </td>
+                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "#15803d" }}>
+                              ₹{journalEntry.total_credit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
+                            </td>
+                            <td colSpan={2} style={{ padding: "8px", fontSize: "10px", color: "var(--text-secondary)" }}>
+                              {journalEntry.validation?.balanced ? "✓ Reconciled & Balanced" : "⚠ Review Discrepancy"}
                             </td>
                           </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
+                        </tbody>
+                      </table>
+                    </div>
 
-                {/* 11. ADDITIONAL EXTRACTED INFORMATION (ZERO DATA LOSS) */}
+                    {/* Journal Errors and Warnings */}
+                    {journalEntry.validation?.errors && journalEntry.validation.errors.length > 0 && (
+                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginBottom: "8px", fontSize: "12px", color: "#991b1b" }}>
+                        <div style={{ fontWeight: "700", marginBottom: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <AlertCircle size={15} /> <span>Journal Balancing Issues:</span>
+                        </div>
+                        {journalEntry.validation.errors.map((err, i) => (
+                          <div key={i} style={{ marginLeft: "21px", marginBottom: i < journalEntry.validation.errors.length - 1 ? "4px" : "0" }}>
+                            • {err}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {journalEntry.validation?.warnings && journalEntry.validation.warnings.length > 0 && (
+                      <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontSize: "12px", color: "#854d0e" }}>
+                        {journalEntry.validation.warnings.map((w, i) => (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < journalEntry.validation.warnings.length - 1 ? "4px" : "0" }}>
+                            <AlertCircle size={14} /> <span>{w}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {/* 13. ADDITIONAL EXTRACTED INFORMATION (ZERO DATA LOSS) */}
                 <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
                     <Layers size={16} color="var(--text-secondary)" />
                     <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      11. Additional Extracted Information
+                      13. Additional Extracted Information
                     </h3>
                   </div>
                   <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px" }}>
@@ -2324,6 +3228,70 @@ export default function InvoiceWorkspacePage() {
           }
         }
       `}</style>
+
+      {/* Reject Modal */}
+      {rejectModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: "100%",
+              maxWidth: "460px",
+              padding: "24px",
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.15)",
+              background: "#ffffff",
+            }}
+          >
+            <h3 style={{ fontSize: "17px", fontWeight: "700", marginBottom: "8px", color: "var(--danger)" }}>
+              Reject Invoice
+            </h3>
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "16px" }}>
+              Please provide a reason for rejecting this invoice.
+            </p>
+            <textarea
+              className="form-input"
+              rows={3}
+              value={rejectReason}
+              placeholder="e.g. Incorrect tax invoice calculation or invalid vendor PAN..."
+              onChange={(e) => setRejectReason(e.target.value)}
+              style={{ width: "100%", marginBottom: "20px" }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setRejectModalOpen(false)}
+                className="btn btn-secondary"
+                disabled={isRejecting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRejectConfirm}
+                disabled={isRejecting || !rejectReason.trim()}
+                className="btn btn-primary"
+                style={{ background: "var(--danger)", borderColor: "var(--danger)" }}
+              >
+                {isRejecting ? "Rejecting..." : "Confirm Rejection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -56,6 +56,10 @@ class InvoiceResponse(BaseModel):
     current_vlm_output: Optional[Dict[str, Any]] = None
     accounting_output: Optional[Dict[str, Any]] = None
     current_accounting_output: Optional[Dict[str, Any]] = None
+    gst_result: Optional[Dict[str, Any]] = None
+    itc_result: Optional[Dict[str, Any]] = None
+    financial_validation_result: Optional[Dict[str, Any]] = None
+    journal_entry: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -63,6 +67,10 @@ class InvoiceResponse(BaseModel):
 class InvoiceUpdateRequest(BaseModel):
     current_vlm_output: Optional[Dict[str, Any]] = None
     current_accounting_output: Optional[Dict[str, Any]] = None
+    gst_result: Optional[Dict[str, Any]] = None
+    itc_result: Optional[Dict[str, Any]] = None
+    financial_validation_result: Optional[Dict[str, Any]] = None
+    journal_entry: Optional[Dict[str, Any]] = None
 
 
 class InvoiceListItemResponse(BaseModel):

@@ -102,6 +102,14 @@ def decode_access_token(token: str) -> Dict[str, Any]:
         )
 
 
+DEV_ACTIVE_ROLE = "ADMIN"
+
+
+def set_dev_role(new_role: str) -> None:
+    global DEV_ACTIVE_ROLE
+    DEV_ACTIVE_ROLE = new_role.upper()
+
+
 # ============================================================================
 # FastAPI Authentication & RBAC Dependencies
 # ============================================================================
@@ -112,8 +120,17 @@ async def get_current_user(
     """
     FastAPI dependency that extracts and validates the Bearer JWT token from the
     Authorization header. Returns verified AuthenticatedUser.
+    In development mode with ENABLE_DEV_AUTH=True, falls back to default dev user.
     """
     if not credentials or not credentials.credentials:
+        if settings.ENABLE_DEV_AUTH:
+            return AuthenticatedUser(
+                id="dev-user-001",
+                email="finance@sakshi.ai",
+                tenant_id=settings.DEFAULT_TENANT_ID,
+                role=DEV_ACTIVE_ROLE,
+                full_name="Dev Admin",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required. Missing Bearer token in Authorization header.",

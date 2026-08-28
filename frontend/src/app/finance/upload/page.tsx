@@ -4,6 +4,7 @@ import React, { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { uploadInvoice, UploadResponse } from "@/lib/api";
 import { UploadCloud, FileText, CheckCircle2, AlertCircle, ArrowRight } from "lucide-react";
+import AppShell from "@/components/AppShell";
 
 const MAX_SIZE_MB = 25;
 const ALLOWED_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/jpg"];
@@ -62,31 +63,30 @@ export default function UploadPage() {
   const handleUpload = async () => {
     if (!selectedFile) return;
 
-    setIsUploading(true);
-    setError(null);
-
     try {
-      const res = await uploadInvoice(selectedFile);
-      setUploadResult(res);
-      // Automatically route to processing page after upload
-      router.push(`/finance/invoices/${res.invoice_id}/processing`);
+      setIsUploading(true);
+      setError(null);
+
+      const result = await uploadInvoice(selectedFile);
+      setUploadResult(result);
     } catch (err: any) {
-      setError(err.message || "Failed to upload invoice.");
+      setError(err.message || "Failed to upload invoice. Please try again.");
     } finally {
       setIsUploading(false);
     }
   };
 
   return (
-    <div className="container" style={{ maxWidth: "680px", paddingTop: "60px", paddingBottom: "80px" }}>
-      <div style={{ textAlign: "center", marginBottom: "36px" }}>
-        <h1 style={{ fontSize: "32px", fontWeight: "700", letterSpacing: "-0.03em", marginBottom: "10px" }}>
-          Upload Vendor Invoice
-        </h1>
-        <p style={{ fontSize: "16px", color: "var(--text-secondary)" }}>
-          Store and prepare invoices for automated processing & accounting review.
-        </p>
-      </div>
+    <AppShell title="Upload Invoice" subtitle="Ingestion & Extraction">
+      <div style={{ maxWidth: "680px", margin: "10px auto 40px" }}>
+        <div style={{ textAlign: "center", marginBottom: "28px" }}>
+          <h1 style={{ fontSize: "26px", fontWeight: "700", letterSpacing: "-0.03em", marginBottom: "8px" }}>
+            Upload Vendor Invoice
+          </h1>
+          <p style={{ fontSize: "14px", color: "var(--text-secondary)" }}>
+            Store and prepare invoices for automated processing & accounting review.
+          </p>
+        </div>
 
       <div className="card" style={{ padding: "32px" }}>
         {!uploadResult ? (
@@ -291,6 +291,7 @@ export default function UploadPage() {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </AppShell>
   );
 }

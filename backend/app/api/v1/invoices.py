@@ -318,7 +318,7 @@ async def update_invoice_extraction(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Saves user-edited invoice values into current_vlm_output and current_accounting_output.
+    Saves user-edited invoice values into current_vlm_output and current_accounting_output while preserving raw outputs and updating GST/ITC/Math/Journal engines.
     Requires ADMIN or FINANCE role. Blocked if invoice is APPROVED.
     """
     tenant_id = current_user.tenant_id
@@ -342,12 +342,89 @@ async def update_invoice_extraction(
         invoice.current_vlm_output = update_data.current_vlm_output
     if update_data.current_accounting_output is not None:
         invoice.current_accounting_output = update_data.current_accounting_output
+    if update_data.gst_result is not None:
+        invoice.gst_result = update_data.gst_result
+    if update_data.itc_result is not None:
+        invoice.itc_result = update_data.itc_result
+    if update_data.financial_validation_result is not None:
+        invoice.financial_validation_result = update_data.financial_validation_result
+    if update_data.journal_entry is not None:
+        invoice.journal_entry = update_data.journal_entry
+
+    # If financial_validation_result, gst_result, itc_result, or journal_entry not explicitly passed, automatically re-evaluate on updated data
+    from app.services.invoice_processing import get_effective_invoice_data
+    from app.services.gst_engine import gst_engine
+    from app.services.itc_engine import itc_engine
+    from app.services.financial_validator import financial_validator
+    from app.services.journal_generator import journal_generator, sync_relational_journal
+
+    effective_data = get_effective_invoice_data(invoice)
+    effective_acc = invoice.current_accounting_output or invoice.accounting_output
+
+    if update_data.gst_result is None:
+        invoice.gst_result = gst_engine.evaluate_gst(effective_data)
+    if update_data.itc_result is None:
+        invoice.itc_result = itc_engine.evaluate_itc(effective_data, effective_acc)
+    if update_data.financial_validation_result is None:
+        invoice.financial_validation_result = financial_validator.validate_invoice(effective_data, invoice.gst_result)
+    if update_data.journal_entry is None:
+        invoice.journal_entry = journal_generator.generate_journal(
+            invoice_data=effective_data,
+            accounting_classification=effective_acc,
+            gst_result=invoice.gst_result,
+            itc_result=invoice.itc_result,
+            tds_result=effective_acc.get("tds") if effective_acc else None,
+            financial_validation_result=invoice.financial_validation_result,
+        )
 
     invoice.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await sync_relational_journal(db, invoice.id, invoice.journal_entry)
     await db.commit()
     await db.refresh(invoice)
 
     return invoice
+
+
+@router.get("/{invoice_id}/journal")
+async def get_invoice_journal(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieves or generates the double-entry accounting journal preview for an invoice."""
+    query = select(Invoice).where(Invoice.id == invoice_id)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    if invoice.journal_entry:
+        return invoice.journal_entry
+
+    from app.services.invoice_processing import get_effective_invoice_data
+    from app.services.journal_generator import journal_generator, sync_relational_journal
+
+    effective_data = get_effective_invoice_data(invoice)
+    effective_acc = invoice.current_accounting_output or invoice.accounting_output
+
+    journal_result = journal_generator.generate_journal(
+        invoice_data=effective_data,
+        accounting_classification=effective_acc,
+        gst_result=invoice.gst_result,
+        itc_result=invoice.itc_result,
+        tds_result=effective_acc.get("tds") if effective_acc else None,
+        financial_validation_result=invoice.financial_validation_result,
+    )
+    invoice.journal_entry = journal_result
+    await db.commit()
+    await sync_relational_journal(db, invoice.id, journal_result)
+    await db.commit()
+
+    return journal_result
 
 
 @router.get("/{invoice_id}/file")
@@ -358,10 +435,8 @@ async def get_invoice_file(
 ):
     """
     Streams original unmodified invoice binary from Supabase Storage.
-    Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
-    tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    query = select(Invoice).where(Invoice.id == invoice_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -384,11 +459,78 @@ async def get_invoice_file(
             detail=f"Storage retrieval error: {str(e)}",
         )
 
+    # Infer/correct the MIME type based on file extension if stored type is generic
+    mime_type = invoice.mime_type
+    if not mime_type or mime_type == "application/octet-stream":
+        ext = invoice.file_name.lower().split(".")[-1]
+        ext_map = {
+            "pdf": "application/pdf",
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+            "tif": "image/tiff",
+            "tiff": "image/tiff"
+        }
+        if ext in ext_map:
+            mime_type = ext_map[ext]
+        else:
+            import mimetypes
+            inferred_type, _ = mimetypes.guess_type(invoice.file_name)
+            if inferred_type:
+                mime_type = inferred_type
+
     return Response(
         content=content,
-        media_type=invoice.mime_type,
+        media_type=mime_type,
         headers={
             "Content-Disposition": f'inline; filename="{invoice.file_name}"',
             "Cache-Control": "public, max-age=3600",
         },
     )
+
+
+@router.get("/{invoice_id}/pages")
+async def get_invoice_pages(
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Renders multi-page PDF invoices into a list of base64 PNG images.
+    """
+    query = select(Invoice).where(Invoice.id == invoice_id)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    content = await storage_service.download_file(invoice.file_path)
+    ext = (invoice.file_name or "").lower().split(".")[-1]
+
+    if ext == "pdf" or invoice.mime_type == "application/pdf":
+        try:
+            import fitz
+            import base64
+            doc = fitz.open(stream=content, filetype="pdf")
+            pages = []
+            for page_num in range(doc.page_count):
+                page = doc.load_page(page_num)
+                pix = page.get_pixmap()
+                img_bytes = pix.tobytes("png")
+                b64_str = base64.b64encode(img_bytes).decode("utf-8")
+                pages.append(f"data:image/png;base64,{b64_str}")
+            return {"invoice_id": str(invoice_id), "page_count": doc.page_count, "pages": pages}
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to render PDF pages: {str(e)}",
+            )
+    else:
+        import base64
+        b64_str = base64.b64encode(content).decode("utf-8")
+        media_type = invoice.mime_type or "image/png"
+        return {"invoice_id": str(invoice_id), "page_count": 1, "pages": [f"data:{media_type};base64,{b64_str}"]}
+

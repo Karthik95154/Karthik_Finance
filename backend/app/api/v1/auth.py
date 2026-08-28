@@ -131,3 +131,23 @@ async def get_current_user_profile(
 ):
     """Returns the authenticated user identity and role from the verified JWT."""
     return current_user
+
+
+@router.post("/dev-switch-role", response_model=AuthenticatedUser)
+async def dev_switch_role(role: str = "FINANCE"):
+    """Switches the active development user role between ADMIN, FINANCE, and VIEWER."""
+    clean_role = role.strip().upper()
+    if clean_role not in ("ADMIN", "FINANCE", "VIEWER"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid role '{role}'. Must be ADMIN, FINANCE, or VIEWER.",
+        )
+    from app.core.security import set_dev_role
+    set_dev_role(clean_role)
+    return AuthenticatedUser(
+        id="dev-user-001",
+        email="finance@sakshi.ai",
+        tenant_id=settings.DEFAULT_TENANT_ID,
+        role=clean_role,
+        full_name="Dev Admin" if clean_role == "ADMIN" else "Dev Finance",
+    )

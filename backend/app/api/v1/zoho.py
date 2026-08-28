@@ -2,7 +2,7 @@ import logging
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -76,6 +76,7 @@ async def get_zoho_connect_url(
 
 @router.get("/callback")
 async def zoho_oauth_callback(
+    request: Request,
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     state: Optional[str] = Query(None),  # tenant_id passed as state
@@ -87,9 +88,7 @@ async def zoho_oauth_callback(
     encrypts tokens at rest, and saves connection details.
     Redirects browser seamlessly back to the frontend settings/connection page.
     """
-    frontend_base = "http://localhost:3000/finance/settings"
-    if settings.CORS_ORIGINS and len(settings.CORS_ORIGINS) > 0:
-        frontend_base = f"{settings.CORS_ORIGINS[0].rstrip('/')}/finance/settings"
+    frontend_base = f"{settings.FRONTEND_URL.rstrip('/')}/integrations"
 
     # Handle user denial or OAuth error
     if error:
@@ -109,11 +108,22 @@ async def zoho_oauth_callback(
     tenant_id = state or settings.DEFAULT_TENANT_ID
     logger.info(f"Processing Zoho OAuth callback for tenant {tenant_id}...")
 
+    # Determine redirect URI dynamically matching how the browser was routed
+    callback_redirect_uri = str(request.url).split("?")[0]
+
     try:
-        token_data = await zoho_client_service.exchange_code_for_tokens(
-            code=code,
-            accounts_url=accounts_server,
-        )
+        try:
+            token_data = await zoho_client_service.exchange_code_for_tokens(
+                code=code,
+                redirect_uri=callback_redirect_uri,
+                accounts_url=accounts_server,
+            )
+        except Exception:
+            token_data = await zoho_client_service.exchange_code_for_tokens(
+                code=code,
+                redirect_uri=settings.ZOHO_REDIRECT_URI,
+                accounts_url=accounts_server,
+            )
     except Exception as e:
         logger.error(f"OAuth token exchange failed: {e}")
         return RedirectResponse(
@@ -293,6 +303,7 @@ async def get_zoho_status(
 
 
 @router.get("/master-data")
+@router.get("/master-data-summary")
 async def get_master_data_summary(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -315,40 +326,49 @@ async def get_master_data_summary(
         )
     ).scalars().all()
 
+    accounts_list = [
+        {
+            "id": str(a.id),
+            "zoho_account_id": a.zoho_account_id,
+            "account_name": a.account_name,
+            "account_code": a.account_code,
+            "account_type": a.account_type,
+            "is_active": a.is_active,
+        }
+        for a in accounts
+    ]
+    taxes_list = [
+        {
+            "id": str(t.id),
+            "zoho_tax_id": t.zoho_tax_id,
+            "tax_name": t.tax_name,
+            "tax_percentage": t.tax_percentage,
+            "tax_type": t.tax_type,
+            "is_active": t.is_active,
+        }
+        for t in taxes
+    ]
+    vendors_list = [
+        {
+            "id": str(v.id),
+            "zoho_contact_id": v.zoho_contact_id,
+            "vendor_name": v.vendor_name,
+            "gstin": v.gstin,
+            "pan": v.pan,
+            "approval_status": v.approval_status,
+        }
+        for v in vendors
+    ]
+
     return {
-        "accounts": [
-            {
-                "id": str(a.id),
-                "zoho_account_id": a.zoho_account_id,
-                "account_name": a.account_name,
-                "account_code": a.account_code,
-                "account_type": a.account_type,
-                "is_active": a.is_active,
-            }
-            for a in accounts
-        ],
-        "taxes": [
-            {
-                "id": str(t.id),
-                "zoho_tax_id": t.zoho_tax_id,
-                "tax_name": t.tax_name,
-                "tax_percentage": t.tax_percentage,
-                "tax_type": t.tax_type,
-                "is_active": t.is_active,
-            }
-            for t in taxes
-        ],
-        "vendors": [
-            {
-                "id": str(v.id),
-                "zoho_contact_id": v.zoho_contact_id,
-                "vendor_name": v.vendor_name,
-                "gstin": v.gstin,
-                "pan": v.pan,
-                "approval_status": v.approval_status,
-            }
-            for v in vendors
-        ],
+        "accounts": accounts_list,
+        "chart_of_accounts": accounts_list,
+        "chart_of_accounts_count": len(accounts_list),
+        "taxes": taxes_list,
+        "tax_rates": taxes_list,
+        "tax_rates_count": len(taxes_list),
+        "vendors": vendors_list,
+        "vendors_count": len(vendors_list),
     }
 
 

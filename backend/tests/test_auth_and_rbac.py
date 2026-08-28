@@ -47,8 +47,11 @@ def tenant_b_finance_token():
 
 
 @pytest.mark.asyncio
-async def test_a_no_jwt_rejected():
-    """Test A: Unauthenticated request (no JWT) is rejected with 401 Unauthorized."""
+async def test_a_no_jwt_rejected(monkeypatch):
+    """Test A: Unauthenticated request (no JWT) is rejected with 401 Unauthorized in production."""
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "ENABLE_DEV_AUTH", False)
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # Invoices list
