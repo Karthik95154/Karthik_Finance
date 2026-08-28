@@ -60,20 +60,16 @@ export default function AppShell({
       label: "Invoices",
       href: "/finance/invoices",
       icon: FileSpreadsheet,
-      active: pathname.startsWith("/finance/invoices") && !pathname.includes("/processing") && pathname !== "/finance/settings",
-    },
-    {
-      label: "Zoho Books",
-      href: "/finance/settings",
-      icon: Layers,
-      active: pathname === "/finance/settings",
-      badge: "Connected",
+      active:
+        pathname.startsWith("/finance/invoices") &&
+        !pathname.includes("/processing") &&
+        pathname !== "/finance/settings",
     },
     {
       label: "Integrations",
       href: "/integrations",
       icon: Layers,
-      active: pathname === "/integrations",
+      active: pathname === "/integrations" || pathname === "/finance/settings",
       badge: "Stage 8",
     },
   ];
