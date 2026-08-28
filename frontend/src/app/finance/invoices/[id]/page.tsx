@@ -46,6 +46,7 @@ import {
   Receipt,
   FileSpreadsheet,
   AlertCircle,
+  AlertTriangle,
   BookOpen,
   Scale,
   RefreshCw,
@@ -229,9 +230,6 @@ export default function InvoiceWorkspacePage() {
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
-  const [rejectModalOpen, setRejectModalOpen] = useState(false);
-  const [rejectReason, setRejectReason] = useState("");
-  const [journalPreview, setJournalPreview] = useState<JournalPreviewResponse | null>(null);
 
   // Editable form state
   const [formData, setFormData] = useState<ExtractedInvoiceData>({});
