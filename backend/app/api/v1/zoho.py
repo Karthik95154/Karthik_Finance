@@ -2,7 +2,7 @@ import logging
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -76,6 +76,7 @@ async def get_zoho_connect_url(
 
 @router.get("/callback")
 async def zoho_oauth_callback(
+    request: Request,
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     state: Optional[str] = Query(None),  # tenant_id passed as state
@@ -87,7 +88,7 @@ async def zoho_oauth_callback(
     encrypts tokens at rest, and saves connection details.
     Redirects browser seamlessly back to the frontend settings/connection page.
     """
-    frontend_base = f"{settings.FRONTEND_URL.rstrip('/')}/finance/settings"
+    frontend_base = f"{settings.FRONTEND_URL.rstrip('/')}/integrations"
 
     # Handle user denial or OAuth error
     if error:
@@ -107,11 +108,22 @@ async def zoho_oauth_callback(
     tenant_id = state or settings.DEFAULT_TENANT_ID
     logger.info(f"Processing Zoho OAuth callback for tenant {tenant_id}...")
 
+    # Determine redirect URI dynamically matching how the browser was routed
+    callback_redirect_uri = str(request.url).split("?")[0]
+
     try:
-        token_data = await zoho_client_service.exchange_code_for_tokens(
-            code=code,
-            accounts_url=accounts_server,
-        )
+        try:
+            token_data = await zoho_client_service.exchange_code_for_tokens(
+                code=code,
+                redirect_uri=callback_redirect_uri,
+                accounts_url=accounts_server,
+            )
+        except Exception:
+            token_data = await zoho_client_service.exchange_code_for_tokens(
+                code=code,
+                redirect_uri=settings.ZOHO_REDIRECT_URI,
+                accounts_url=accounts_server,
+            )
     except Exception as e:
         logger.error(f"OAuth token exchange failed: {e}")
         return RedirectResponse(
