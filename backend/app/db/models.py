@@ -34,7 +34,7 @@ class Tenant(Base):
     )
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
-    zoho_credential = relationship("ZohoCredential", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
+    zoho_connection = relationship("ZohoConnection", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
     chart_of_accounts = relationship("ChartOfAccount", back_populates="tenant", cascade="all, delete-orphan")
     tax_rates = relationship("TaxRate", back_populates="tenant", cascade="all, delete-orphan")
     vendors = relationship("Vendor", back_populates="tenant", cascade="all, delete-orphan")
@@ -66,21 +66,19 @@ class User(Base):
     tenant = relationship("Tenant", back_populates="users")
 
 
-class ZohoCredential(Base):
-    __tablename__ = "zoho_credentials"
+class ZohoConnection(Base):
+    __tablename__ = "zoho_connections"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
     )
-    organization_id = Column(String(100), nullable=False)
-    client_id = Column(String(255), nullable=False)
-    client_secret_encrypted = Column(Text, nullable=False)
-    refresh_token_encrypted = Column(Text, nullable=False)
-    access_token_encrypted = Column(Text, nullable=True)
-    access_token_expires_at = Column(DateTime(timezone=True), nullable=True)
-    api_domain = Column(String(100), nullable=False, default="https://www.zohoapis.in")
-    accounts_server = Column(String(100), nullable=False, default="https://accounts.zoho.in")
+    organization_id = Column(String(100), nullable=True)
+    organization_name = Column(String(255), nullable=True)
+    encrypted_access_token = Column(Text, nullable=True)
+    encrypted_refresh_token = Column(Text, nullable=True)
+    token_expires_at = Column(DateTime(timezone=True), nullable=True)
+    api_domain = Column(String(255), nullable=False, default="https://www.zohoapis.in")
     status = Column(String(50), nullable=False, default="DISCONNECTED")  # CONNECTED, DISCONNECTED, ERROR
     error_message = Column(Text, nullable=True)
     created_at = Column(
@@ -95,7 +93,11 @@ class ZohoCredential(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
-    tenant = relationship("Tenant", back_populates="zoho_credential")
+    tenant = relationship("Tenant", back_populates="zoho_connection")
+
+
+# Alias for backward compatibility
+ZohoCredential = ZohoConnection
 
 
 class ChartOfAccount(Base):

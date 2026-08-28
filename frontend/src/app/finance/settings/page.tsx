@@ -150,8 +150,9 @@ function SettingsContent() {
       setIsConnecting(true);
       setNotice(null);
       const res = await getZohoConnectUrl(selectedAccountsUrl, customRedirectUri);
-      if (res.authorization_url) {
-        window.location.href = res.authorization_url;
+      const authUrl = res.auth_url || res.authorization_url;
+      if (authUrl) {
+        window.location.href = authUrl;
       } else {
         throw new Error("Authorization URL was not returned by the server.");
       }
@@ -170,10 +171,12 @@ function SettingsContent() {
       setIsSyncing(true);
       setNotice(null);
       const res = await triggerZohoSync();
-      await fetchStatusAndProfile();
+      const coaCount = res.accounts_synced ?? res.chart_of_accounts ?? 0;
+      const taxCount = res.taxes_synced ?? res.tax_rates ?? 0;
+      const vendorCount = res.vendors_synced ?? res.vendors ?? 0;
       setNotice({
         type: "success",
-        message: `Master data synchronized! ${res.accounts_synced} COA accounts, ${res.taxes_synced} tax rates, and ${res.vendors_synced ?? 0} vendors updated.`,
+        message: `Master data synchronized! ${coaCount} COA accounts, ${taxCount} tax rates, and ${vendorCount} vendors updated.`,
       });
     } catch (err: any) {
       setNotice({
@@ -190,7 +193,8 @@ function SettingsContent() {
     try {
       setIsSelectingOrg(true);
       const res = await getZohoOrganizations();
-      setOrganizations(res.organizations || []);
+      const orgs = Array.isArray(res) ? res : ((res as any).organizations || []);
+      setOrganizations(orgs);
       setShowOrgModal(true);
     } catch (err: any) {
       setNotice({
@@ -211,7 +215,7 @@ function SettingsContent() {
       await fetchStatusAndProfile();
       setNotice({
         type: "success",
-        message: `Active organization set to "${orgName}". Synced ${res.accounts_synced} accounts, ${res.taxes_synced} taxes, and ${res.vendors_synced ?? 0} vendors.`,
+        message: `Active organization set to "${orgName}". Synced ${res.accounts_synced ?? 0} accounts, ${res.taxes_synced ?? 0} taxes, and ${res.vendors_synced ?? 0} vendors.`,
       });
     } catch (err: any) {
       setNotice({
@@ -268,22 +272,22 @@ function SettingsContent() {
   const isViewer = userProfile?.role === "VIEWER";
 
   // Filtered lists for master data tabs
-  const filteredAccounts = (masterData?.accounts || []).filter(
-    (a) =>
-      a.account_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+  const filteredAccounts = (masterData?.accounts || masterData?.chart_of_accounts || []).filter(
+    (a: any) =>
+      (a.account_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
       (a.account_code && a.account_code.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      a.account_type.toLowerCase().includes(searchTerm.toLowerCase())
+      (a.account_type || "").toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const filteredTaxes = (masterData?.taxes || []).filter(
-    (t) =>
-      t.tax_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      t.tax_type.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredTaxes = (masterData?.taxes || masterData?.tax_rates || []).filter(
+    (t: any) =>
+      (t.tax_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (t.tax_type || "").toLowerCase().includes(searchTerm.toLowerCase())
   );
 
   const filteredVendors = (masterData?.vendors || []).filter(
-    (v) =>
-      v.vendor_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (v: any) =>
+      (v.vendor_name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
       (v.gstin && v.gstin.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (v.pan && v.pan.toLowerCase().includes(searchTerm.toLowerCase()))
   );
@@ -950,7 +954,7 @@ function SettingsContent() {
                   color: activeTab === "coa" ? "#ffffff" : "var(--text-secondary)",
                 }}
               >
-                Chart of Accounts ({masterData?.accounts.length || zohoStatus.accounts_count})
+                Chart of Accounts ({masterData?.accounts?.length || masterData?.chart_of_accounts_count || zohoStatus.accounts_count || 0})
               </button>
               <button
                 type="button"
@@ -964,7 +968,7 @@ function SettingsContent() {
                   color: activeTab === "taxes" ? "#ffffff" : "var(--text-secondary)",
                 }}
               >
-                Taxes ({masterData?.taxes.length || zohoStatus.taxes_count})
+                Taxes ({masterData?.taxes?.length || masterData?.tax_rates_count || zohoStatus.taxes_count || 0})
               </button>
               <button
                 type="button"
@@ -978,7 +982,7 @@ function SettingsContent() {
                   color: activeTab === "vendors" ? "#ffffff" : "var(--text-secondary)",
                 }}
               >
-                Vendors ({masterData?.vendors.length || zohoStatus.vendors_count || 0})
+                Vendors ({masterData?.vendors?.length || masterData?.vendors_count || zohoStatus.vendors_count || 0})
               </button>
             </div>
 

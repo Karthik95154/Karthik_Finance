@@ -8,6 +8,10 @@ import {
   updateInvoiceExtraction,
   triggerAccountingCategorization,
   listInvoices,
+  getJournalPreview,
+  approveInvoice,
+  rejectInvoice,
+  exportInvoiceToZoho,
   Invoice,
   InvoiceListItem,
   ExtractedInvoiceData,
@@ -21,6 +25,7 @@ import {
   ItcResult,
   FinancialValidationResult,
   JournalEntry,
+  JournalPreviewResponse,
 } from "@/lib/api";
 import {
   ArrowLeft,
@@ -215,6 +220,12 @@ export default function InvoiceWorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isCategorizing, setIsCategorizing] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [isRejecting, setIsRejecting] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState("");
+  const [journalPreview, setJournalPreview] = useState<JournalPreviewResponse | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -241,6 +252,7 @@ export default function InvoiceWorkspacePage() {
 
         setInvoice(invData);
         setWorkflowInvoices(listData);
+        getJournalPreview(invoiceId).then(setJournalPreview).catch(() => null);
 
         // If still in initial stages, route to processing page
         if (
@@ -463,12 +475,160 @@ export default function InvoiceWorkspacePage() {
     }
   };
 
-  // Dummy action buttons notice
-  const handleDummyAction = (actionName: string) => {
-    setActionNotice(
-      `"${actionName}" action triggered (Stage 3 Dummy UI). Real accounting sync will activate in later stages.`
-    );
-    setTimeout(() => setActionNotice(null), 4000);
+  // Accept AI suggestions into approved fields for all lines
+  const handleAcceptAllAccounts = () => {
+    const updated = (accountingData.accounting || []).map((acc, idx) => {
+      const id = acc.final_account_id || acc.ai_account_id || `ACC_${idx + 1}`;
+      const name = acc.final_account_name || acc.ai_account_name || "General Expenses";
+      return {
+        ...acc,
+        approved_account_id: id,
+        approved_account_name: name,
+        final_account_id: id,
+        final_account_name: name,
+      };
+    });
+    setAccountingData({ ...accountingData, accounting: updated });
+    setActionNotice("Accepted all suggested Chart of Accounts.");
+    setTimeout(() => setActionNotice(null), 3000);
+  };
+
+  // Accept a single AI suggestion
+  const handleAcceptAccount = (index: number) => {
+    const updated = [...(accountingData.accounting || [])];
+    if (updated[index]) {
+      const id = updated[index].final_account_id || updated[index].ai_account_id || `ACC_${index + 1}`;
+      const name = updated[index].final_account_name || updated[index].ai_account_name || "General Expenses";
+      updated[index] = {
+        ...updated[index],
+        approved_account_id: id,
+        approved_account_name: name,
+        final_account_id: id,
+        final_account_name: name,
+      };
+      setAccountingData({ ...accountingData, accounting: updated });
+    }
+  };
+
+  // Real Approval Action Handler
+  const handleApprove = async () => {
+    try {
+      setIsApproving(true);
+      setError(null);
+
+      // 1. Ensure all line items have Finance-approved Chart of Accounts populated
+      const currentLines = [...(accountingData.accounting || [])];
+      if (!currentLines || currentLines.length === 0) {
+        throw new Error("No accounting classifications available. Please click 'Re-run Accounting' first.");
+      }
+
+      const updatedLines = currentLines.map((item, idx) => {
+        const approvedId =
+          item.approved_account_id ||
+          item.final_account_id ||
+          item.ai_account_id ||
+          `ACC_${idx + 1}`;
+        const approvedName =
+          item.approved_account_name ||
+          item.final_account_name ||
+          item.ai_account_name ||
+          "General Expenses";
+        return {
+          ...item,
+          approved_account_id: approvedId,
+          approved_account_name: approvedName,
+          final_account_id: approvedId,
+          final_account_name: approvedName,
+        };
+      });
+
+      const updatedAccounting = {
+        ...accountingData,
+        accounting: updatedLines,
+      };
+
+      // 2. Persist the approved accounts and form data to backend
+      let parsedAdditional = formData.additional_fields || {};
+      if (additionalFieldsText.trim()) {
+        try {
+          parsedAdditional = JSON.parse(additionalFieldsText);
+        } catch {
+          parsedAdditional = { raw_notes: additionalFieldsText };
+        }
+      }
+
+      const updatedVlmPayload: RawVlmOutput = {
+        ...(invoice?.current_vlm_output || invoice?.raw_vlm_output || {}),
+        data: {
+          ...formData,
+          additional_fields: parsedAdditional,
+        },
+      };
+
+      await updateInvoiceExtraction(
+        invoiceId,
+        updatedVlmPayload,
+        updatedAccounting
+      );
+      setAccountingData(updatedAccounting);
+
+      // 3. Execute authoritative Finance Approval and generate General Ledger Journal
+      await approveInvoice(invoiceId);
+      setActionNotice("Invoice approved and balanced double-entry journal created!");
+      setTimeout(() => setActionNotice(null), 4000);
+      
+      const [updatedInv, updatedJournal] = await Promise.all([
+        getInvoice(invoiceId),
+        getJournalPreview(invoiceId).catch(() => null),
+      ]);
+      setInvoice(updatedInv);
+      if (updatedJournal) setJournalPreview(updatedJournal);
+    } catch (err: any) {
+      setError(err.message || "Failed to approve invoice.");
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
+  // Real Rejection Action Handler
+  const handleRejectConfirm = async () => {
+    if (!rejectReason.trim()) {
+      setError("Please enter a rejection reason.");
+      return;
+    }
+    try {
+      setIsRejecting(true);
+      setError(null);
+      await rejectInvoice(invoiceId, rejectReason);
+      setRejectModalOpen(false);
+      setRejectReason("");
+      setActionNotice("Invoice rejected.");
+      setTimeout(() => setActionNotice(null), 4000);
+      
+      const updatedInv = await getInvoice(invoiceId);
+      setInvoice(updatedInv);
+    } catch (err: any) {
+      setError(err.message || "Failed to reject invoice.");
+    } finally {
+      setIsRejecting(false);
+    }
+  };
+
+  // Real Zoho Export Action Handler
+  const handleExport = async () => {
+    try {
+      setIsExporting(true);
+      setError(null);
+      const res = await exportInvoiceToZoho(invoiceId);
+      setActionNotice(`Successfully exported to Zoho Books! Bill #${res.zoho_bill_number || res.zoho_bill_id}`);
+      
+      const updatedInv = await getInvoice(invoiceId);
+      setInvoice(updatedInv);
+    } catch (err: any) {
+      setError(err.message || "Failed to export invoice to Zoho Books.");
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   // Categorized invoice workflow lists
@@ -479,7 +639,10 @@ export default function InvoiceWorkspacePage() {
       inv.status === "PROCESSING_ACCOUNTING"
   );
   const extractedInvoices = workflowInvoices.filter(
-    (inv) => inv.status === "COMPLETED"
+    (inv) => inv.status === "COMPLETED" && inv.export_status !== "EXPORTED"
+  );
+  const exportedInvoices = workflowInvoices.filter(
+    (inv) => inv.export_status === "EXPORTED" || Boolean(inv.zoho_bill_id)
   );
 
   const accountingLines: AccountingLineItem[] =
@@ -529,22 +692,121 @@ export default function InvoiceWorkspacePage() {
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           {invoice?.accounting_confidence !== null && invoice?.accounting_confidence !== undefined && (
             <span className="badge badge-uploaded" style={{ fontSize: "12px", color: "var(--accent)" }}>
-              COA Confidence: {Math.round(invoice.accounting_confidence * 100)}%
+              COA: {Math.round(invoice.accounting_confidence * 100)}%
             </span>
           )}
-          <span
-            className={`badge ${invoice?.status === "COMPLETED"
-                ? "badge-success"
-                : invoice?.status === "FAILED"
+
+          {invoice?.approval_status && (
+            <span
+              className={`badge ${
+                invoice.approval_status === "APPROVED"
+                  ? "badge-success"
+                  : invoice.approval_status === "REJECTED"
                   ? "badge-danger"
                   : "badge-uploaded"
               }`}
+              style={{ fontSize: "12px" }}
+            >
+              {invoice.approval_status === "APPROVED"
+                ? "Approved ✓"
+                : invoice.approval_status === "REJECTED"
+                ? "Rejected ✗"
+                : "Pending Review"}
+            </span>
+          )}
+
+          {invoice?.export_status === "EXPORTED" ? (
+            <span className="badge badge-success" style={{ fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
+              <ShieldCheck size={13} />
+              Zoho Bill: {invoice.zoho_bill_number ? `#${invoice.zoho_bill_number}` : invoice.zoho_bill_id || "Exported ✓"}
+            </span>
+          ) : (
+            <span className="badge badge-uploaded" style={{ fontSize: "12px" }}>
+              {invoice?.export_status || "NOT_EXPORTED"}
+            </span>
+          )}
+
+          {/* Action Buttons: Reject, Approve, Export to Zoho */}
+          {invoice?.approval_status !== "APPROVED" && (
+            <button
+              onClick={() => setRejectModalOpen(true)}
+              className="btn btn-secondary"
+              style={{
+                padding: "6px 12px",
+                fontSize: "12px",
+                color: "var(--danger)",
+                borderColor: "rgba(255, 69, 58, 0.3)",
+              }}
+            >
+              <X size={13} />
+              <span>Reject</span>
+            </button>
+          )}
+
+          <button
+            onClick={handleApprove}
+            disabled={isApproving || invoice?.approval_status === "APPROVED"}
+            className="btn btn-primary"
+            style={{
+              padding: "6px 14px",
+              fontSize: "12px",
+              background:
+                invoice?.approval_status === "APPROVED"
+                  ? "#34c759"
+                  : "linear-gradient(135deg, #0071e3 0%, #005bb5 100%)",
+            }}
           >
-            {invoice?.status === "COMPLETED" ? "Qwen3-VL + Qwen3-4B Ready" : invoice?.status}
-          </span>
+            <Check size={13} />
+            <span>
+              {isApproving
+                ? "Balancing & Approving..."
+                : invoice?.approval_status === "APPROVED"
+                ? "Approved ✓"
+                : "Approve"}
+            </span>
+          </button>
+
+          <button
+            onClick={handleExport}
+            disabled={
+              isExporting ||
+              invoice?.approval_status !== "APPROVED" ||
+              invoice?.export_status === "EXPORTED"
+            }
+            className="btn btn-primary"
+            style={{
+              padding: "6px 14px",
+              fontSize: "12px",
+              background:
+                invoice?.export_status === "EXPORTED"
+                  ? "#34c759"
+                  : invoice?.approval_status === "APPROVED"
+                  ? "linear-gradient(135deg, #0071e3 0%, #005bb5 100%)"
+                  : "var(--border-subtle)",
+              color: invoice?.approval_status === "APPROVED" ? "#ffffff" : "var(--text-tertiary)",
+              cursor:
+                invoice?.approval_status === "APPROVED" && invoice?.export_status !== "EXPORTED"
+                  ? "pointer"
+                  : "not-allowed",
+            }}
+            title={
+              invoice?.approval_status !== "APPROVED"
+                ? "Must approve invoice with authoritative Chart of Accounts before exporting to Zoho Books"
+                : "Export bill to Zoho Books"
+            }
+          >
+            <Send size={13} />
+            <span>
+              {isExporting
+                ? "Syncing to Zoho..."
+                : invoice?.export_status === "EXPORTED"
+                ? "Exported to Zoho ✓"
+                : "Export to Zoho"}
+            </span>
+          </button>
         </div>
       </div>
 
@@ -727,47 +989,51 @@ export default function InvoiceWorkspacePage() {
 
                 {/* Top Right Action Buttons: Reject, Approve, Export */}
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  {invoice?.approval_status !== "APPROVED" && (
+                    <button
+                      type="button"
+                      onClick={() => setRejectModalOpen(true)}
+                      className="btn btn-secondary"
+                      style={{
+                        padding: "6px 12px",
+                        fontSize: "12px",
+                        color: "var(--danger)",
+                        borderColor: "var(--border-subtle)",
+                      }}
+                    >
+                      <X size={14} />
+                      <span>Reject</span>
+                    </button>
+                  )}
                   <button
                     type="button"
-                    onClick={() => handleDummyAction("Reject")}
+                    onClick={handleApprove}
+                    disabled={isApproving || invoice?.approval_status === "APPROVED"}
                     className="btn btn-secondary"
                     style={{
                       padding: "6px 12px",
                       fontSize: "12px",
-                      color: "var(--danger)",
-                      borderColor: "var(--border-subtle)",
-                    }}
-                  >
-                    <X size={14} />
-                    <span>Reject</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDummyAction("Approve")}
-                    className="btn btn-secondary"
-                    style={{
-                      padding: "6px 12px",
-                      fontSize: "12px",
-                      color: "var(--success)",
+                      color: invoice?.approval_status === "APPROVED" ? "#34c759" : "var(--success)",
                       borderColor: "var(--border-subtle)",
                     }}
                   >
                     <Check size={14} />
-                    <span>Approve</span>
+                    <span>{isApproving ? "Approving..." : invoice?.approval_status === "APPROVED" ? "Approved ✓" : "Approve"}</span>
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleDummyAction("Export")}
+                    onClick={handleExport}
+                    disabled={isExporting || invoice?.approval_status !== "APPROVED" || invoice?.export_status === "EXPORTED"}
                     className="btn btn-secondary"
                     style={{
                       padding: "6px 12px",
                       fontSize: "12px",
-                      color: "var(--accent)",
+                      color: invoice?.export_status === "EXPORTED" ? "#34c759" : "var(--accent)",
                       borderColor: "var(--border-subtle)",
                     }}
                   >
                     <Send size={14} />
-                    <span>Export</span>
+                    <span>{isExporting ? "Exporting..." : invoice?.export_status === "EXPORTED" ? "Exported ✓" : "Export"}</span>
                   </button>
                 </div>
               </div>
@@ -1427,11 +1693,11 @@ export default function InvoiceWorkspacePage() {
 
                 {/* 8. ACCOUNTING CLASSIFICATION (STAGE 3 QWEN3-4B RESULT) */}
                 <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <BookOpen size={16} color="var(--accent)" />
                       <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                        8. Accounting Classification (Qwen3-4B)
+                        8. Accounting Classification &amp; COA Review
                       </h3>
                       {accountingLines.length > 0 && (
                         <span className="badge badge-success" style={{ fontSize: "11px" }}>
@@ -1440,17 +1706,37 @@ export default function InvoiceWorkspacePage() {
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={handleRunAccounting}
-                      disabled={isCategorizing}
-                      className="btn btn-secondary"
-                      style={{ padding: "4px 10px", fontSize: "12px" }}
-                      title="Send current invoice JSON to Qwen3-4B without re-running VLM"
-                    >
-                      <RefreshCw size={12} className={isCategorizing ? "animate-spin" : ""} />
-                      <span>{isCategorizing ? "Running..." : "Re-run Accounting"}</span>
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      {accountingLines.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleAcceptAllAccounts}
+                          className="btn btn-secondary"
+                          style={{
+                            padding: "4px 10px",
+                            fontSize: "12px",
+                            color: "var(--accent)",
+                            borderColor: "var(--accent)",
+                          }}
+                          title="Accept all AI suggestions as approved accounts"
+                        >
+                          <Check size={12} />
+                          <span>Accept All Accounts</span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleRunAccounting}
+                        disabled={isCategorizing}
+                        className="btn btn-secondary"
+                        style={{ padding: "4px 10px", fontSize: "12px" }}
+                        title="Send current invoice JSON to Qwen3-4B without re-running VLM"
+                      >
+                        <RefreshCw size={12} className={isCategorizing ? "animate-spin" : ""} />
+                        <span>{isCategorizing ? "Running..." : "Re-run Accounting"}</span>
+                      </button>
+                    </div>
                   </div>
 
                   <div
@@ -1461,15 +1747,16 @@ export default function InvoiceWorkspacePage() {
                       background: "#ffffff",
                     }}
                   >
-                    <table style={{ width: "100%", minWidth: "750px", borderCollapse: "collapse", fontSize: "12px" }}>
+                    <table style={{ width: "100%", minWidth: "800px", borderCollapse: "collapse", fontSize: "12px" }}>
                       <thead>
                         <tr style={{ background: "#f9f9fb", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", textAlign: "left" }}>
                           <th style={{ padding: "8px 8px", width: "30px" }}>#</th>
-                          <th style={{ padding: "8px 8px", minWidth: "180px" }}>Item Description</th>
-                          <th style={{ padding: "8px 8px", minWidth: "220px" }}>Suggested Account (COA)</th>
+                          <th style={{ padding: "8px 8px", minWidth: "160px" }}>Item Description</th>
+                          <th style={{ padding: "8px 8px", minWidth: "200px" }}>Suggested Account (COA)</th>
                           <th style={{ padding: "8px 8px", width: "90px" }}>Account Code</th>
                           <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Confidence</th>
-                          <th style={{ padding: "8px 8px", width: "90px", textAlign: "center" }}>Status</th>
+                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Action</th>
+                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Status</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1486,13 +1773,16 @@ export default function InvoiceWorkspacePage() {
                                 <input
                                   type="text"
                                   className="table-input"
-                                  value={acc.final_account_name ?? acc.ai_account_name ?? ""}
-                                  placeholder="Suggested Account"
-                                  onChange={(e) => handleAccountingItemChange(idx, "final_account_name", e.target.value)}
+                                  value={acc.approved_account_name || acc.final_account_name || acc.ai_account_name || ""}
+                                  placeholder="Approved Account"
+                                  onChange={(e) => {
+                                    handleAccountingItemChange(idx, "final_account_name", e.target.value);
+                                    handleAccountingItemChange(idx, "approved_account_name", e.target.value);
+                                  }}
                                 />
                               </td>
                               <td style={{ padding: "8px" }}>
-                                <code>{acc.final_account_id ?? acc.ai_account_id ?? "-"}</code>
+                                <code>{acc.approved_account_id || acc.final_account_id || acc.ai_account_id || "-"}</code>
                               </td>
                               <td style={{ padding: "8px", textAlign: "center" }}>
                                 {acc.ai_confidence !== undefined && acc.ai_confidence !== null ? (
@@ -1512,7 +1802,23 @@ export default function InvoiceWorkspacePage() {
                                 )}
                               </td>
                               <td style={{ padding: "8px", textAlign: "center" }}>
-                                {acc.ai_needs_review ? (
+                                {acc.approved_account_id ? (
+                                  <span style={{ fontSize: "11px", color: "#34c759", fontWeight: "600" }}>
+                                    Approved ✓
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleAcceptAccount(idx)}
+                                    className="btn btn-secondary"
+                                    style={{ padding: "2px 8px", fontSize: "11px" }}
+                                  >
+                                    Accept
+                                  </button>
+                                )}
+                              </td>
+                              <td style={{ padding: "8px", textAlign: "center" }}>
+                                {acc.ai_needs_review && !acc.approved_account_id ? (
                                   <span className="badge badge-danger" style={{ fontSize: "10px" }}>
                                     Review
                                   </span>
@@ -1526,7 +1832,7 @@ export default function InvoiceWorkspacePage() {
                           ))
                         ) : (
                           <tr>
-                            <td colSpan={6} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
+                            <td colSpan={7} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
                               No accounting classification generated yet. Click &quot;Re-run Accounting&quot; to classify with Qwen3-4B.
                             </td>
                           </tr>
@@ -2783,6 +3089,70 @@ export default function InvoiceWorkspacePage() {
           }
         }
       `}</style>
+
+      {/* Reject Modal */}
+      {rejectModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: "100%",
+              maxWidth: "460px",
+              padding: "24px",
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.15)",
+              background: "#ffffff",
+            }}
+          >
+            <h3 style={{ fontSize: "17px", fontWeight: "700", marginBottom: "8px", color: "var(--danger)" }}>
+              Reject Invoice
+            </h3>
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "16px" }}>
+              Please provide a reason for rejecting this invoice.
+            </p>
+            <textarea
+              className="form-input"
+              rows={3}
+              value={rejectReason}
+              placeholder="e.g. Incorrect tax invoice calculation or invalid vendor PAN..."
+              onChange={(e) => setRejectReason(e.target.value)}
+              style={{ width: "100%", marginBottom: "20px" }}
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setRejectModalOpen(false)}
+                className="btn btn-secondary"
+                disabled={isRejecting}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleRejectConfirm}
+                disabled={isRejecting || !rejectReason.trim()}
+                className="btn btn-primary"
+                style={{ background: "var(--danger)", borderColor: "var(--danger)" }}
+              >
+                {isRejecting ? "Rejecting..." : "Confirm Rejection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

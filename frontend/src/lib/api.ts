@@ -85,6 +85,8 @@ export interface AccountingLineItem {
   ai_needs_review?: boolean | null;
   final_account_id?: string | null;
   final_account_name?: string | null;
+  approved_account_id?: string | null;
+  approved_account_name?: string | null;
   tax_analysis?: {
     tax_present?: boolean;
     tax_types?: string[];
@@ -131,6 +133,10 @@ export interface InvoiceListItem {
   mime_type: string;
   status: string;
   accounting_status?: string | null;
+  approval_status?: "PENDING_REVIEW" | "APPROVED" | "REJECTED" | string | null;
+  export_status?: "NOT_EXPORTED" | "EXPORTED" | "FAILED" | string | null;
+  zoho_bill_id?: string | null;
+  zoho_bill_number?: string | null;
   vendor_name?: string | null;
   invoice_number?: string | null;
   total_amount?: number | null;
@@ -291,6 +297,10 @@ export interface Invoice {
   file_hash: string;
   status: "PENDING" | "PROCESSING_VLM" | "PROCESSING_ACCOUNTING" | "COMPLETED" | "FAILED" | string;
   accounting_status?: "PENDING" | "PROCESSING_ACCOUNTING" | "COMPLETED" | "FAILED" | string | null;
+  approval_status?: "PENDING_REVIEW" | "APPROVED" | "REJECTED" | string | null;
+  export_status?: "NOT_EXPORTED" | "EXPORTED" | "FAILED" | string | null;
+  zoho_bill_id?: string | null;
+  zoho_bill_number?: string | null;
   error_message?: string | null;
   confidence_score?: number | null;
   accounting_confidence?: number | null;
@@ -313,20 +323,6 @@ export interface InvoiceStatus {
   error_message?: string | null;
   confidence_score?: number | null;
   accounting_confidence?: number | null;
-  updated_at: string;
-}
-
-export interface InvoiceListItem {
-  id: string;
-  file_name: string;
-  file_size: number;
-  mime_type: string;
-  status: "PENDING" | "PROCESSING_VLM" | "PROCESSING_ACCOUNTING" | "COMPLETED" | "FAILED" | string;
-  accounting_status?: string | null;
-  vendor_name?: string | null;
-  invoice_number?: string | null;
-  total_amount?: number | null;
-  created_at: string;
   updated_at: string;
 }
 
@@ -484,15 +480,21 @@ export interface UserProfile {
   tenant_id: string;
 }
 
-export type ZohoConnectionState = "DISCONNECTED" | "CONNECTED" | "ERROR";
+export type ZohoConnectionState = "DISCONNECTED" | "CONNECTED" | "ERROR" | "CONNECTING" | "SYNCING" | "ORGANIZATION_REQUIRED";
 
 export interface ZohoStatusResponse {
   connected: boolean;
   status: ZohoConnectionState;
   organization_id?: string | null;
+  organization_name?: string | null;
   accounts_server?: string | null;
+  api_domain?: string | null;
   error_message?: string | null;
   last_synced_at?: string | null;
+  last_sync_at?: string | null;
+  accounts_count?: number;
+  taxes_count?: number;
+  vendors_count?: number;
 }
 
 export interface ZohoOrganization {
@@ -509,7 +511,9 @@ export interface ZohoMasterDataSummary {
   vendors_count: number;
   last_synced_at?: string | null;
   chart_of_accounts?: any[];
+  accounts?: any[];
   tax_rates?: any[];
+  taxes?: any[];
   vendors?: any[];
 }
 
@@ -550,7 +554,7 @@ export async function getZohoStatus(): Promise<ZohoStatusResponse> {
   return res.json();
 }
 
-export async function getZohoConnectUrl(accountsServer?: string, redirectUri?: string): Promise<{ auth_url: string; state: string }> {
+export async function getZohoConnectUrl(accountsServer?: string, redirectUri?: string): Promise<{ auth_url: string; authorization_url?: string; state: string }> {
   let url = `${API_BASE}/zoho/connect`;
   const params = new URLSearchParams();
   if (accountsServer) params.append("accounts_server", accountsServer);
@@ -574,11 +578,11 @@ export async function getZohoOrganizations(): Promise<ZohoOrganization[]> {
   return res.json();
 }
 
-export async function selectZohoOrganization(organizationId: string): Promise<{ success: boolean; message: string }> {
+export async function selectZohoOrganization(organizationId: string, organizationName?: string): Promise<{ success: boolean; message: string; accounts_synced?: number; taxes_synced?: number; vendors_synced?: number }> {
   const res = await fetch(`${API_BASE}/zoho/select-organization`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ organization_id: organizationId }),
+    body: JSON.stringify({ organization_id: organizationId, organization_name: organizationName }),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -587,7 +591,7 @@ export async function selectZohoOrganization(organizationId: string): Promise<{ 
   return res.json();
 }
 
-export async function triggerZohoSync(): Promise<{ message: string; chart_of_accounts: number; tax_rates: number; vendors: number }> {
+export async function triggerZohoSync(): Promise<{ message: string; chart_of_accounts?: number; tax_rates?: number; vendors?: number; accounts_synced?: number; taxes_synced?: number; vendors_synced?: number }> {
   const res = await fetch(`${API_BASE}/zoho/sync`, { method: "POST" });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
