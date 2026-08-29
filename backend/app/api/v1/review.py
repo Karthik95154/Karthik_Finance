@@ -137,11 +137,11 @@ async def approve_invoice(
     acct_lines = list(accounting_data.get("accounting") or [])
 
     # Extract VLM invoice data
-    vlm_data = (
-        (invoice.current_vlm_output or {}).get("data")
-        if isinstance(invoice.current_vlm_output, dict)
-        else (invoice.raw_vlm_output or {}).get("data") or {}
-    )
+    raw_vlm = invoice.current_vlm_output or invoice.raw_vlm_output or {}
+    if isinstance(raw_vlm, dict):
+        vlm_data = raw_vlm.get("data") if ("data" in raw_vlm and isinstance(raw_vlm.get("data"), dict)) else raw_vlm
+    else:
+        vlm_data = {}
 
     if not acct_lines:
         raw_items = vlm_data.get("line_items") or []
