@@ -237,8 +237,9 @@ async def list_invoices(
     items = []
     for inv in invoices:
         vlm = inv.current_vlm_output or inv.raw_vlm_output or {}
-        data = vlm.get("data") if isinstance(vlm, dict) else {}
-        if not isinstance(data, dict):
+        if isinstance(vlm, dict):
+            data = vlm.get("data") if ("data" in vlm and isinstance(vlm.get("data"), dict)) else vlm
+        else:
             data = {}
         items.append(
             InvoiceListItemResponse(
