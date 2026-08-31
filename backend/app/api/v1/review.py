@@ -14,7 +14,7 @@ from app.core.security import (
 )
 from app.db.database import get_db
 from app.db.models import Invoice, JournalEntry, JournalLine, AuditLog
-from app.services.journal_generator import journal_generator
+from app.services.journal_generator import journal_generator, sync_relational_journal
 from app.services.audit_service import audit_service
 from app.services.export_service import export_service
 
@@ -84,6 +84,10 @@ async def get_journal_preview(
     journal = journal_generator.generate_journal_entry(
         invoice_data=vlm_data,
         accounting_data=accounting_data,
+        gst_result=invoice.gst_result,
+        itc_result=invoice.itc_result,
+        tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
+        financial_validation_result=invoice.financial_validation_result,
         cost_center=cost_center,
         project=project,
         department=department,
@@ -108,7 +112,7 @@ async def approve_invoice(
     Approves an invoice:
     - MANDATORY RULE: Every single line item must have approved_account_id and approved_account_name.
     - Zero fallback from approved_account_id to ai_account_id is allowed.
-    - Generates authoritative balanced journal.
+    - Generates authoritative balanced journal using finalized upstream GST/ITC/TDS engines.
     - Locks invoice and stamps approved_by = current_user.email, approved_at = now().
     """
     tenant_id = current_user.tenant_id
@@ -123,55 +127,38 @@ async def approve_invoice(
 
     if invoice.approval_status == "APPROVED":
         return {
-            "status": "success",
+            "status": "already_approved",
             "message": "Invoice is already approved.",
+            "invoice_id": str(invoice_id),
             "approval_status": "APPROVED",
         }
 
-    # 1. Authoritative Accounting Validation
-    accounting_data = dict(
+    # 1. Financial Validation Gate Check
+    if invoice.financial_validation_result and isinstance(invoice.financial_validation_result, dict):
+        fin_status = invoice.financial_validation_result.get("overall_status")
+        if fin_status == "MISMATCH":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot approve invoice: Stage 5 Financial Validation reported MISMATCH. Discrepancies must be resolved before approval.",
+            )
+
+    # 2. Extract Working Payload and Accounting Classification
+    vlm_data = {}
+    if isinstance(invoice.current_vlm_output, dict):
+        vlm_data = invoice.current_vlm_output.get("data") or invoice.current_vlm_output
+    elif isinstance(invoice.raw_vlm_output, dict):
+        vlm_data = invoice.raw_vlm_output.get("data") or invoice.raw_vlm_output
+
+    accounting_data = (
         invoice.current_accounting_output
         if isinstance(invoice.current_accounting_output, dict)
         else (invoice.accounting_output if isinstance(invoice.accounting_output, dict) else {})
     )
-    acct_lines = list(accounting_data.get("accounting") or [])
 
-    # Extract VLM invoice data
-    raw_vlm = invoice.current_vlm_output or invoice.raw_vlm_output or {}
-    if isinstance(raw_vlm, dict):
-        vlm_data = raw_vlm.get("data") if ("data" in raw_vlm and isinstance(raw_vlm.get("data"), dict)) else raw_vlm
-    else:
-        vlm_data = {}
-
-    if not acct_lines:
-        raw_items = vlm_data.get("line_items") or []
-        if raw_items:
-            acct_lines = []
-            for idx, item in enumerate(raw_items, 1):
-                acct_lines.append({
-                    "line_index": idx,
-                    "source_description": item.get("description") or f"Line {idx}",
-                    "ai_account_id": item.get("account_id") or f"ACC_{idx}",
-                    "ai_account_name": item.get("account_name") or "General Expenses",
-                    "approved_account_id": item.get("account_id") or f"ACC_{idx}",
-                    "approved_account_name": item.get("account_name") or "General Expenses",
-                    "final_account_id": item.get("account_id") or f"ACC_{idx}",
-                    "final_account_name": item.get("account_name") or "General Expenses",
-                })
-        else:
-            acct_lines = [{
-                "line_index": 1,
-                "source_description": "General Expenses",
-                "ai_account_id": "ACC_1",
-                "ai_account_name": "General Expenses",
-                "approved_account_id": "ACC_1",
-                "approved_account_name": "General Expenses",
-                "final_account_id": "ACC_1",
-                "final_account_name": "General Expenses",
-            }]
-
+    acct_lines = accounting_data.get("accounting") or []
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Enforce strict Finance Chart of Accounts approval on every line item
     for item in acct_lines:
         idx = item.get("line_index", 1)
         app_id = item.get("approved_account_id") or item.get("final_account_id")
@@ -194,11 +181,15 @@ async def approve_invoice(
 
     accounting_data["accounting"] = acct_lines
 
-    # 3. Generate Authoritative Journal (require_approved=True)
+    # 3. Generate Authoritative Journal (require_approved=True) using single source of truth
     try:
         journal = journal_generator.generate_journal_entry(
             invoice_data=vlm_data,
             accounting_data=accounting_data,
+            gst_result=invoice.gst_result,
+            itc_result=invoice.itc_result,
+            tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
+            financial_validation_result=invoice.financial_validation_result,
             require_approved=True,
         )
     except ValueError as val_err:
@@ -216,36 +207,25 @@ async def approve_invoice(
     # 4. Atomic Database Mutations
     invoice.current_accounting_output = accounting_data
 
-    # Delete existing draft journal
-    await db.execute(delete(JournalEntry).where(JournalEntry.invoice_id == invoice_id))
-
-    # Persist Journal Entry & Lines
-    journal_entry = JournalEntry(
-        invoice_id=invoice_id,
-        tenant_id=tenant_id,
-        entry_date=journal.get("entry_date"),
-        total_debit=journal["total_debit"],
-        total_credit=journal["total_credit"],
-        is_balanced=journal["is_balanced"],
-        status="APPROVED",
+    # Generate authoritative journal dict for persistence
+    authoritative_journal_dict = journal_generator.generate_journal(
+        invoice_data=vlm_data,
+        accounting_classification=accounting_data,
+        gst_result=invoice.gst_result,
+        itc_result=invoice.itc_result,
+        tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
+        financial_validation_result=invoice.financial_validation_result,
+        require_approved=True,
     )
-    db.add(journal_entry)
-    await db.flush()
+    invoice.journal_entry = authoritative_journal_dict
 
-    for item in journal["lines"]:
-        line = JournalLine(
-            journal_entry_id=journal_entry.id,
-            line_number=item["line_number"],
-            account_id=item.get("account_id"),
-            account_name=item["account_name"],
-            line_type=item["line_type"],
-            amount=item["amount"],
-            description=item.get("description"),
-            cost_center=item.get("cost_center"),
-            project=item.get("project"),
-            department=item.get("department"),
-        )
-        db.add(line)
+    # Sync relational tables with the authoritative journal
+    synced_entry = await sync_relational_journal(
+        session=db,
+        invoice_id=invoice_id,
+        journal_dict=authoritative_journal_dict,
+        tenant_id=tenant_id,
+    )
 
     invoice.approval_status = "APPROVED"
     invoice.locked_at = datetime.now(timezone.utc)
@@ -266,7 +246,7 @@ async def approve_invoice(
         "status": "success",
         "message": "Invoice approved and authoritative journal created successfully.",
         "approval_status": "APPROVED",
-        "journal_entry_id": str(journal_entry.id),
+        "journal_entry_id": str(synced_entry.id) if synced_entry else str(invoice_id),
         "is_balanced": journal["is_balanced"],
     }
 

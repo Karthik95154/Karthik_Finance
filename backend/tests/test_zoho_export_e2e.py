@@ -80,7 +80,7 @@ async def test_full_zoho_export_success_flow():
             "accounting": [
                 {
                     "line_index": 1,
-                    "approved_account_id": "ACC_ZOHO_EXP_1",
+                    "approved_account_id": "4076465000000000558",
                     "approved_account_name": "Cloud Hosting & Infrastructure",
                 }
             ],

@@ -188,21 +188,39 @@ export interface ItcLineItemBreakdown {
   account_name?: string | null;
   hsn_code?: string | null;
   tax_amount?: number | null;
-  itc_status: "ELIGIBLE" | "INELIGIBLE" | "REVIEW_REQUIRED" | string;
+  itc_status: "ELIGIBLE" | "PARTIALLY_ELIGIBLE" | "INELIGIBLE" | "REVIEW_REQUIRED" | string;
   eligible_amount: number;
   ineligible_amount: number;
+  blocked_amount?: number;
+  reversal_amount?: number;
+  review_amount?: number;
+  net_itc_available?: number;
   reason: string;
   rule_reference: string;
+  evidence_used?: string[];
+  exceptions_evaluated?: string[];
 }
 
 export interface ItcResult {
-  status: "ELIGIBLE" | "INELIGIBLE" | "REVIEW_REQUIRED" | string;
+  status: "ELIGIBLE" | "PARTIALLY_ELIGIBLE" | "INELIGIBLE" | "REVIEW_REQUIRED" | string;
   eligible_amount: number;
   ineligible_amount: number;
+  eligible_itc?: number;
+  blocked_itc?: number;
+  reversal_itc?: number;
+  review_amount?: number;
+  net_itc_available?: number;
   total_tax_amount: number;
   is_reverse_charge?: boolean;
+  supply_type?: string;
+  document_type?: string;
+  gstr2b_status?: string;
+  payment_reversal_status?: string;
   reason: string;
   rule_reference: string;
+  warnings?: string[];
+  errors?: string[];
+  evidence?: string[];
   line_item_breakdown?: ItcLineItemBreakdown[];
 }
 

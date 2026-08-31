@@ -147,7 +147,7 @@ class ZohoClientService:
         if (
             not connection.encrypted_access_token
             or not connection.token_expires_at
-            or connection.token_expires_at <= now
+            or (isinstance(connection.token_expires_at, datetime) and connection.token_expires_at <= now)
         ):
             return await self.refresh_access_token(connection, db)
 

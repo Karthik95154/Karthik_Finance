@@ -214,16 +214,19 @@ class MasterDataService:
         Dynamically finds the matching Zoho Tax ID for an invoice line item
         based on supply_type (INTRA_STATE vs INTER_STATE) and tax percentage.
         """
-        if tax_percentage is None or tax_percentage <= 0:
+        if tax_percentage is None or tax_percentage <= 0 or not db:
             return None
 
-        query = select(TaxRate).where(
-            TaxRate.tenant_id == tenant_id,
-            TaxRate.is_active == True,
-            TaxRate.tax_type.in_(["GST", "tax", "Tax", "gst"]),
-        )
-        res = await db.execute(query)
-        taxes = res.scalars().all()
+        try:
+            query = select(TaxRate).where(
+                TaxRate.tenant_id == tenant_id,
+                TaxRate.is_active == True,
+                TaxRate.tax_type.in_(["GST", "tax", "Tax", "gst"]),
+            )
+            res = await db.execute(query)
+            taxes = res.scalars().all() if res else []
+        except Exception:
+            return None
 
         if not taxes:
             return None
@@ -278,13 +281,19 @@ class MasterDataService:
 
         Does not assume 194J, does not resolve by percentage alone, and does not hardcode IDs.
         """
-        query = select(TaxRate).where(
-            TaxRate.tenant_id == tenant_id,
-            TaxRate.is_active == True,
-            TaxRate.tax_type.in_(["TDS", "tds_tax", "tds"]),
-        )
-        res = await db.execute(query)
-        tds_taxes = res.scalars().all()
+        if not db:
+            return None
+
+        try:
+            query = select(TaxRate).where(
+                TaxRate.tenant_id == tenant_id,
+                TaxRate.is_active == True,
+                TaxRate.tax_type.in_(["TDS", "tds_tax", "tds"]),
+            )
+            res = await db.execute(query)
+            tds_taxes = res.scalars().all() if res else []
+        except Exception:
+            return None
 
         if not tds_taxes:
             return None

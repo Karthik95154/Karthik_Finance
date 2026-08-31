@@ -351,7 +351,15 @@ async def update_invoice_extraction(
         )
 
     if update_data.current_vlm_output is not None:
-        invoice.current_vlm_output = update_data.current_vlm_output
+        from app.core.date_utils import parse_and_normalize_date
+        vlm_dict = update_data.current_vlm_output
+        if isinstance(vlm_dict, dict):
+            target = vlm_dict.get("data") if isinstance(vlm_dict.get("data"), dict) else vlm_dict
+            if target.get("invoice_date"):
+                target["invoice_date"] = parse_and_normalize_date(target["invoice_date"])
+            if target.get("due_date"):
+                target["due_date"] = parse_and_normalize_date(target["due_date"])
+        invoice.current_vlm_output = vlm_dict
     if update_data.current_accounting_output is not None:
         invoice.current_accounting_output = update_data.current_accounting_output
 

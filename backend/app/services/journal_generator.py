@@ -1,8 +1,24 @@
+"""
+Authoritative Double-Entry Accounting Journal Generator for Invoices.
+Consumes upstream pipeline outputs:
+- Effective Invoice Data (VLM extraction / HITL edits)
+- Stage 3: Accounting Classification (COA, provenance, TDS metadata)
+- Stage 4: GST Engine (supply_type, calculated and extracted taxes)
+- Stage 4: ITC Engine (eligible_itc, blocked_itc, reversal_itc, review_amount, component breakdowns)
+- Stage 5: Financial Validation (reconciliation, arithmetic mismatch gates)
+
+Single Source of Truth for:
+- UI Live Preview
+- Approval Gate Validation
+- invoice.journal_entry (JSONB)
+- journal_entries & journal_lines (Relational Tables)
+- Zoho Books Export Alignment
+"""
+
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
-from app.services.financial_validator import financial_validator
-from app.services.tds_engine import tds_engine
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +76,11 @@ STANDARD_ACCOUNTS = {
     },
 }
 
-DEFAULT_TOLERANCE = 1.0  # 1 INR tolerance for rounding
+DEFAULT_TOLERANCE = 1.0  # 1 INR tolerance for monetary rounding
 
 
 class JournalLine(BaseModel):
-    account_id: str
+    account_id: Optional[str] = None
     account_name: str
     line_type: str = Field(
         ...,
@@ -82,6 +98,7 @@ class JournalLine(BaseModel):
     cost_center: Optional[str] = None
     project: Optional[str] = None
     department: Optional[str] = None
+    rule_reference: Optional[str] = None
 
 
 class JournalValidation(BaseModel):
@@ -106,9 +123,7 @@ class JournalEntryResult(BaseModel):
 
 class JournalGenerator:
     """
-    Deterministic Double-Entry Accounting Journal Generator for Invoices.
-    Generates preview accounting journal entries from effective extraction,
-    COA classification, GST, ITC, TDS, and Financial Validation results.
+    Unified Authoritative Double-Entry Accounting Journal Generator for Invoices.
     """
 
     def __init__(self, tolerance: float = DEFAULT_TOLERANCE):
@@ -122,16 +137,21 @@ class JournalGenerator:
         itc_result: Optional[Dict[str, Any]] = None,
         tds_result: Optional[Dict[str, Any]] = None,
         financial_validation_result: Optional[Dict[str, Any]] = None,
+        cost_center: Optional[str] = None,
+        project: Optional[str] = None,
+        department: Optional[str] = None,
+        require_approved: bool = False,
     ) -> Dict[str, Any]:
         """
-        Main entrypoint to generate a double-entry journal preview.
+        Single Authoritative Entrypoint for generating balanced double-entry General Ledger journals.
+        Consumes validated pipeline outputs directly.
         """
         lines: List[JournalLine] = []
         errors: List[str] = []
         warnings: List[str] = []
         requires_review: bool = False
 
-        # Extract underlying invoice payload if wrapped
+        # Extract underlying invoice payload if wrapped in {'data': ...}
         inv = invoice_data.get("data", invoice_data) if isinstance(invoice_data, dict) else {}
 
         # ----------------------------------------------------
@@ -148,9 +168,7 @@ class JournalGenerator:
                     warnings.extend(financial_validation_result["errors"])
             elif fin_status == "REVIEW_REQUIRED":
                 requires_review = True
-                warnings.append(
-                    "Stage 5 Financial Validation requires review."
-                )
+                warnings.append("Stage 5 Financial Validation requires review.")
 
         if gst_result:
             gst_val_status = gst_result.get("validation_status")
@@ -166,7 +184,7 @@ class JournalGenerator:
         # 2. EXTRACT INVOICE TOTALS & AMOUNTS
         # ----------------------------------------------------
         subtotal = self._clean_num(inv.get("subtotal"))
-        tax_total = self._clean_num(inv.get("tax_total"))
+        tax_total = self._clean_num(inv.get("tax_total") or inv.get("total_tax"))
         total_amount = self._clean_num(inv.get("total_amount"))
         discount = self._clean_num(inv.get("discount_total") or inv.get("discount")) or 0.0
         shipping = self._clean_num(inv.get("shipping_charges") or inv.get("shipping")) or 0.0
@@ -205,11 +223,10 @@ class JournalGenerator:
 
         acc_by_index: Dict[int, Dict[str, Any]] = {}
         for item in accounting_list:
-            idx = item.get("line_index")
-            if idx is not None:
-                acc_by_index[idx] = item
-                if idx > 0:
-                    acc_by_index[idx - 1] = item
+            if isinstance(item, dict):
+                idx = item.get("line_index")
+                if idx is not None:
+                    acc_by_index[idx] = item
 
         total_line_taxable_debits = 0.0
 
@@ -234,27 +251,40 @@ class JournalGenerator:
                     else:
                         taxable = 0.0
 
-                acc_info = acc_by_index.get(idx) or (accounting_list[idx] if idx < len(accounting_list) else {})
-                final_acc_id = acc_info.get("final_account_id") or acc_info.get("approved_account_id")
-                final_acc_name = acc_info.get("final_account_name") or acc_info.get("approved_account_name")
+                # Match line in accounting by line_index or sequential index
+                acc_info = {}
+                if idx in acc_by_index:
+                    acc_info = acc_by_index[idx]
+                elif (idx + 1) in acc_by_index:
+                    acc_info = acc_by_index[idx + 1]
+                elif idx < len(accounting_list):
+                    acc_info = accounting_list[idx]
+
+                approved_acc_id = acc_info.get("approved_account_id") or acc_info.get("final_account_id")
+                approved_acc_name = acc_info.get("approved_account_name") or acc_info.get("final_account_name")
                 ai_acc_id = acc_info.get("ai_account_id") or acc_info.get("account_id")
                 ai_acc_name = acc_info.get("ai_account_name") or acc_info.get("account_name")
 
-                if final_acc_id and final_acc_name:
-                    account_id = final_acc_id
-                    account_name = final_acc_name
+                if approved_acc_id and approved_acc_name:
+                    account_id = approved_acc_id
+                    account_name = approved_acc_name
                     provenance = "HITL_OVERRIDE"
+                elif require_approved:
+                    raise ValueError(
+                        f"Cannot generate authoritative journal: Line item {idx + 1} has not been approved by Finance. "
+                        f"approved_account_id and approved_account_name are required."
+                    )
                 elif ai_acc_id and ai_acc_name:
                     account_id = ai_acc_id
-                    account_name = ai_acc_name
+                    account_name = f"[Unapproved] {ai_acc_name}"
                     provenance = acc_info.get("provenance") or "AI_PREDICTED"
                 elif ai_acc_id:
                     account_id = ai_acc_id
-                    account_name = ai_acc_name or ai_acc_id
+                    account_name = f"[Unapproved] {ai_acc_id}"
                     provenance = "AI_PREDICTED"
                 else:
-                    account_id = f"UNCLASSIFIED_EXPENSE_{idx + 1}"
-                    account_name = f"Unclassified Expense ({desc})"
+                    account_id = None
+                    account_name = f"[Unapproved] Line {idx + 1} Expense"
                     provenance = "UNRESOLVED"
                     requires_review = True
                     errors.append(f"Missing COA account classification for line {idx + 1} ('{desc}').")
@@ -269,23 +299,28 @@ class JournalGenerator:
                         debit=taxable,
                         credit=0.0,
                         amount=taxable,
-                        source_line_index=idx,
+                        source_line_index=idx + 1,
                         provenance=provenance,
                         description=desc,
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
                     )
                 )
                 total_line_taxable_debits += taxable
         elif subtotal is not None and subtotal > 0:
             acc_info = accounting_list[0] if accounting_list else {}
-            final_acc_id = acc_info.get("final_account_id")
-            final_acc_name = acc_info.get("final_acc_name") or acc_info.get("final_account_name")
+            approved_acc_id = acc_info.get("approved_account_id") or acc_info.get("final_account_id")
+            approved_acc_name = acc_info.get("approved_account_name") or acc_info.get("final_account_name")
             ai_acc_id = acc_info.get("ai_account_id") or acc_info.get("account_id") or "ACC_3"
             ai_acc_name = acc_info.get("ai_account_name") or acc_info.get("account_name") or "Office Supplies & Stationery"
 
-            if final_acc_id and final_acc_name:
-                acc_id = final_acc_id
-                acc_name = final_acc_name
+            if approved_acc_id and approved_acc_name:
+                acc_id = approved_acc_id
+                acc_name = approved_acc_name
                 prov = "HITL_OVERRIDE"
+            elif require_approved:
+                raise ValueError("Invoice lacks Finance-approved Chart of Accounts.")
             else:
                 acc_id = ai_acc_id
                 acc_name = ai_acc_name
@@ -299,9 +334,12 @@ class JournalGenerator:
                     debit=subtotal,
                     credit=0.0,
                     amount=subtotal,
-                    source_line_index=0,
+                    source_line_index=1,
                     provenance=prov,
                     description="Invoice Taxable Amount",
+                    cost_center=cost_center,
+                    project=project,
+                    department=department,
                 )
             )
             total_line_taxable_debits = subtotal
@@ -330,24 +368,30 @@ class JournalGenerator:
             igst_amt = self._clean_num(inv.get("igst_amount") or inv.get("igst")) or 0.0
             cess_amt = self._clean_num(inv.get("cess_amount") or inv.get("cess")) or 0.0
 
-        total_extracted_gst = cgst_amt + sgst_amt + igst_amt + cess_amt
+        total_extracted_gst = round(cgst_amt + sgst_amt + igst_amt + cess_amt, 2)
         if total_extracted_gst == 0.0 and tax_total is not None and tax_total > 0:
+            total_extracted_gst = round(tax_total, 2)
             if supply_type == "INTER_STATE":
                 igst_amt = tax_total
             else:
                 cgst_amt = round(tax_total / 2.0, 2)
                 sgst_amt = round(tax_total - cgst_amt, 2)
 
+        # Authoritative ITC Evaluation Consumption
         itc_status = "ELIGIBLE"
         eligible_tax = total_extracted_gst
-        ineligible_tax = 0.0
+        blocked_tax = 0.0
+        reversal_tax = 0.0
+        review_tax = 0.0
 
         if itc_result:
             itc_status = itc_result.get("status") or "ELIGIBLE"
-            eligible_tax = self._clean_num(itc_result.get("eligible_amount"))
+            eligible_tax = self._clean_num(itc_result.get("eligible_itc") if itc_result.get("eligible_itc") is not None else itc_result.get("eligible_amount"))
             if eligible_tax is None:
                 eligible_tax = total_extracted_gst if itc_status == "ELIGIBLE" else 0.0
-            ineligible_tax = self._clean_num(itc_result.get("ineligible_amount")) or 0.0
+            blocked_tax = self._clean_num(itc_result.get("blocked_itc") if itc_result.get("blocked_itc") is not None else itc_result.get("ineligible_amount")) or 0.0
+            reversal_tax = self._clean_num(itc_result.get("reversal_itc")) or 0.0
+            review_tax = self._clean_num(itc_result.get("review_amount")) or 0.0
 
         if itc_status == "INELIGIBLE":
             if total_extracted_gst > 0:
@@ -361,6 +405,10 @@ class JournalGenerator:
                         amount=total_extracted_gst,
                         provenance="DETERMINISTIC",
                         description=f"Ineligible/Blocked Input Tax under Sec 17(5) ({itc_result.get('rule_reference') if itc_result else 'Sec 17(5)'})",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                        rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 17(5)",
                     )
                 )
         elif itc_status == "ELIGIBLE":
@@ -375,6 +423,10 @@ class JournalGenerator:
                         amount=cgst_amt,
                         provenance="DETERMINISTIC",
                         description="Input CGST (Eligible)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                        rule_reference="CGST Act Sec 16(1)",
                     )
                 )
             if sgst_amt > 0:
@@ -388,6 +440,10 @@ class JournalGenerator:
                         amount=sgst_amt,
                         provenance="DETERMINISTIC",
                         description="Input SGST / UTGST (Eligible)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                        rule_reference="CGST Act Sec 16(1)",
                     )
                 )
             if igst_amt > 0:
@@ -401,6 +457,10 @@ class JournalGenerator:
                         amount=igst_amt,
                         provenance="DETERMINISTIC",
                         description="Input IGST (Eligible)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                        rule_reference="CGST Act Sec 16(1)",
                     )
                 )
             if cess_amt > 0:
@@ -414,11 +474,17 @@ class JournalGenerator:
                         amount=cess_amt,
                         provenance="DETERMINISTIC",
                         description="Input Cess (Eligible)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
                     )
                 )
         else:
+            # PARTIALLY_ELIGIBLE or REVIEW_REQUIRED
             requires_review = True
-            warnings.append(f"ITC status is {itc_status}. Input tax eligibility requires verification.")
+            warnings.append(f"ITC status is {itc_status}. Input tax requires verification.")
+            
+            # 1. Eligible Portion -> Input GST Asset
             if eligible_tax > 0:
                 ratio = eligible_tax / (total_extracted_gst if total_extracted_gst > 0 else 1.0)
                 if cgst_amt > 0:
@@ -432,6 +498,10 @@ class JournalGenerator:
                             amount=round(cgst_amt * ratio, 2),
                             provenance="DETERMINISTIC",
                             description="Input CGST (Eligible Portion)",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
                         )
                     )
                 if sgst_amt > 0:
@@ -445,6 +515,10 @@ class JournalGenerator:
                             amount=round(sgst_amt * ratio, 2),
                             provenance="DETERMINISTIC",
                             description="Input SGST (Eligible Portion)",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
                         )
                     )
                 if igst_amt > 0:
@@ -458,19 +532,49 @@ class JournalGenerator:
                             amount=round(igst_amt * ratio, 2),
                             provenance="DETERMINISTIC",
                             description="Input IGST (Eligible Portion)",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
                         )
                     )
-            if ineligible_tax > 0:
+
+            # 2. Blocked Portion -> Ineligible Tax Expense
+            if blocked_tax > 0:
                 lines.append(
                     JournalLine(
                         account_id=STANDARD_ACCOUNTS["INELIGIBLE_TAX"]["account_id"],
                         account_name=STANDARD_ACCOUNTS["INELIGIBLE_TAX"]["account_name"],
                         line_type="EXPENSE",
-                        debit=ineligible_tax,
+                        debit=blocked_tax,
                         credit=0.0,
-                        amount=ineligible_tax,
+                        amount=blocked_tax,
                         provenance="DETERMINISTIC",
-                        description="Ineligible Input Tax Expense",
+                        description="Ineligible Input Tax Expense under Section 17(5)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                        rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 17(5)",
+                    )
+                )
+
+            # 3. Review Required or Reversal Portion -> Preserved in Ineligible Tax Expense pending review
+            pending_review_amt = round(review_tax + reversal_tax, 2)
+            if pending_review_amt > 0:
+                lines.append(
+                    JournalLine(
+                        account_id=STANDARD_ACCOUNTS["INELIGIBLE_TAX"]["account_id"],
+                        account_name="Input Tax Pending Verification",
+                        line_type="EXPENSE",
+                        debit=pending_review_amt,
+                        credit=0.0,
+                        amount=pending_review_amt,
+                        provenance="DETERMINISTIC",
+                        description="Input Tax flagged for review / Rule 37/42 reversal (Not claimable as asset)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                        rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
                     )
                 )
 
@@ -488,6 +592,9 @@ class JournalGenerator:
                     amount=shipping,
                     provenance="DETERMINISTIC",
                     description="Shipping & Freight Charges",
+                    cost_center=cost_center,
+                    project=project,
+                    department=department,
                 )
             )
 
@@ -502,6 +609,9 @@ class JournalGenerator:
                     amount=other_charges,
                     provenance="DETERMINISTIC",
                     description="Other Direct Expenses / Handling",
+                    cost_center=cost_center,
+                    project=project,
+                    department=department,
                 )
             )
 
@@ -517,6 +627,9 @@ class JournalGenerator:
                         amount=round_off,
                         provenance="DETERMINISTIC",
                         description="Round Off Adjustment (+)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
                     )
                 )
             else:
@@ -530,6 +643,9 @@ class JournalGenerator:
                         amount=abs(round_off),
                         provenance="DETERMINISTIC",
                         description="Round Off Adjustment (-)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
                     )
                 )
 
@@ -548,6 +664,7 @@ class JournalGenerator:
         )
         tds_amount = self._clean_num(
             tds_data.get("final_tds_amount")
+            or tds_data.get("calculated_tds_amount")
             or tds_data.get("tds_amount")
             or tds_data.get("amount")
         ) or 0.0
@@ -587,6 +704,9 @@ class JournalGenerator:
                     amount=tds_amount,
                     provenance="HITL_OVERRIDE" if is_approved else "AI_PREDICTED",
                     description=f"TDS Withholding - {label} ({tds_rate or ''}%)",
+                    cost_center=cost_center,
+                    project=project,
+                    department=department,
                 )
             )
         elif tds_applicable and tds_amount == 0.0:
@@ -615,13 +735,16 @@ class JournalGenerator:
         lines.append(
             JournalLine(
                 account_id=STANDARD_ACCOUNTS["ACCOUNTS_PAYABLE"]["account_id"],
-                account_name=STANDARD_ACCOUNTS["ACCOUNTS_PAYABLE"]["account_name"],
+                account_name=f"Accounts Payable - {vendor_name}",
                 line_type="ACCOUNTS_PAYABLE",
                 debit=0.0,
                 credit=vendor_payable,
                 amount=vendor_payable,
                 provenance="DETERMINISTIC",
                 description=f"Payable to {vendor_name}",
+                cost_center=cost_center,
+                project=project,
+                department=department,
             )
         )
 
@@ -665,6 +788,10 @@ class JournalGenerator:
         self,
         invoice_data: Dict[str, Any],
         accounting_data: Optional[Dict[str, Any]] = None,
+        gst_result: Optional[Dict[str, Any]] = None,
+        itc_result: Optional[Dict[str, Any]] = None,
+        tds_result: Optional[Dict[str, Any]] = None,
+        financial_validation_result: Optional[Dict[str, Any]] = None,
         cost_center: Optional[str] = None,
         project: Optional[str] = None,
         department: Optional[str] = None,
@@ -672,274 +799,67 @@ class JournalGenerator:
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Builds balanced Debit / Credit lines:
-        1. Determine Intra vs Inter-State supply.
-        2. Strict validation of approved Chart of Accounts.
-        3. Build line-item expense debits, input tax debits, TDS credit, Accounts Payable credit.
-        4. Reconcile Debits == Credits.
+        Unified compatibility wrapper delegating to the single authoritative generate_journal engine.
+        Returns legacy dictionary format while ensuring 100% accounting and balance identity.
         """
-        lines: List[Dict[str, Any]] = []
-        has_unapproved_lines = False
-        line_num = 1
+        res = self.generate_journal(
+            invoice_data=invoice_data,
+            accounting_classification=accounting_data,
+            gst_result=gst_result,
+            itc_result=itc_result,
+            tds_result=tds_result,
+            financial_validation_result=financial_validation_result,
+            cost_center=cost_center,
+            project=project,
+            department=department,
+            require_approved=require_approved,
+        )
 
-        # 1. Financial Validations and Supply Type
-        val_res = financial_validator.validate_invoice(invoice_data)
-        supply_type = val_res.get("supply_type", "INTRA_STATE")
+        inv = invoice_data.get("data", invoice_data) if isinstance(invoice_data, dict) else {}
+        inv_date = inv.get("invoice_date")
+        supply_type = (gst_result or {}).get("supply_type") or "INTRA_STATE"
 
-        vendor_pan = invoice_data.get("vendor_pan")
-        vendor_name = invoice_data.get("vendor_name") or "Vendor"
-        invoice_date = invoice_data.get("invoice_date")
-        total_amount = float(invoice_data.get("total_amount") or 0.0)
-        subtotal = float(invoice_data.get("subtotal") or 0.0)
-
-        # 2. Map Accounting Classification
-        account_map: Dict[int, tuple] = {}
-        for item in (accounting_data or {}).get("accounting") or []:
-            idx = item.get("line_index", 1)
-            approved_id = item.get("approved_account_id") or item.get("final_account_id")
-            approved_name = item.get("approved_account_name") or item.get("final_account_name")
-            ai_id = item.get("ai_account_id")
-            ai_name = item.get("ai_account_name")
-
-            if require_approved:
-                if not approved_id or not approved_name:
-                    raise ValueError(
-                        f"Cannot generate authoritative journal: Line item {idx} has not been approved by Finance. "
-                        f"approved_account_id and approved_account_name are required."
-                    )
-                account_map[idx] = (approved_id, approved_name, True)
-            else:
-                if approved_id and approved_name:
-                    account_map[idx] = (approved_id, approved_name, True)
-                elif ai_name:
-                    has_unapproved_lines = True
-                    account_map[idx] = (ai_id, f"[Unapproved] {ai_name}", False)
-                else:
-                    has_unapproved_lines = True
-                    account_map[idx] = (None, f"[Unapproved] Line {idx} Expense", False)
-
-        # 3. Add Expense Line Items (DEBIT)
-        line_items = invoice_data.get("line_items") or []
-
-        line_cgst = sum(float(item.get("cgst_amount") or 0.0) for item in line_items)
-        line_sgst = sum(float(item.get("sgst_amount") or 0.0) for item in line_items)
-        line_igst = sum(float(item.get("igst_amount") or 0.0) for item in line_items)
-
-        cgst_total = line_cgst if line_cgst > 0 else float(invoice_data.get("cgst_amount") or invoice_data.get("cgst") or 0.0)
-        sgst_total = line_sgst if line_sgst > 0 else float(invoice_data.get("sgst_amount") or invoice_data.get("sgst") or 0.0)
-        igst_total = line_igst if line_igst > 0 else float(invoice_data.get("igst_amount") or invoice_data.get("igst") or 0.0)
-
-        # Fallback to header-level tax_total if individual GST components were not broken down
-        if cgst_total == 0 and sgst_total == 0 and igst_total == 0:
-            hdr_tax = float(invoice_data.get("tax_total") or invoice_data.get("total_tax") or 0.0)
-            if hdr_tax <= 0 and total_amount > subtotal:
-                hdr_tax = round(total_amount - subtotal, 2)
+        legacy_lines = []
+        for idx, line in enumerate(res.get("lines", []), 1):
+            line_type = "DR" if line.get("debit", 0.0) > 0 else "CR"
+            amt = line.get("debit", 0.0) if line_type == "DR" else line.get("credit", 0.0)
             
-            if hdr_tax > 0:
-                if supply_type == "INTRA_STATE":
-                    cgst_total = round(hdr_tax / 2.0, 2)
-                    sgst_total = round(hdr_tax - cgst_total, 2)
-                else:
-                    igst_total = round(hdr_tax, 2)
+            raw_acc_id = line.get("account_id")
+            # Provide AP_VENDOR alias if this is Accounts Payable for backward compatibility
+            acc_id_alias = raw_acc_id
+            if raw_acc_id == "LIAB_AP":
+                acc_id_alias = "AP_VENDOR"
+            elif raw_acc_id == "TAX_INP_CGST":
+                acc_id_alias = "INPUT_CGST"
+            elif raw_acc_id == "TAX_INP_SGST":
+                acc_id_alias = "INPUT_SGST"
+            elif raw_acc_id == "TAX_INP_IGST":
+                acc_id_alias = "INPUT_IGST"
 
-        if line_items:
-            for idx, item in enumerate(line_items, 1):
-                taxable = float(item.get("taxable_amount") or (float(item.get("quantity") or 1.0) * float(item.get("unit_price") or 0.0)))
-                
-                if idx in account_map:
-                    acc_id, acc_name, is_app = account_map[idx]
-                else:
-                    if require_approved:
-                        raise ValueError(f"Line item {idx} lacks Finance-approved Chart of Accounts.")
-                    has_unapproved_lines = True
-                    acc_id, acc_name, is_app = (None, f"[Unapproved] {item.get('description') or f'Expense {idx}'}", False)
-
-                lines.append({
-                    "line_number": line_num,
-                    "account_id": acc_id,
-                    "account_name": acc_name,
-                    "is_approved": is_app,
-                    "line_type": "DR",
-                    "amount": round(taxable, 2),
-                    "description": item.get("description") or f"Line {idx} Expense",
-                    "cost_center": cost_center,
-                    "project": project,
-                    "department": department,
-                })
-                line_num += 1
-        else:
-            if 1 in account_map:
-                acc_id, acc_name, is_app = account_map[1]
-            else:
-                if require_approved:
-                    raise ValueError("Invoice lacks Finance-approved Chart of Accounts.")
-                has_unapproved_lines = True
-                acc_id, acc_name, is_app = (None, "[Unapproved] General Operating Expense", False)
-
-            lines.append({
-                "line_number": line_num,
-                "account_id": acc_id,
-                "account_name": acc_name,
-                "is_approved": is_app,
-                "line_type": "DR",
-                "amount": round(subtotal or total_amount, 2),
-                "description": "Invoice Expense",
-                "cost_center": cost_center,
-                "project": project,
-                "department": department,
+            legacy_lines.append({
+                "line_number": idx,
+                "account_id": acc_id_alias,
+                "account_name": line.get("account_name"),
+                "is_approved": line.get("provenance") == "HITL_OVERRIDE" or ("[Unapproved]" not in line.get("account_name", "")),
+                "line_type": line_type,
+                "amount": amt,
+                "debit": line.get("debit", 0.0),
+                "credit": line.get("credit", 0.0),
+                "description": line.get("description"),
+                "cost_center": line.get("cost_center"),
             })
-            line_num += 1
-
-        # 4. Add Tax Lines (DEBIT)
-        if supply_type == "INTRA_STATE":
-            if cgst_total > 0:
-                lines.append({
-                    "line_number": line_num,
-                    "account_id": "INPUT_CGST",
-                    "account_name": "Input CGST Receivable",
-                    "is_approved": True,
-                    "line_type": "DR",
-                    "amount": round(cgst_total, 2),
-                    "description": "Input Central GST",
-                    "cost_center": cost_center,
-                    "project": project,
-                    "department": department,
-                })
-                line_num += 1
-
-            if sgst_total > 0:
-                lines.append({
-                    "line_number": line_num,
-                    "account_id": "INPUT_SGST",
-                    "account_name": "Input SGST Receivable",
-                    "is_approved": True,
-                    "line_type": "DR",
-                    "amount": round(sgst_total, 2),
-                    "description": "Input State GST",
-                    "cost_center": cost_center,
-                    "project": project,
-                    "department": department,
-                })
-                line_num += 1
-        else:
-            if igst_total > 0:
-                lines.append({
-                    "line_number": line_num,
-                    "account_id": "INPUT_IGST",
-                    "account_name": "Input IGST Receivable",
-                    "is_approved": True,
-                    "line_type": "DR",
-                    "amount": round(igst_total, 2),
-                    "description": "Input Integrated GST",
-                    "cost_center": cost_center,
-                    "project": project,
-                    "department": department,
-                })
-                line_num += 1
-
-        # 5. TDS Deduction (CREDIT)
-        tds_info = (accounting_data or {}).get("tds") or {}
-        tds_applicable = bool(tds_info.get("applicable") or tds_info.get("tds_applicable") or tds_info.get("is_applicable"))
-        tds_provision = tds_info.get("approved_tds_provision") or tds_info.get("tds_provision") or tds_info.get("provision")
-        tds_section = tds_info.get("approved_tds_section") or tds_info.get("tds_section") or tds_info.get("section")
-        tds_nature = tds_info.get("approved_nature_of_payment") or tds_info.get("nature_of_payment") or tds_info.get("nature")
-        tds_rate = tds_info.get("approved_tds_rate") or tds_info.get("tds_rate") or tds_info.get("rate")
-        tds_amount = float(tds_info.get("final_tds_amount") or tds_info.get("calculated_tds_amount") or tds_info.get("tds_amount") or 0.0)
-
-        # First-rupee subtotal calculation: TDS amount = approved taxable subtotal * approved TDS rate
-        # NEVER on subtotal + GST
-        if tds_applicable and subtotal > 0:
-            if tds_rate is not None and float(tds_rate) > 0:
-                tds_amount = round((subtotal * float(tds_rate)) / 100.0, 2)
-            elif tds_amount <= 0:
-                calc = tds_engine.calculate_tds(
-                    section=tds_section,
-                    provision=tds_provision,
-                    nature_of_payment=tds_nature,
-                    base_amount=subtotal,
-                    rate=float(tds_rate) if tds_rate is not None else None,
-                    vendor_pan=vendor_pan,
-                )
-                tds_amount = calc.get("tds_amount", 0.0)
-                tds_rate = calc.get("rate", tds_rate)
-
-        if tds_applicable and tds_amount > 0:
-            label = f"{tds_provision or ''} {tds_section or ''}".strip() or (tds_nature or "TDS")
-            lines.append({
-                "line_number": line_num,
-                "account_id": f"TDS_PAYABLE_{tds_section or 'TDS'}",
-                "account_name": f"TDS Payable ({label})",
-                "is_approved": True,
-                "line_type": "CR",
-                "amount": round(tds_amount, 2),
-                "description": f"TDS deduction on {vendor_name} ({tds_rate or ''}%)",
-                "cost_center": cost_center,
-                "project": project,
-                "department": department,
-            })
-            line_num += 1
-
-        # 6. Accounts Payable - Vendor (CREDIT)
-        net_payable = round(total_amount - tds_amount, 2)
-        lines.append({
-            "line_number": line_num,
-            "account_id": "AP_VENDOR",
-            "account_name": f"Accounts Payable - {vendor_name}",
-            "is_approved": True,
-            "line_type": "CR",
-            "amount": net_payable,
-            "description": f"Payable to {vendor_name}",
-            "cost_center": cost_center,
-            "project": project,
-            "department": department,
-        })
-
-        # 7. Check Debits vs Credits balance & Penny Rounding Adjustment
-        total_dr = round(sum(item["amount"] for item in lines if item["line_type"] == "DR"), 2)
-        total_cr = round(sum(item["amount"] for item in lines if item["line_type"] == "CR"), 2)
-
-        diff = round(total_dr - total_cr, 2)
-        if 0 < abs(diff) <= 1.0:
-            if diff < 0:
-                lines.append({
-                    "line_number": line_num,
-                    "account_id": "ROUND_OFF_EXPENSE",
-                    "account_name": "Round Off Adjustment",
-                    "is_approved": True,
-                    "line_type": "DR",
-                    "amount": round(abs(diff), 2),
-                    "description": "Round Off Adjustment",
-                    "cost_center": cost_center,
-                    "project": project,
-                    "department": department,
-                })
-            else:
-                lines.append({
-                    "line_number": line_num,
-                    "account_id": "ROUND_OFF_INCOME",
-                    "account_name": "Round Off Adjustment",
-                    "is_approved": True,
-                    "line_type": "CR",
-                    "amount": round(abs(diff), 2),
-                    "description": "Round Off Adjustment",
-                    "cost_center": cost_center,
-                    "project": project,
-                    "department": department,
-                })
-            total_dr = round(sum(item["amount"] for item in lines if item["line_type"] == "DR"), 2)
-            total_cr = round(sum(item["amount"] for item in lines if item["line_type"] == "CR"), 2)
-
-        is_balanced = abs(total_dr - total_cr) <= 0.05
 
         return {
-            "entry_date": invoice_date,
+            "entry_date": inv_date,
             "supply_type": supply_type,
-            "total_debit": total_dr,
-            "total_credit": total_cr,
-            "is_balanced": is_balanced,
-            "has_unapproved_lines": has_unapproved_lines,
-            "difference": round(abs(total_dr - total_cr), 2),
-            "lines": lines,
+            "total_debit": res.get("total_debit", 0.0),
+            "total_credit": res.get("total_credit", 0.0),
+            "is_balanced": res.get("validation", {}).get("balanced", False),
+            "status": res.get("status"),
+            "has_unapproved_lines": any(not l.get("is_approved") for l in legacy_lines),
+            "difference": res.get("difference", 0.0),
+            "lines": legacy_lines,
+            "validation": res.get("validation", {}),
         }
 
     def _clean_num(self, val: Any) -> Optional[float]:
@@ -949,7 +869,6 @@ class JournalGenerator:
         if isinstance(val, (int, float)):
             return float(val)
         if isinstance(val, str):
-            import re
             cleaned = re.sub(r"[^\d.-]", "", val)
             if not cleaned or cleaned in ("-", "."):
                 return None
@@ -964,10 +883,10 @@ class JournalGenerator:
 journal_generator = JournalGenerator()
 
 
-async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, Any]):
+async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, Any], tenant_id: str = "default-tenant-001"):
     """
-    Idempotently syncs or updates relational journal_entries and journal_lines
-    tables from the generated journal preview dictionary.
+    Idempotently syncs relational journal_entries and journal_lines tables
+    from the authoritative journal generator result.
     """
     if not journal_dict or not isinstance(journal_dict, dict):
         return None
@@ -982,13 +901,19 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
         res = await session.execute(query)
         entry = res.scalar_one_or_none()
 
+        is_bal = bool(journal_dict.get("validation", {}).get("balanced") or journal_dict.get("is_balanced", False))
+        tot_dr = float(journal_dict.get("total_debit", 0.0))
+        tot_cr = float(journal_dict.get("total_credit", 0.0))
+        diff = float(journal_dict.get("difference", 0.0))
+        status_val = journal_dict.get("status", "BALANCED" if is_bal else "UNBALANCED")
+
         if entry:
-            entry.status = journal_dict.get("status", "BALANCED")
-            entry.total_debit = float(journal_dict.get("total_debit", 0.0))
-            entry.total_credit = float(journal_dict.get("total_credit", 0.0))
-            entry.difference = float(journal_dict.get("difference", 0.0))
-            entry.balanced = bool(journal_dict.get("validation", {}).get("balanced", True))
-            entry.is_balanced = entry.balanced
+            entry.status = status_val
+            entry.total_debit = tot_dr
+            entry.total_credit = tot_cr
+            entry.difference = diff
+            entry.balanced = is_bal
+            entry.is_balanced = is_bal
             
             # Delete old lines to prevent duplication
             await session.execute(
@@ -998,12 +923,13 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
             entry = JournalEntry(
                 id=uuid.uuid4(),
                 invoice_id=invoice_id,
-                status=journal_dict.get("status", "BALANCED"),
-                total_debit=float(journal_dict.get("total_debit", 0.0)),
-                total_credit=float(journal_dict.get("total_credit", 0.0)),
-                difference=float(journal_dict.get("difference", 0.0)),
-                balanced=bool(journal_dict.get("validation", {}).get("balanced", True)),
-                is_balanced=bool(journal_dict.get("validation", {}).get("balanced", True)),
+                tenant_id=tenant_id,
+                status=status_val,
+                total_debit=tot_dr,
+                total_credit=tot_cr,
+                difference=diff,
+                balanced=is_bal,
+                is_balanced=is_bal,
             )
             session.add(entry)
             await session.flush()
@@ -1014,6 +940,7 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
             debit_val = float(line.get("debit", 0.0))
             credit_val = float(line.get("credit", 0.0))
             amount_val = float(line.get("amount", debit_val or credit_val or 0.0))
+            line_type = line.get("line_type", "EXPENSE")
             
             jl = JournalLineModel(
                 id=uuid.uuid4(),
@@ -1021,13 +948,16 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
                 line_number=idx + 1,
                 account_id=line.get("account_id", "ACC_UNKNOWN"),
                 account_name=line.get("account_name", "Unknown Account"),
-                line_type=line.get("line_type", "EXPENSE"),
+                line_type=line_type,
                 debit=debit_val,
                 credit=credit_val,
                 amount=amount_val,
                 source_line_index=line.get("source_line_index"),
                 provenance=line.get("provenance", "DETERMINISTIC"),
                 description=line.get("description"),
+                cost_center=line.get("cost_center"),
+                project=line.get("project"),
+                department=line.get("department"),
             )
             session.add(jl)
 

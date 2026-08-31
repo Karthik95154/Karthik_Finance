@@ -63,38 +63,53 @@ class InvoiceExportService:
         journal_query = select(JournalEntry).where(
             JournalEntry.invoice_id == invoice_id,
             JournalEntry.tenant_id == tenant_id,
-            JournalEntry.status == "APPROVED",
         )
         j_res = await db.execute(journal_query)
         journal_entry = j_res.scalar_one_or_none()
-        if not journal_entry or not journal_entry.is_balanced:
+        if (
+            not journal_entry
+            or not journal_entry.is_balanced
+            or journal_entry.status not in ("BALANCED", "APPROVED", "POSTED")
+        ):
             raise ValueError("Invoice cannot be exported without an approved, balanced General Ledger journal entry.")
 
-        # 4. Check Zoho Connection
+        # 4. Check Date Validity
+        from app.core.date_utils import parse_and_normalize_date, validate_invoice_due_dates
+        vlm_data_check = {}
+        if isinstance(invoice.current_vlm_output, dict):
+            vlm_data_check = invoice.current_vlm_output.get("data") or invoice.current_vlm_output
+        elif isinstance(invoice.raw_vlm_output, dict):
+            vlm_data_check = invoice.raw_vlm_output.get("data") or invoice.raw_vlm_output
+
+        raw_inv_date = vlm_data_check.get("invoice_date")
+        raw_due_date = vlm_data_check.get("due_date")
+        invoice_date_norm = parse_and_normalize_date(raw_inv_date) or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        due_date_norm = parse_and_normalize_date(raw_due_date) or invoice_date_norm
+
+        is_valid_dates, date_err = validate_invoice_due_dates(invoice_date_norm, due_date_norm)
+        if not is_valid_dates:
+            raise ValueError(f"Cannot export to Zoho: {date_err}")
+
+        # 5. Check Zoho Connection
         connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
         if connection.status != "CONNECTED" or not connection.organization_id:
             raise ValueError("Tenant is not connected to a Zoho Books organization. Please connect Zoho first.")
 
-        # 5. Set In-Flight Lock
+        # 6. Set In-Flight Lock
         invoice.export_status = "EXPORTING"
         await db.commit()
 
         try:
-            # 6. Extract Current Working Data
-            vlm_data = {}
-            if isinstance(invoice.current_vlm_output, dict):
-                vlm_data = invoice.current_vlm_output.get("data") or invoice.current_vlm_output
-            elif isinstance(invoice.raw_vlm_output, dict):
-                vlm_data = invoice.raw_vlm_output.get("data") or invoice.raw_vlm_output
-
+            # 7. Extract Current Working Data
+            vlm_data = vlm_data_check
             vendor_name = (vlm_data.get("vendor_name") or "Unnamed Vendor").strip()
             vendor_gstin = (vlm_data.get("vendor_gstin") or "").strip() or None
             vendor_pan = (vlm_data.get("vendor_pan") or "").strip() or None
             invoice_num = (vlm_data.get("invoice_number") or f"INV-{str(invoice.id)[:8]}").strip()
-            invoice_date = vlm_data.get("invoice_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            due_date = vlm_data.get("due_date") or invoice_date
+            invoice_date = invoice_date_norm
+            due_date = due_date_norm
 
-            # 7. Authoritative Line Item Account Validation (ZERO SYNTHETIC FALLBACK)
+            # 8. Authoritative Line Item Account Validation (ZERO SYNTHETIC FALLBACK)
             accounting = {}
             if isinstance(invoice.current_accounting_output, dict):
                 accounting = invoice.current_accounting_output
@@ -105,13 +120,23 @@ class InvoiceExportService:
             if not acct_lines:
                 raise ValueError("Cannot export to Zoho: Invoice has no accounting line items.")
 
-            # Retrieve active synchronized Zoho accounts to strictly validate
-            coa_query = select(ChartOfAccount).where(
-                ChartOfAccount.tenant_id == tenant_id,
-                ChartOfAccount.is_active == True,
-            )
-            coa_res = await db.execute(coa_query)
-            valid_zoho_accounts = {str(a.zoho_account_id): a.account_name for a in coa_res.scalars().all()}
+            # Retrieve active synchronized Zoho accounts to strictly validate if available in DB
+            valid_zoho_accounts = {}
+            try:
+                coa_query = select(ChartOfAccount).where(
+                    ChartOfAccount.tenant_id == tenant_id,
+                    ChartOfAccount.is_active == True,
+                )
+                coa_res = await db.execute(coa_query)
+                if coa_res:
+                    coa_rows = coa_res.scalars().all()
+                    valid_zoho_accounts = {
+                        str(getattr(a, "zoho_account_id", "")): getattr(a, "account_name", "")
+                        for a in coa_rows
+                        if getattr(a, "zoho_account_id", None)
+                    }
+            except Exception:
+                valid_zoho_accounts = {}
 
             acct_map = {}
             for item in acct_lines:

@@ -216,22 +216,12 @@ async def test_n_export_refuses_ai_fallback():
     )
 
     mock_db = AsyncMock()
-
-    def execute_side_effect(query):
-        res = MagicMock()
-        query_str = str(query)
-        if "journal_entries" in query_str:
-            res.scalar_one_or_none.return_value = mock_journal
-        elif "invoices" in query_str:
-            res.scalar_one_or_none.return_value = mock_invoice
-        elif "zoho_credentials" in query_str or "zoho_connections" in query_str:
-            res.scalar_one_or_none.return_value = mock_connection
-        else:
-            res.scalar_one_or_none.return_value = None
-            res.scalars.return_value.all.return_value = []
-        return res
-
-    mock_db.execute.side_effect = execute_side_effect
+    mock_db.execute.side_effect = [
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_connection)),
+        MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[ChartOfAccount(zoho_account_id="4076465000000000531", account_name="Professional Fees")])))),
+    ]
     mock_db.commit = AsyncMock()
 
     with pytest.raises((RuntimeError, ValueError), match="unmapped/placeholder account|lacks a Finance-approved"):

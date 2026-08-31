@@ -196,57 +196,59 @@ async def test_case_3_rejection_of_synthetic_coa_fallback():
     Ensures synthetic placeholder accounts (ACC_1, ACC_2) are rejected with
     an actionable error and not silently converted to 'Other Expenses'.
     """
-    mock_invoice = MagicMock()
-    mock_invoice.id = uuid4()
-    mock_invoice.tenant_id = "test-tenant"
-    mock_invoice.approval_status = "APPROVED"
-    mock_invoice.export_status = "NOT_EXPORTED"
-    mock_invoice.zoho_bill_id = None
-    mock_invoice.current_vlm_output = {
-        "data": {
-            "vendor_name": "Test Vendor",
-            "invoice_number": "INV-100",
-            "invoice_date": "2026-08-31",
-            "total_amount": 1000.0,
-            "line_items": [
-                {"line_index": 1, "description": "Test Item", "quantity": 1, "unit_price": 1000.0, "taxable_amount": 1000.0}
+    mock_invoice = Invoice(
+        id=uuid4(),
+        tenant_id="test-tenant",
+        file_path="uploads/test.pdf",
+        file_name="test.pdf",
+        file_size=1000,
+        mime_type="application/pdf",
+        file_hash="hash_1",
+        status="COMPLETED",
+        approval_status="APPROVED",
+        export_status="NOT_EXPORTED",
+        zoho_bill_id=None,
+        current_vlm_output={
+            "data": {
+                "vendor_name": "Test Vendor",
+                "invoice_number": "INV-100",
+                "invoice_date": "2026-08-31",
+                "total_amount": 1000.0,
+                "line_items": [
+                    {"line_index": 1, "description": "Test Item", "quantity": 1, "unit_price": 1000.0, "taxable_amount": 1000.0}
+                ]
+            }
+        },
+        current_accounting_output={
+            "accounting": [
+                {
+                    "line_index": 1,
+                    "approved_account_id": "ACC_1",
+                    "approved_account_name": "General Expenses",
+                }
             ]
         }
-    }
-    # Unmapped synthetic account
-    mock_invoice.current_accounting_output = {
-        "accounting": [
-            {
-                "line_index": 1,
-                "approved_account_id": "ACC_1",
-                "approved_account_name": "General Expenses",
-            }
-        ]
-    }
+    )
 
     mock_db = AsyncMock()
-    mock_res = MagicMock()
-    mock_res.scalar_one_or_none.return_value = mock_invoice
-    mock_db.execute.return_value = mock_res
-
-    # Mock journal entry existence check
-    mock_journal = MagicMock()
-    mock_journal.is_balanced = True
-
-    # Side effect for consecutive execute calls
-    def execute_side_effect(query):
-        res = MagicMock()
-        query_str = str(query)
-        if "journal_entries" in query_str:
-            res.scalar_one_or_none.return_value = mock_journal
-        elif "invoices" in query_str:
-            res.scalar_one_or_none.return_value = mock_invoice
-        else:
-            res.scalar_one_or_none.return_value = None
-            res.scalars.return_value.all.return_value = []
-        return res
-
-    mock_db.execute.side_effect = execute_side_effect
+    mock_journal = JournalEntry(
+        id=uuid4(),
+        invoice_id=mock_invoice.id,
+        tenant_id="test-tenant",
+        status="APPROVED",
+        is_balanced=True,
+    )
+    mock_conn = ZohoConnection(
+        id=uuid4(),
+        tenant_id="test-tenant",
+        status="CONNECTED",
+        organization_id="60081887558",
+    )
+    mock_db.execute.side_effect = [
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
+        MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[ChartOfAccount(zoho_account_id="4076465000000000531", account_name="Professional Fees")])))),
+    ]
 
     # Mock zoho connection
     with patch("app.services.master_data_service.master_data_service.get_or_create_zoho_connection") as mock_conn_fn:
