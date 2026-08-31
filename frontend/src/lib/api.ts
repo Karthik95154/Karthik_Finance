@@ -79,6 +79,10 @@ export interface RawVlmOutput {
 export interface AccountingLineItem {
   line_index: number;
   source_description: string;
+  account_id?: string | null;
+  account_name?: string | null;
+  confidence_score?: number | null;
+  accounting_reason?: string | null;
   ai_account_id?: string | null;
   ai_account_name?: string | null;
   ai_confidence?: number | null;
@@ -105,6 +109,7 @@ export interface AccountingLineItem {
 
 export interface TdsResult {
   applicable?: boolean | null;
+  tds_applicable?: boolean | null;
   tds_type?: string | null;
   nature_of_payment?: string | null;
   tds_provision?: string | null;
@@ -115,15 +120,19 @@ export interface TdsResult {
   base_source?: string | null;
   extracted_tds_amount?: number | null;
   calculated_tds_amount?: number | null;
+  proposed_tds_amount?: number | null;
   calculation?: string | null;
   confidence?: number | null;
   needs_review?: boolean | null;
+  tds_needs_review?: boolean | null;
   reason?: string | null;
+  tds_reasoning?: string | null;
 }
 
 export interface AccountingOutput {
   accounting?: AccountingLineItem[];
   tds?: TdsResult | null;
+  tds_assessment?: TdsResult | null;
 }
 
 export interface InvoiceListItem {
