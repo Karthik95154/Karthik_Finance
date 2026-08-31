@@ -74,6 +74,23 @@ function parseCleanNumeric(val: any): number | null {
   return null;
 }
 
+// Helper to format ISO YYYY-MM-DD or arbitrary dates into DD/MM/YYYY
+function formatToIndianDate(val: any): string {
+  if (!val || typeof val !== "string") return val ? String(val) : "";
+  const s = val.trim();
+  // If already DD/MM/YYYY
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) return s;
+  // If YYYY-MM-DD or YYYY/MM/DD
+  const iso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (iso) {
+    const y = iso[1];
+    const m = iso[2].padStart(2, "0");
+    const d = iso[3].padStart(2, "0");
+    return `${d}/${m}/${y}`;
+  }
+  return s;
+}
+
 // Helper to extract or derive invoice-level CGST/SGST/IGST amounts from Qwen3-VL extraction
 function extractOrDeriveTax(
   extracted: ExtractedInvoiceData,
@@ -282,6 +299,13 @@ export default function InvoiceWorkspacePage() {
           ...rawData,
           ...currData,
         };
+
+        if (extracted.invoice_date) {
+          extracted.invoice_date = formatToIndianDate(extracted.invoice_date);
+        }
+        if (extracted.due_date) {
+          extracted.due_date = formatToIndianDate(extracted.due_date);
+        }
 
         if (!extracted.line_items || extracted.line_items.length === 0) {
           if (Array.isArray(rawData.line_items) && rawData.line_items.length > 0) {
@@ -2205,36 +2229,44 @@ export default function InvoiceWorkspacePage() {
                           itcResult.status === "ELIGIBLE"
                             ? "badge-success"
                             : itcResult.status === "INELIGIBLE"
+                            ? "badge-danger"
+                            : itcResult.status === "PARTIALLY_ELIGIBLE"
                             ? "badge-warning"
                             : "badge-uploaded"
                         }`}
                         style={{ fontSize: "11px", fontWeight: "700" }}
                       >
-                        {itcResult.status}
+                        {itcResult.status === "ELIGIBLE"
+                          ? "✓ ELIGIBLE"
+                          : itcResult.status === "INELIGIBLE"
+                          ? "✗ INELIGIBLE"
+                          : itcResult.status === "PARTIALLY_ELIGIBLE"
+                          ? "⚠ PARTIALLY ELIGIBLE"
+                          : "🔍 REVIEW REQUIRED"}
                       </span>
                     </div>
 
-                    {/* ITC Summary Cards */}
+                    {/* ITC Summary Cards (Full 6-Metric Breakdown) */}
                     <div
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "repeat(3, 1fr)",
-                        gap: "12px",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+                        gap: "10px",
                         marginBottom: "14px",
                       }}
                     >
                       <div
                         style={{
                           background: "var(--bg-main)",
-                          padding: "12px",
+                          padding: "10px 12px",
                           borderRadius: "var(--radius-sm)",
                           border: "1px solid var(--border-subtle)",
                         }}
                       >
                         <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          Total Tax Available
+                          Total Input Tax
                         </div>
-                        <div style={{ fontWeight: "700", fontSize: "15px" }}>
+                        <div style={{ fontWeight: "700", fontSize: "14px" }}>
                           ₹{itcResult.total_tax_amount?.toLocaleString() || "0.00"}
                         </div>
                       </div>
@@ -2242,32 +2274,80 @@ export default function InvoiceWorkspacePage() {
                       <div
                         style={{
                           background: "#f0fdf4",
-                          padding: "12px",
+                          padding: "10px 12px",
                           borderRadius: "var(--radius-sm)",
                           border: "1px solid #bbf7d0",
                         }}
                       >
                         <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px" }}>
-                          Eligible ITC (Claimable)
+                          Eligible ITC (Sec 16)
                         </div>
-                        <div style={{ fontWeight: "700", fontSize: "15px", color: "#15803d" }}>
-                          ₹{itcResult.eligible_amount?.toLocaleString() || "0.00"}
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: "#15803d" }}>
+                          ₹{itcResult.eligible_itc?.toLocaleString() || itcResult.eligible_amount?.toLocaleString() || "0.00"}
                         </div>
                       </div>
 
                       <div
                         style={{
-                          background: itcResult.ineligible_amount > 0 ? "#fef2f2" : "var(--bg-main)",
-                          padding: "12px",
+                          background: (itcResult.blocked_itc || itcResult.ineligible_amount) > 0 ? "#fef2f2" : "var(--bg-main)",
+                          padding: "10px 12px",
                           borderRadius: "var(--radius-sm)",
-                          border: itcResult.ineligible_amount > 0 ? "1px solid #fecaca" : "1px solid var(--border-subtle)",
+                          border: (itcResult.blocked_itc || itcResult.ineligible_amount) > 0 ? "1px solid #fecaca" : "1px solid var(--border-subtle)",
                         }}
                       >
-                        <div style={{ fontSize: "11px", color: itcResult.ineligible_amount > 0 ? "#991b1b" : "var(--text-secondary)", marginBottom: "3px" }}>
-                          Blocked / Ineligible (Sec 17(5))
+                        <div style={{ fontSize: "11px", color: (itcResult.blocked_itc || itcResult.ineligible_amount) > 0 ? "#991b1b" : "var(--text-secondary)", marginBottom: "3px" }}>
+                          Blocked (Sec 17(5))
                         </div>
-                        <div style={{ fontWeight: "700", fontSize: "15px", color: itcResult.ineligible_amount > 0 ? "#b91c1c" : "var(--text-primary)" }}>
-                          ₹{itcResult.ineligible_amount?.toLocaleString() || "0.00"}
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: (itcResult.blocked_itc || itcResult.ineligible_amount) > 0 ? "#b91c1c" : "var(--text-primary)" }}>
+                          ₹{itcResult.blocked_itc?.toLocaleString() || itcResult.ineligible_amount?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: (itcResult.reversal_itc || 0) > 0 ? "#fffbeb" : "var(--bg-main)",
+                          padding: "10px 12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: (itcResult.reversal_itc || 0) > 0 ? "1px solid #fde68a" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: (itcResult.reversal_itc || 0) > 0 ? "#92400e" : "var(--text-secondary)", marginBottom: "3px" }}>
+                          Reversal (R37/42/43)
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: (itcResult.reversal_itc || 0) > 0 ? "#b45309" : "var(--text-primary)" }}>
+                          ₹{itcResult.reversal_itc?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: (itcResult.review_amount || 0) > 0 ? "#eff6ff" : "var(--bg-main)",
+                          padding: "10px 12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: (itcResult.review_amount || 0) > 0 ? "1px solid #bfdbfe" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: (itcResult.review_amount || 0) > 0 ? "#1e40af" : "var(--text-secondary)", marginBottom: "3px" }}>
+                          Review Required
+                        </div>
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: (itcResult.review_amount || 0) > 0 ? "#2563eb" : "var(--text-primary)" }}>
+                          ₹{itcResult.review_amount?.toLocaleString() || "0.00"}
+                        </div>
+                      </div>
+
+                      <div
+                        style={{
+                          background: (itcResult.net_itc_available || 0) > 0 ? "#f0fdf4" : "var(--bg-main)",
+                          padding: "10px 12px",
+                          borderRadius: "var(--radius-sm)",
+                          border: (itcResult.net_itc_available || 0) > 0 ? "1px solid #86efac" : "1px solid var(--border-subtle)",
+                        }}
+                      >
+                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px", fontWeight: "600" }}>
+                          Net Claimable ITC
+                        </div>
+                        <div style={{ fontWeight: "800", fontSize: "15px", color: "#15803d" }}>
+                          ₹{itcResult.net_itc_available?.toLocaleString() || "0.00"}
                         </div>
                       </div>
                     </div>

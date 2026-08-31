@@ -373,7 +373,7 @@ class GSTEngine:
                 warnings.append(f"Vendor GSTIN '{raw_vendor_gstin}' is invalid or non-standard format.")
 
         # 2. Customer / Buyer GSTIN & State
-        raw_buyer_gstin = str(data_obj.get("customer_gstin") or "").strip() or None
+        raw_buyer_gstin = str(data_obj.get("customer_gstin") or data_obj.get("buyer_gstin") or data_obj.get("recipient_gstin") or "").strip() or None
         is_buyer_gstin_valid, buyer_gstin = validate_gstin(raw_buyer_gstin)
         buyer_state_code, buyer_state_name = extract_state_code_from_gstin(buyer_gstin)
 

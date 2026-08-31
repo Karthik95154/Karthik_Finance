@@ -40,6 +40,13 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
                 continue
             merged[k] = v
 
+    # Normalize dates according to Indian & International date standards
+    from app.core.date_utils import parse_and_normalize_date
+    if merged.get("invoice_date"):
+        merged["invoice_date"] = parse_and_normalize_date(merged["invoice_date"])
+    if merged.get("due_date"):
+        merged["due_date"] = parse_and_normalize_date(merged["due_date"])
+
     return merged
 
 
@@ -183,6 +190,15 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
 
             # 4. Call Qwen3-VL on Colab
             extraction_result = await ai_service.extract_invoice_vlm(file_bytes)
+
+            # Normalize extracted dates (Indian/ISO format) in extraction_result
+            from app.core.date_utils import parse_and_normalize_date
+            if isinstance(extraction_result, dict):
+                data_sub = extraction_result.get("data") if isinstance(extraction_result.get("data"), dict) else extraction_result
+                if data_sub.get("invoice_date"):
+                    data_sub["invoice_date"] = parse_and_normalize_date(data_sub["invoice_date"])
+                if data_sub.get("due_date"):
+                    data_sub["due_date"] = parse_and_normalize_date(data_sub["due_date"])
 
             # 5. Persist complete raw VLM output & current working output (Zero data loss)
             invoice.raw_vlm_output = extraction_result
