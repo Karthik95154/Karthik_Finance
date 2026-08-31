@@ -64,15 +64,21 @@ class AIService:
                 raise RuntimeError(f"Colab communication error: {str(e)}") from e
 
             if response.status_code != 200:
-                logger.error(f"Colab Qwen3-VL returned error [{response.status_code}]: {response.text}")
-                raise RuntimeError(
-                    f"Qwen3-VL extraction failed [{response.status_code}]: {response.text}"
-                )
+                resp_text = response.text
+                if "ERR_NGROK" in resp_text or "<!DOCTYPE html>" in resp_text or response.status_code == 404:
+                    err_msg = (
+                        f"Colab Qwen3-VL GPU endpoint ({self.colab_url}) is offline or unreachable "
+                        f"(Status {response.status_code}). Please start your Google Colab notebook and update COLAB_API_URL in backend/.env."
+                    )
+                else:
+                    err_msg = f"Qwen3-VL extraction failed [{response.status_code}]: {resp_text[:300]}"
+                logger.error(err_msg)
+                raise RuntimeError(err_msg)
 
             try:
                 result = response.json()
             except Exception as e:
-                logger.error(f"Failed to decode JSON from Colab response: {response.text}")
+                logger.error(f"Failed to decode JSON from Colab response: {response.text[:300]}")
                 raise ValueError(f"Malformed JSON returned from Qwen3-VL: {str(e)}") from e
 
             return result

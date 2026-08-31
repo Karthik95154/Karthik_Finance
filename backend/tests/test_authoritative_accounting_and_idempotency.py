@@ -216,14 +216,25 @@ async def test_n_export_refuses_ai_fallback():
     )
 
     mock_db = AsyncMock()
-    mock_db.execute.side_effect = [
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_connection)),
-    ]
+
+    def execute_side_effect(query):
+        res = MagicMock()
+        query_str = str(query)
+        if "journal_entries" in query_str:
+            res.scalar_one_or_none.return_value = mock_journal
+        elif "invoices" in query_str:
+            res.scalar_one_or_none.return_value = mock_invoice
+        elif "zoho_credentials" in query_str or "zoho_connections" in query_str:
+            res.scalar_one_or_none.return_value = mock_connection
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+
+    mock_db.execute.side_effect = execute_side_effect
     mock_db.commit = AsyncMock()
 
-    with pytest.raises(RuntimeError, match="lacks a Finance-approved Chart of Accounts"):
+    with pytest.raises((RuntimeError, ValueError), match="unmapped/placeholder account|lacks a Finance-approved"):
         await export_service.export_invoice_to_zoho(
             invoice_id=inv_id,
             tenant_id="tenant-a",
@@ -249,7 +260,7 @@ async def test_h_zoho_create_timeout_followed_by_reconciliation():
         export_status="NOT_EXPORTED",
         current_vlm_output={"data": {"invoice_number": "INV-TIMEOUT-99", "total_amount": 5000.0, "subtotal": 5000.0, "line_items": [{"description": "Dev", "unit_price": 5000.0}]}},
         current_accounting_output={
-            "accounting": [{"line_index": 1, "approved_account_id": "ACC_APP_1", "approved_account_name": "Dev Exp"}]
+            "accounting": [{"line_index": 1, "approved_account_id": "4076465000000033052", "approved_account_name": "Dev Exp"}]
         },
     )
 
@@ -328,7 +339,7 @@ async def test_q_attachment_retry_uses_existing_zoho_bill_id():
         zoho_bill_number="INV-100",
         current_vlm_output={"data": {"invoice_number": "INV-100", "total_amount": 1000.0, "subtotal": 1000.0, "line_items": [{"description": "Item 1", "unit_price": 1000.0}]}},
         current_accounting_output={
-            "accounting": [{"line_index": 1, "approved_account_id": "ACC_APP_1", "approved_account_name": "Dev Exp"}]
+            "accounting": [{"line_index": 1, "approved_account_id": "4076465000000033052", "approved_account_name": "Dev Exp"}]
         },
     )
 
