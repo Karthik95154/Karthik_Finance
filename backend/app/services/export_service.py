@@ -94,7 +94,7 @@ class InvoiceExportService:
             invoice_date = vlm_data.get("invoice_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
             due_date = vlm_data.get("due_date") or invoice_date
 
-            # 7. Authoritative Line Item Account Validation (ZERO AI FALLBACK)
+            # 7. Authoritative Line Item Account Validation (ZERO SYNTHETIC FALLBACK)
             accounting = {}
             if isinstance(invoice.current_accounting_output, dict):
                 accounting = invoice.current_accounting_output
@@ -105,30 +105,54 @@ class InvoiceExportService:
             if not acct_lines:
                 raise ValueError("Cannot export to Zoho: Invoice has no accounting line items.")
 
+            # Retrieve active synchronized Zoho accounts to strictly validate
+            coa_query = select(ChartOfAccount).where(
+                ChartOfAccount.tenant_id == tenant_id,
+                ChartOfAccount.is_active == True,
+            )
+            coa_res = await db.execute(coa_query)
+            valid_zoho_accounts = {str(a.zoho_account_id): a.account_name for a in coa_res.scalars().all()}
+
             acct_map = {}
             for item in acct_lines:
                 idx = item.get("line_index", 1)
                 approved_acc_id = item.get("approved_account_id") or item.get("final_account_id")
-                if not approved_acc_id:
-                    raise RuntimeError(
-                        f"Cannot export to Zoho: Line item {idx} ('{item.get('source_description') or idx}') lacks a Finance-approved Chart of Accounts (approved_account_id is required; AI suggestion cannot be used for export)."
+                if not approved_acc_id or str(approved_acc_id).startswith("ACC_"):
+                    raise ValueError(
+                        f"Cannot export to Zoho: Line item {idx} ('{item.get('source_description') or idx}') has an unmapped/placeholder account '{approved_acc_id}'. "
+                        f"An active Zoho Chart of Accounts account must be selected and approved by Finance before export."
                     )
-                # Map synthetic ACC_1, ACC_2 to default Zoho expense account "4076465000000000558"
-                if approved_acc_id.startswith("ACC_") and approved_acc_id[4:].isdigit():
-                    acct_map[idx] = "4076465000000000558"
-                else:
-                    acct_map[idx] = approved_acc_id
+                if valid_zoho_accounts and str(approved_acc_id) not in valid_zoho_accounts:
+                    raise ValueError(
+                        f"Cannot export to Zoho: Line item {idx} account '{approved_acc_id}' is not in the synchronized active Zoho Chart of Accounts. "
+                        f"Please sync COA in integrations and select a valid Zoho account."
+                    )
+                acct_map[idx] = str(approved_acc_id)
 
-            # Fetch taxes from DB for mapping
-            taxes_query = select(TaxRate).where(TaxRate.tenant_id == tenant_id)
-            taxes_res = await db.execute(taxes_query)
-            try:
-                tax_objs = taxes_res.scalars().all()
-                tax_records = {int(t.tax_percentage): t.zoho_tax_id for t in tax_objs if hasattr(t, "tax_percentage") and t.tax_percentage is not None}
-            except Exception:
-                tax_records = {}
+            # 8. Resolve Supply Type & TDS Configuration
+            from app.services.gst_engine import gst_engine
+            gst_eval = gst_engine.evaluate_gst(vlm_data)
+            supply_type = gst_eval.get("supply_type") or "INTRA_STATE"
 
-            # 8. Resolve Vendor Contact in Zoho
+            tds_info = accounting.get("tds") or {}
+            tds_applicable = bool(tds_info.get("applicable") or tds_info.get("tds_applicable") or tds_info.get("is_applicable"))
+            tds_provision = tds_info.get("approved_tds_provision") or tds_info.get("tds_provision") or tds_info.get("provision")
+            tds_section = tds_info.get("approved_tds_section") or tds_info.get("tds_section") or tds_info.get("section")
+            tds_nature = tds_info.get("approved_nature_of_payment") or tds_info.get("nature_of_payment") or tds_info.get("nature")
+            tds_rate = tds_info.get("approved_tds_rate") or tds_info.get("tds_rate") or tds_info.get("rate")
+
+            zoho_tds_tax_id = None
+            if tds_applicable:
+                zoho_tds_tax_id = await master_data_service.get_zoho_tds_tax(
+                    tenant_id=tenant_id,
+                    section=tds_section,
+                    provision=tds_provision,
+                    nature_of_payment=tds_nature,
+                    rate=float(tds_rate) if tds_rate is not None else None,
+                    db=db,
+                )
+
+            # 9. Resolve Vendor Contact in Zoho
             vendor_contact = await zoho_client_service.search_vendor(
                 connection=connection,
                 db=db,
@@ -154,13 +178,15 @@ class InvoiceExportService:
             if not vendor_id:
                 raise RuntimeError(f"Could not resolve or create Zoho vendor contact for '{vendor_name}'.")
 
-            # 9. Format Bill Line Items using STRICTLY approved accounts
+            # 10. Format Bill Line Items using STRICTLY approved accounts and dynamic GST & TDS taxes
             raw_items = vlm_data.get("line_items") or []
             bill_line_items = []
 
             if raw_items:
                 for idx, item in enumerate(raw_items, 1):
-                    approved_account_id = acct_map.get(idx) or resolve_zoho_account_id(None, None)
+                    approved_account_id = acct_map.get(idx)
+                    if not approved_account_id:
+                        raise ValueError(f"Line item {idx} lacks an approved Zoho Chart of Accounts ID.")
 
                     taxable_amount = float(item.get("taxable_amount") or 0.0)
                     qty = float(item.get("quantity") or 1.0)
@@ -169,8 +195,16 @@ class InvoiceExportService:
                     cgst_rate = float(item.get("cgst_rate") or 0.0)
                     sgst_rate = float(item.get("sgst_rate") or 0.0)
                     igst_rate = float(item.get("igst_rate") or 0.0)
-                    total_tax_rate = int(cgst_rate + sgst_rate + igst_rate)
-                    tax_id = tax_records.get(total_tax_rate)
+                    line_tax_rate = (igst_rate if supply_type == "INTER_STATE" and igst_rate > 0 else (cgst_rate + sgst_rate)) or float(item.get("gst_rate") or item.get("tax_rate") or 0.0)
+
+                    tax_id = None
+                    if line_tax_rate > 0:
+                        tax_id = await master_data_service.get_zoho_tax_for_line(
+                            tenant_id=tenant_id,
+                            tax_percentage=line_tax_rate,
+                            supply_type=supply_type,
+                            db=db,
+                        )
 
                     line_dict: Dict[str, Any] = {
                         "account_id": approved_account_id,
@@ -180,17 +214,30 @@ class InvoiceExportService:
                     }
                     if tax_id:
                         line_dict["tax_id"] = tax_id
+                    if zoho_tds_tax_id:
+                        line_dict["tds_tax_id"] = zoho_tds_tax_id
+
+                    # Dimensions (Project ID)
+                    project_id = item.get("project_id") or vlm_data.get("project_id")
+                    if project_id:
+                        line_dict["project_id"] = project_id
 
                     bill_line_items.append(line_dict)
             else:
                 total_amt = float(vlm_data.get("total_amount") or 0.0)
-                approved_account_id = acct_map.get(1) or resolve_zoho_account_id(None, None)
-                bill_line_items.append({
+                approved_account_id = acct_map.get(1)
+                if not approved_account_id:
+                    raise ValueError("Invoice lacks an approved Zoho Chart of Accounts ID.")
+
+                line_dict = {
                     "account_id": approved_account_id,
                     "description": f"Invoice {invoice_num} Expenses",
                     "rate": total_amt,
                     "quantity": 1.0,
-                })
+                }
+                if zoho_tds_tax_id:
+                    line_dict["tds_tax_id"] = zoho_tds_tax_id
+                bill_line_items.append(line_dict)
 
             bill_payload: Dict[str, Any] = {
                 "vendor_id": vendor_id,
@@ -199,6 +246,26 @@ class InvoiceExportService:
                 "due_date": due_date,
                 "line_items": bill_line_items,
             }
+
+            # Header metadata (Terms, Reference Number, Notes)
+            payment_terms = vlm_data.get("payment_terms")
+            if payment_terms is not None:
+                try:
+                    bill_payload["payment_terms"] = int(payment_terms)
+                except (ValueError, TypeError):
+                    pass
+
+            terms_label = vlm_data.get("payment_terms_label") or vlm_data.get("terms")
+            if terms_label:
+                bill_payload["terms"] = str(terms_label)
+
+            ref_num = vlm_data.get("reference_number") or vlm_data.get("po_number")
+            if ref_num:
+                bill_payload["reference_number"] = str(ref_num)
+
+            notes = vlm_data.get("notes")
+            if notes:
+                bill_payload["notes"] = str(notes)
 
             # 10. RECONCILIATION & IDEMPOTENT BILL CREATION
             bill_id = invoice.zoho_bill_id

@@ -37,72 +37,76 @@ class TDSEngine:
     @classmethod
     def calculate_tds(
         cls,
-        section: Optional[str],
-        base_amount: float,
+        section: Optional[str] = None,
+        base_amount: float = 0.0,
+        rate: Optional[float] = None,
+        provision: Optional[str] = None,
+        nature_of_payment: Optional[str] = None,
         vendor_pan: Optional[str] = None,
         is_subcontractor: bool = False,
-        is_tech_service: bool = True,  # Section 194J(FTS) 2% vs Professional Fees 10%
+        is_tech_service: bool = True,
     ) -> Dict[str, Any]:
         """
         Computes statutory TDS amount according to Indian Income Tax rules.
+        Uses first-rupee calculation against invoice subtotal (no YTD or minimum threshold logic).
+        If an explicit approved rate is passed, it is respected as the authoritative rate.
+        Preserves AI assessment metadata (provision, section, nature of payment).
         """
-        if not section or base_amount <= 0:
+        if base_amount <= 0 or (rate is None and not section and not provision and not nature_of_payment):
             return {
                 "applicable": False,
-                "section": None,
+                "provision": provision,
+                "section": section,
+                "nature_of_payment": nature_of_payment,
                 "rate": 0.0,
                 "base_amount": 0.0,
                 "tds_amount": 0.0,
                 "reason": "TDS not applicable or zero base amount",
             }
 
-        clean_section = section.strip().upper().replace("SECTION", "").replace("SEC", "").strip()
-        pan_valid = cls.is_valid_pan(vendor_pan)
+        pan_valid = cls.is_valid_pan(vendor_pan) if vendor_pan else True
         individual = cls.is_individual_or_huf(vendor_pan)
 
-        rate: float = 0.0
+        computed_rate: float = 0.0
         reason: str = ""
 
-        # Higher deduction for invalid PAN (Section 206AA)
-        if not pan_valid:
-            rate = 20.0
-            reason = f"Section 206AA higher deduction (20%) applied due to invalid or missing vendor PAN."
+        if rate is not None and float(rate) > 0:
+            computed_rate = float(rate)
+            label = nature_of_payment or section or provision or "TDS"
+            reason = f"Authoritative TDS rate ({computed_rate}%) applied to subtotal for {label}."
         else:
-            if "194C" in clean_section:
-                # 194C: Contractors -> 1% for Individual/HUF, 2% for Others
-                rate = 1.0 if individual else 2.0
-                reason = f"Section 194C ({rate}%) for {'Individual/HUF' if individual else 'Company/Firm'}"
-
-            elif "194J" in clean_section:
-                # 194J: 2% for Technical Services (FTS) / Royalty, 10% for Professional Fees
-                rate = 2.0 if is_tech_service else 10.0
-                reason = f"Section 194J ({rate}%) for {'Fees for Technical Services (FTS)' if is_tech_service else 'Professional Services'}"
-
-            elif "194I" in clean_section:
-                # 194I: 2% for Plant & Machinery, 10% for Land/Building/Furniture
-                rate = 2.0 if is_subcontractor else 10.0
-                reason = f"Section 194I ({rate}%) for Rent"
-
-            elif "194H" in clean_section:
-                # 194H: Commission or Brokerage (2% / 5%)
-                rate = 2.0
-                reason = f"Section 194H (2%) for Commission / Brokerage"
-
-            elif "194Q" in clean_section:
-                # 194Q: Purchase of Goods (0.1%)
-                rate = 0.1
-                reason = f"Section 194Q (0.1%) for Purchase of Goods"
-
+            sec_str = (f"{provision or ''} {section or ''} {nature_of_payment or ''}").upper()
+            if vendor_pan and not pan_valid:
+                computed_rate = 20.0
+                reason = "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+            elif "CONTRACT" in sec_str or "194C" in sec_str:
+                computed_rate = 1.0 if individual else 2.0
+                reason = f"Contractor TDS ({computed_rate}%) for {'Individual/HUF' if individual else 'Company/Firm'}"
+            elif "PROFESSIONAL" in sec_str or "393" in sec_str or "194J" in sec_str:
+                computed_rate = 2.0 if is_tech_service else 10.0
+                reason = f"Professional/Technical TDS ({computed_rate}%) for {nature_of_payment or 'Professional services'}"
+            elif "RENT" in sec_str or "194I" in sec_str:
+                computed_rate = 2.0 if is_subcontractor else 10.0
+                reason = f"Rent TDS ({computed_rate}%)"
+            elif "COMMISSION" in sec_str or "194H" in sec_str:
+                computed_rate = 2.0
+                reason = "Commission / Brokerage TDS (2%)"
+            elif "PURCHASE" in sec_str or "194Q" in sec_str:
+                computed_rate = 0.1
+                reason = "Purchase of Goods TDS (0.1%)"
             else:
-                rate = 2.0
-                reason = f"Standard default statutory rate (2%) for Section {clean_section}"
+                computed_rate = 10.0 if "PROFESSIONAL" in (nature_of_payment or "").upper() else 2.0
+                reason = f"Statutory TDS ({computed_rate}%) for {nature_of_payment or 'Services'}"
 
-        tds_amount = round((base_amount * rate) / 100.0, 2)
+        # TDS is strictly calculated on base_amount (Subtotal), NEVER on subtotal + GST
+        tds_amount = round((base_amount * computed_rate) / 100.0, 2)
 
         return {
             "applicable": True,
-            "section": clean_section,
-            "rate": rate,
+            "provision": provision,
+            "section": section,
+            "nature_of_payment": nature_of_payment,
+            "rate": computed_rate,
             "base_amount": round(base_amount, 2),
             "tds_amount": tds_amount,
             "pan_valid": pan_valid,
@@ -111,3 +115,5 @@ class TDSEngine:
 
 
 tds_engine = TDSEngine()
+
+

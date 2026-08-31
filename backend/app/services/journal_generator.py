@@ -208,6 +208,8 @@ class JournalGenerator:
             idx = item.get("line_index")
             if idx is not None:
                 acc_by_index[idx] = item
+                if idx > 0:
+                    acc_by_index[idx - 1] = item
 
         total_line_taxable_debits = 0.0
 
@@ -233,8 +235,8 @@ class JournalGenerator:
                         taxable = 0.0
 
                 acc_info = acc_by_index.get(idx) or (accounting_list[idx] if idx < len(accounting_list) else {})
-                final_acc_id = acc_info.get("final_account_id")
-                final_acc_name = acc_info.get("final_account_name")
+                final_acc_id = acc_info.get("final_account_id") or acc_info.get("approved_account_id")
+                final_acc_name = acc_info.get("final_account_name") or acc_info.get("approved_account_name")
                 ai_acc_id = acc_info.get("ai_account_id") or acc_info.get("account_id")
                 ai_acc_name = acc_info.get("ai_account_name") or acc_info.get("account_name")
 
@@ -535,22 +537,46 @@ class JournalGenerator:
         # 6. TDS TREATMENT (WITHHOLDING TAX CREDIT)
         # ----------------------------------------------------
         tds_data = tds_result or (accounting_classification.get("tds") if accounting_classification else {}) or {}
-        tds_applicable = tds_data.get("tds_applicable") or tds_data.get("is_applicable")
+        tds_applicable = bool(tds_data.get("applicable") or tds_data.get("tds_applicable") or tds_data.get("is_applicable"))
+        tds_provision = tds_data.get("approved_tds_provision") or tds_data.get("tds_provision") or tds_data.get("provision")
+        tds_section = tds_data.get("approved_tds_section") or tds_data.get("tds_section") or tds_data.get("section")
+        tds_nature = tds_data.get("approved_nature_of_payment") or tds_data.get("nature_of_payment") or tds_data.get("nature")
+        tds_rate = self._clean_num(
+            tds_data.get("approved_tds_rate")
+            or tds_data.get("tds_rate")
+            or tds_data.get("rate")
+        )
         tds_amount = self._clean_num(
             tds_data.get("final_tds_amount")
             or tds_data.get("tds_amount")
             or tds_data.get("amount")
         ) or 0.0
-        tds_section = tds_data.get("tds_section") or tds_data.get("section") or "194C/194J"
         is_approved = tds_data.get("is_approved")
         if is_approved is None:
             is_approved = tds_data.get("approved")
+
+        # First-rupee subtotal calculation: TDS amount = approved taxable subtotal * approved TDS rate
+        # NEVER on subtotal + GST
+        if tds_applicable and subtotal is not None and subtotal > 0:
+            if tds_rate is not None and tds_rate > 0:
+                tds_amount = round((subtotal * float(tds_rate)) / 100.0, 2)
+            elif tds_amount <= 0:
+                calc = tds_engine.calculate_tds(
+                    section=tds_section,
+                    provision=tds_provision,
+                    nature_of_payment=tds_nature,
+                    base_amount=subtotal,
+                    rate=tds_rate,
+                )
+                tds_amount = calc.get("tds_amount", 0.0)
+                tds_rate = calc.get("rate", tds_rate)
 
         if tds_applicable and tds_amount > 0:
             if is_approved is not True:
                 requires_review = True
                 warnings.append("Proposed TDS requires finance approval.")
 
+            label = f"{tds_provision or ''} {tds_section or ''}".strip() or (tds_nature or "TDS")
             lines.append(
                 JournalLine(
                     account_id=STANDARD_ACCOUNTS["TDS_PAYABLE"]["account_id"],
@@ -560,7 +586,7 @@ class JournalGenerator:
                     credit=tds_amount,
                     amount=tds_amount,
                     provenance="HITL_OVERRIDE" if is_approved else "AI_PREDICTED",
-                    description=f"TDS Withholding under Section {tds_section}",
+                    description=f"TDS Withholding - {label} ({tds_rate or ''}%)",
                 )
             )
         elif tds_applicable and tds_amount == 0.0:
@@ -813,27 +839,40 @@ class JournalGenerator:
 
         # 5. TDS Deduction (CREDIT)
         tds_info = (accounting_data or {}).get("tds") or {}
-        tds_applicable = bool(tds_info.get("applicable") or tds_info.get("tds_applicable"))
-        tds_section = tds_info.get("tds_section") or tds_info.get("section") or "194C"
-        tds_amount = float(tds_info.get("calculated_tds_amount") or tds_info.get("final_tds_amount") or tds_info.get("tds_amount") or 0.0)
+        tds_applicable = bool(tds_info.get("applicable") or tds_info.get("tds_applicable") or tds_info.get("is_applicable"))
+        tds_provision = tds_info.get("approved_tds_provision") or tds_info.get("tds_provision") or tds_info.get("provision")
+        tds_section = tds_info.get("approved_tds_section") or tds_info.get("tds_section") or tds_info.get("section")
+        tds_nature = tds_info.get("approved_nature_of_payment") or tds_info.get("nature_of_payment") or tds_info.get("nature")
+        tds_rate = tds_info.get("approved_tds_rate") or tds_info.get("tds_rate") or tds_info.get("rate")
+        tds_amount = float(tds_info.get("final_tds_amount") or tds_info.get("calculated_tds_amount") or tds_info.get("tds_amount") or 0.0)
 
-        if tds_applicable and tds_amount <= 0 and subtotal > 0:
-            calc = tds_engine.calculate_tds(
-                section=tds_section,
-                base_amount=subtotal,
-                vendor_pan=vendor_pan,
-            )
-            tds_amount = calc.get("tds_amount", 0.0)
+        # First-rupee subtotal calculation: TDS amount = approved taxable subtotal * approved TDS rate
+        # NEVER on subtotal + GST
+        if tds_applicable and subtotal > 0:
+            if tds_rate is not None and float(tds_rate) > 0:
+                tds_amount = round((subtotal * float(tds_rate)) / 100.0, 2)
+            elif tds_amount <= 0:
+                calc = tds_engine.calculate_tds(
+                    section=tds_section,
+                    provision=tds_provision,
+                    nature_of_payment=tds_nature,
+                    base_amount=subtotal,
+                    rate=float(tds_rate) if tds_rate is not None else None,
+                    vendor_pan=vendor_pan,
+                )
+                tds_amount = calc.get("tds_amount", 0.0)
+                tds_rate = calc.get("rate", tds_rate)
 
         if tds_applicable and tds_amount > 0:
+            label = f"{tds_provision or ''} {tds_section or ''}".strip() or (tds_nature or "TDS")
             lines.append({
                 "line_number": line_num,
-                "account_id": f"TDS_PAYABLE_{tds_section}",
-                "account_name": f"TDS Payable (Sec {tds_section})",
+                "account_id": f"TDS_PAYABLE_{tds_section or 'TDS'}",
+                "account_name": f"TDS Payable ({label})",
                 "is_approved": True,
                 "line_type": "CR",
                 "amount": round(tds_amount, 2),
-                "description": f"TDS deduction on {vendor_name}",
+                "description": f"TDS deduction on {vendor_name} ({tds_rate or ''}%)",
                 "cost_center": cost_center,
                 "project": project,
                 "department": department,
