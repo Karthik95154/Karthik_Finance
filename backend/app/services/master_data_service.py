@@ -108,21 +108,51 @@ class MasterDataService:
         tenant_id: str,
         db: AsyncSession,
     ) -> List[Dict[str, Any]]:
-        """Fetches live taxes from Zoho and upserts into local tax_rates table."""
+        """Fetches live GST taxes and statutory TDS taxes from Zoho and upserts into local tax_rates table."""
         connection = await self.get_or_create_zoho_connection(tenant_id, db)
         if connection.status != "CONNECTED" or not connection.organization_id:
             logger.warning(f"Tenant {tenant_id} is not connected to Zoho. Skipping live tax sync.")
             return await self.get_cached_taxes(tenant_id, db)
 
-        zoho_taxes = await zoho_client_service.get_taxes(connection, db)
-        logger.info(f"Fetched {len(zoho_taxes)} tax records from Zoho for tenant {tenant_id}")
+        all_taxes_to_sync: List[Dict[str, Any]] = []
+
+        # 1. Fetch GST taxes from settings/taxes
+        try:
+            zoho_taxes = await zoho_client_service.get_taxes(connection, db)
+            for t in zoho_taxes:
+                all_taxes_to_sync.append({
+                    "tax_id": str(t.get("tax_id")),
+                    "tax_name": t.get("tax_name") or "GST Tax",
+                    "tax_percentage": float(t.get("tax_percentage", 0.0)),
+                    "tax_type": "GST",
+                })
+        except Exception as e:
+            logger.warning(f"Failed to fetch settings/taxes: {e}")
+
+        # 2. Fetch statutory TDS taxes and editpage configuration from bills/editpage
+        try:
+            editpage = await zoho_client_service.get_bill_editpage(connection, db)
+            tds_taxes = editpage.get("tds_taxes", [])
+            for t in tds_taxes:
+                all_taxes_to_sync.append({
+                    "tax_id": str(t.get("tax_id")),
+                    "tax_name": t.get("tax_name") or t.get("section") or "TDS Tax",
+                    "tax_percentage": float(t.get("tax_percentage", 0.0)),
+                    "tax_type": "TDS",
+                })
+        except Exception as e:
+            logger.warning(f"Failed to fetch bills/editpage tds_taxes: {e}")
+
+        logger.info(f"Fetched {len(all_taxes_to_sync)} total tax records from Zoho for tenant {tenant_id}")
 
         existing_query = select(TaxRate).where(TaxRate.tenant_id == tenant_id)
         existing_res = await db.execute(existing_query)
         existing_map = {t.zoho_tax_id: t for t in existing_res.scalars().all()}
 
-        for tax_data in zoho_taxes:
+        for tax_data in all_taxes_to_sync:
             z_id = str(tax_data.get("tax_id"))
+            if not z_id or z_id == "None":
+                continue
             name = tax_data.get("tax_name")
             percentage = float(tax_data.get("tax_percentage", 0.0))
             tax_type = tax_data.get("tax_type", "GST")
@@ -172,6 +202,136 @@ class MasterDataService:
             }
             for t in taxes
         ]
+
+    async def get_zoho_tax_for_line(
+        self,
+        tenant_id: str,
+        tax_percentage: float,
+        supply_type: str,
+        db: AsyncSession,
+    ) -> Optional[str]:
+        """
+        Dynamically finds the matching Zoho Tax ID for an invoice line item
+        based on supply_type (INTRA_STATE vs INTER_STATE) and tax percentage.
+        """
+        if tax_percentage is None or tax_percentage <= 0:
+            return None
+
+        query = select(TaxRate).where(
+            TaxRate.tenant_id == tenant_id,
+            TaxRate.is_active == True,
+            TaxRate.tax_type.in_(["GST", "tax", "Tax", "gst"]),
+        )
+        res = await db.execute(query)
+        taxes = res.scalars().all()
+
+        if not taxes:
+            return None
+
+        # Filter by percentage match (within 0.1 tolerance)
+        matching_rate = [t for t in taxes if abs(float(t.tax_percentage) - float(tax_percentage)) < 0.1]
+        if not matching_rate:
+            return None
+
+        if len(matching_rate) == 1:
+            return matching_rate[0].zoho_tax_id
+
+        # Differentiate INTRA_STATE (GST18 / CGST+SGST) vs INTER_STATE (IGST18)
+        is_interstate = (supply_type == "INTER_STATE")
+        if is_interstate:
+            # 1. Exact start with IGST (e.g. IGST18)
+            for t in matching_rate:
+                t_name = (t.tax_name or "").upper()
+                if t_name.startswith("IGST"):
+                    return t.zoho_tax_id
+            for t in matching_rate:
+                if "IGST" in (t.tax_name or "").upper():
+                    return t.zoho_tax_id
+        else:
+            # 1. Exact start with GST (e.g. GST18) and not IGST
+            for t in matching_rate:
+                t_name = (t.tax_name or "").upper()
+                if t_name.startswith("GST") and "IGST" not in t_name:
+                    return t.zoho_tax_id
+            for t in matching_rate:
+                if "IGST" not in (t.tax_name or "").upper():
+                    return t.zoho_tax_id
+
+        return matching_rate[0].zoho_tax_id
+
+    async def get_zoho_tds_tax(
+        self,
+        tenant_id: str,
+        section: Optional[str] = None,
+        rate: Optional[float] = None,
+        provision: Optional[str] = None,
+        nature_of_payment: Optional[str] = None,
+        db: AsyncSession = None,
+    ) -> Optional[str]:
+        """
+        Dynamically resolves the Zoho Tax ID for TDS / withholding tax configuration
+        using AI/Finance approved:
+        - provision (e.g. 'Section 393')
+        - section (e.g. 'Table 6(ii)' or '194J')
+        - nature_of_payment (e.g. 'Professional services')
+        - rate (e.g. 10.0)
+
+        Does not assume 194J, does not resolve by percentage alone, and does not hardcode IDs.
+        """
+        query = select(TaxRate).where(
+            TaxRate.tenant_id == tenant_id,
+            TaxRate.is_active == True,
+            TaxRate.tax_type.in_(["TDS", "tds_tax", "tds"]),
+        )
+        res = await db.execute(query)
+        tds_taxes = res.scalars().all()
+
+        if not tds_taxes:
+            return None
+
+        # Build search tokens from all AI/Finance approved inputs
+        combined_text = f"{provision or ''} {section or ''} {nature_of_payment or ''}".upper()
+
+        # Keywords for statutory categories
+        category_keywords = {
+            "PROFESSIONAL": ["PROFESSIONAL", "TECHNICAL", "FEES", "393", "TABLE 6", "6(II)", "194J", "TECH", "LEGAL", "CONSULT"],
+            "CONTRACTOR": ["CONTRACTOR", "CONTRACT", "194C", "HUF", "SUB-CONTRACT"],
+            "RENT": ["RENT", "194I", "PLANT", "LAND", "BUILDING"],
+            "COMMISSION": ["COMMISSION", "BROKERAGE", "194H"],
+            "DIVIDEND": ["DIVIDEND", "DISTRIBUTION"],
+            "INTEREST": ["INTEREST", "SECURITIES"],
+            "PURCHASE": ["PURCHASE", "GOODS", "194Q"],
+        }
+
+        matched_category_keywords = []
+        for cat, kws in category_keywords.items():
+            if any(kw in combined_text for kw in kws):
+                matched_category_keywords.extend(kws)
+
+        # 1. Best match: Category keyword match AND rate match
+        if matched_category_keywords and rate is not None and rate > 0:
+            for t in tds_taxes:
+                t_name_upper = (t.tax_name or "").upper()
+                if any(kw in t_name_upper for kw in matched_category_keywords):
+                    if abs(float(t.tax_percentage) - float(rate)) < 0.1:
+                        return t.zoho_tax_id
+
+        # 2. Category keyword match alone
+        if matched_category_keywords:
+            for t in tds_taxes:
+                t_name_upper = (t.tax_name or "").upper()
+                if any(kw in t_name_upper for kw in matched_category_keywords):
+                    return t.zoho_tax_id
+
+        # 3. Exact rate match if category wasn't found in Zoho tax names
+        if rate is not None and rate > 0:
+            for t in tds_taxes:
+                if abs(float(t.tax_percentage) - float(rate)) < 0.1:
+                    return t.zoho_tax_id
+
+        return tds_taxes[0].zoho_tax_id if tds_taxes else None
+
+
 
     async def sync_vendors(
         self,

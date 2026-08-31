@@ -97,6 +97,15 @@ async def upload_invoice(
         db=db,
     )
     if existing_duplicate:
+        # If the duplicate is currently STAGED (e.g. from email inbox) or FAILED,
+        # the user is manually uploading to process it. Promote to PENDING and start processing.
+        if existing_duplicate.status in ["STAGED", "FAILED"]:
+            existing_duplicate.status = "PENDING"
+            existing_duplicate.error_message = None
+            await db.commit()
+            await db.refresh(existing_duplicate)
+            background_tasks.add_task(process_invoice_background, existing_duplicate.id)
+            
         return InvoiceUploadResponse(
             invoice_id=existing_duplicate.id,
             file_name=existing_duplicate.file_name,
@@ -124,6 +133,7 @@ async def upload_invoice(
             detail=f"Failed to store file in Supabase Storage: {str(e)}",
         )
 
+    now_dt = datetime.now(timezone.utc)
     invoice = Invoice(
         id=invoice_id,
         tenant_id=tenant_id,
@@ -136,22 +146,23 @@ async def upload_invoice(
         accounting_status="PENDING",
         approval_status="PENDING_REVIEW",
         export_status="NOT_EXPORTED",
+        created_at=now_dt,
+        updated_at=now_dt,
     )
     db.add(invoice)
     await db.commit()
-    await db.refresh(invoice)
 
     # Dispatch asynchronous background extraction & accounting
-    background_tasks.add_task(process_invoice_background, invoice.id)
+    background_tasks.add_task(process_invoice_background, invoice_id)
 
     return InvoiceUploadResponse(
-        invoice_id=invoice.id,
-        file_name=invoice.file_name,
-        file_size=invoice.file_size,
-        mime_type=invoice.mime_type,
-        file_hash=invoice.file_hash,
-        status=invoice.status,
-        created_at=invoice.created_at,
+        invoice_id=invoice_id,
+        file_name=original_name,
+        file_size=file_size,
+        mime_type=content_type,
+        file_hash=file_hash,
+        status="PENDING",
+        created_at=now_dt,
     )
 
 
@@ -192,7 +203,6 @@ async def categorize_invoice_accounting(
     invoice.error_message = None
     invoice.updated_at = datetime.now(timezone.utc)
     await db.commit()
-    await db.refresh(invoice)
 
     background_tasks.add_task(process_accounting_only_background, invoice.id)
 
@@ -205,6 +215,7 @@ async def categorize_invoice_accounting(
         error_message=invoice.error_message,
         confidence_score=invoice.confidence_score,
         accounting_confidence=invoice.accounting_confidence,
+        created_at=invoice.created_at,
         updated_at=invoice.updated_at,
     )
 
@@ -226,8 +237,9 @@ async def list_invoices(
     items = []
     for inv in invoices:
         vlm = inv.current_vlm_output or inv.raw_vlm_output or {}
-        data = vlm.get("data") if isinstance(vlm, dict) else {}
-        if not isinstance(data, dict):
+        if isinstance(vlm, dict):
+            data = vlm.get("data") if ("data" in vlm and isinstance(vlm.get("data"), dict)) else vlm
+        else:
             data = {}
         items.append(
             InvoiceListItemResponse(

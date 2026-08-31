@@ -262,6 +262,19 @@ class ZohoClientService:
         )
         return res.get("taxes", [])
 
+    async def get_bill_editpage(
+        self,
+        connection: ZohoConnection,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Fetches bill configuration, payment terms, and statutory TDS taxes from Zoho Books."""
+        return await self._make_authorized_request(
+            connection=connection,
+            db=db,
+            method="GET",
+            endpoint_path="bills/editpage",
+        )
+
     async def get_vendors(
         self,
         connection: ZohoConnection,
