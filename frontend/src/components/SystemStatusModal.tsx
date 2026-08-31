@@ -143,32 +143,47 @@ export default function SystemStatusModal({
     {
       key: "backend",
       icon: Server,
-      detail: backend,
-      desc: "FastAPI Core Engine orchestrating invoice processing, audit logs, and accounting workflows.",
+      detail: {
+        ...backend,
+        name: "Finance Core Application",
+      },
+      desc: "Handles invoice workflows, accounting rules, user reviews, and audit tracking.",
     },
     {
       key: "db",
       icon: Database,
-      detail: db,
-      desc: "Stores tenant credentials, synchronized COA, tax rates, vendor mappings, and journal entries.",
+      detail: {
+        ...db,
+        name: "Accounting Database",
+      },
+      desc: "Stores invoice records, Chart of Accounts, tax configurations, and balanced journal entries.",
     },
     {
       key: "storage",
       icon: Cloud,
-      detail: storage,
-      desc: "Encrypted object storage bucket preserving original uploaded invoice PDFs and images.",
+      detail: {
+        ...storage,
+        name: "Invoice Document Vault",
+      },
+      desc: "Secure storage for all uploaded invoice PDFs, receipt scans, and source documents.",
     },
     {
       key: "vlm",
       icon: Cpu,
-      detail: vlm,
-      desc: "Qwen3-VL Vision-Language model hosted on Colab/ngrok extracting structured invoice tables and metadata.",
+      detail: {
+        ...vlm,
+        name: "AI Invoice Reader (Vision Model)",
+      },
+      desc: "Extracts vendor names, invoice numbers, line items, and taxes from uploaded documents.",
     },
     {
       key: "accounting",
       icon: Brain,
-      detail: acc,
-      desc: "Qwen3-4B reasoning engine analyzing line-item Chart of Accounts classification and TDS withholding.",
+      detail: {
+        ...acc,
+        name: "AI Tax & Accounting Advisor",
+      },
+      desc: "Recommends account classifications, evaluates GST Place of Supply, and assesses TDS withholding.",
     },
   ];
 
@@ -195,7 +210,7 @@ export default function SystemStatusModal({
       <div
         style={{
           width: "100%",
-          maxWidth: "680px",
+          maxWidth: "640px",
           backgroundColor: "#ffffff",
           borderRadius: "14px",
           boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
@@ -244,7 +259,7 @@ export default function SystemStatusModal({
                   margin: 0,
                 }}
               >
-                System & Engine Diagnostics
+                Application & Service Status
               </h2>
               <p
                 style={{
@@ -253,7 +268,7 @@ export default function SystemStatusModal({
                   margin: "2px 0 0",
                 }}
               >
-                Live connectivity status across API, Database, and Colab AI Engines
+                Live status of your invoice processing, AI extraction, and accounting services
               </p>
             </div>
           </div>
@@ -449,7 +464,7 @@ export default function SystemStatusModal({
                     {svc.desc}
                   </div>
 
-                  {/* Error / 404 Troubleshooting Helper */}
+                  {/* Error / 404 User Helper */}
                   {(svc.detail.status_code === 404 || svc.detail.status === "404_error" || svc.detail.status === "offline") && (
                     <div
                       style={{
@@ -457,25 +472,22 @@ export default function SystemStatusModal({
                         borderRadius: "6px",
                         background: "#fff1f2",
                         border: "1px solid #fecdd3",
-                        fontSize: "11px",
+                        fontSize: "12px",
                         color: "#9f1239",
                         display: "flex",
                         alignItems: "flex-start",
-                        gap: "6px",
+                        gap: "8px",
                       }}
                     >
-                      <Info size={14} style={{ flexShrink: 0, marginTop: "1px" }} />
+                      <Info size={15} style={{ flexShrink: 0, marginTop: "1px" }} />
                       <div>
                         {svc.detail.status_code === 404 || svc.detail.status === "404_error" ? (
                           <span>
-                            <strong>404 Endpoint Missing:</strong> The server at{" "}
-                            <code>{svc.detail.endpoint}</code> is reachable, but returned 404 on{" "}
-                            <code>/health</code>. Ensure your Colab notebook FastAPI script is running and exposes <code>/health</code> and <code>/api/infer/...</code>.
+                            <strong>AI Service Unavailable (404):</strong> The AI automated extraction is temporarily offline. You can still upload, view, edit, and export invoices manually.
                           </span>
                         ) : (
                           <span>
-                            <strong>Offline / Connection Refused:</strong> Could not connect to{" "}
-                            <code>{svc.detail.endpoint}</code>. Check if your ngrok tunnel is active in Google Colab and update your <code>COLAB_API_URL</code> if the URL changed.
+                            <strong>Service Offline:</strong> Cannot reach this service. Please verify your internet connection or check back in a few moments.
                           </span>
                         )}
                       </div>
@@ -498,21 +510,21 @@ export default function SystemStatusModal({
             justifyContent: "space-between",
           }}
         >
-          <div style={{ fontSize: "11px", color: "#64748b" }}>
-            Backend API: <code style={{ color: "#0f172a" }}>FastAPI 0.115+ (Python 3.12)</code>
+          <div style={{ fontSize: "12px", color: "#64748b" }}>
+            All systems auto-check every 30 seconds.
           </div>
           <button
             type="button"
             onClick={onClose}
             className="btn btn-primary"
             style={{
-              padding: "6px 16px",
-              fontSize: "12px",
+              padding: "7px 18px",
+              fontSize: "13px",
               fontWeight: "600",
               borderRadius: "6px",
             }}
           >
-            Close Diagnostics
+            Close
           </button>
         </div>
       </div>

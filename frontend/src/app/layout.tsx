@@ -1,5 +1,6 @@
 import "../styles/globals.css";
 import React from "react";
+import NetworkStatusBanner from "@/components/NetworkStatusBanner";
 
 export const metadata = {
   title: "Sakshi Finance | Autonomous AI Accounting & AP Automation",
@@ -13,7 +14,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <NetworkStatusBanner />
+        {children}
+      </body>
     </html>
   );
 }
