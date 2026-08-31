@@ -354,12 +354,23 @@ export interface UploadResponse {
   created_at: string;
 }
 
+export interface ServiceHealthDetail {
+  name: string;
+  status: "online" | "404_error" | "offline" | "connected" | "disconnected" | "degraded" | "error" | "timeout" | string;
+  status_code?: number | null;
+  message: string;
+  latency_ms?: number | null;
+  endpoint?: string | null;
+}
+
 export interface HealthResponse {
-  status: string;
+  status: "ok" | "degraded" | "error" | string;
   project: string;
   database: string;
   storage: string;
   colab_vlm?: string;
+  colab_accounting?: string;
+  services?: Record<string, ServiceHealthDetail>;
   timestamp: string;
 }
 

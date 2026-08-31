@@ -16,8 +16,12 @@ import {
   CheckCircle2,
   ExternalLink,
   ChevronRight,
+  Activity,
+  AlertTriangle,
+  XCircle,
 } from "lucide-react";
 import { getHealth, HealthResponse } from "@/lib/api";
+import SystemStatusModal, { getStatusBadge } from "./SystemStatusModal";
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -35,11 +39,25 @@ export default function AppShell({
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [statusModalOpen, setStatusModalOpen] = useState(false);
+  const [isRefreshingHealth, setIsRefreshingHealth] = useState(false);
+
+  const fetchHealth = async () => {
+    try {
+      setIsRefreshingHealth(true);
+      const data = await getHealth();
+      setHealth(data);
+    } catch {
+      setHealth(null);
+    } finally {
+      setIsRefreshingHealth(false);
+    }
+  };
 
   useEffect(() => {
-    getHealth()
-      .then(setHealth)
-      .catch(() => setHealth(null));
+    fetchHealth();
+    const interval = setInterval(fetchHealth, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const navItems = [
@@ -283,38 +301,66 @@ export default function AppShell({
             background: "#fafafa",
           }}
         >
-          {/* Health Pill */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              fontSize: "11px",
-              color: "var(--text-secondary)",
-              marginBottom: "12px",
-              padding: "6px 10px",
-              background: "#ffffff",
-              borderRadius: "6px",
-              border: "1px solid var(--border-subtle)",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-              <span
+          {/* Interactive Health Pill */}
+          {(() => {
+            const has404 = health?.colab_vlm?.includes("404") || health?.colab_accounting?.includes("404");
+            const isOk = health?.status === "ok" || health?.status === "healthy";
+            const badge = getStatusBadge(
+              isOk ? "online" : has404 ? "404_error" : health?.status || "offline",
+              isOk ? 200 : has404 ? 404 : undefined
+            );
+            const BadgeIcon = badge.icon;
+            return (
+              <button
+                type="button"
+                onClick={() => setStatusModalOpen(true)}
                 style={{
-                  width: "6px",
-                  height: "6px",
-                  borderRadius: "50%",
-                  background: health?.status === "healthy" ? "#16a34a" : "#ca8a04",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  fontSize: "11px",
+                  color: badge.text,
+                  marginBottom: "12px",
+                  padding: "7px 10px",
+                  background: badge.bg,
+                  borderRadius: "6px",
+                  border: `1px solid ${badge.border}`,
+                  cursor: "pointer",
+                  textAlign: "left",
+                  transition: "all 0.15s ease",
                 }}
-              />
-              <span style={{ fontWeight: "500" }}>
-                {health?.status === "healthy" ? "Engine Active" : "Connecting..."}
-              </span>
-            </div>
-            <span style={{ fontSize: "10px", color: "var(--text-tertiary)" }}>
-              FastAPI
-            </span>
-          </div>
+                title="Click to view full System & AI Engine Diagnostics"
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                  <span
+                    style={{
+                      width: "7px",
+                      height: "7px",
+                      borderRadius: "50%",
+                      backgroundColor: badge.dot,
+                      boxShadow: `0 0 0 2px ${badge.border}`,
+                    }}
+                  />
+                  <span style={{ fontWeight: "600" }}>
+                    {isOk ? "System: 200 OK" : has404 ? "AI Engine: 404 Error" : health?.status === "degraded" ? "System: Degraded" : "System: Offline"}
+                  </span>
+                </div>
+                <span
+                  style={{
+                    fontSize: "10px",
+                    fontWeight: "600",
+                    background: "#ffffff",
+                    padding: "1px 5px",
+                    borderRadius: "3px",
+                    border: `1px solid ${badge.border}`,
+                  }}
+                >
+                  Diagnostics
+                </span>
+              </button>
+            );
+          })()}
 
           {/* User / Sign out */}
           <div
@@ -438,8 +484,54 @@ export default function AppShell({
           </div>
 
           {/* Right Header Actions */}
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            {/* Live System Status Header Pill */}
+            {(() => {
+              const has404 = health?.colab_vlm?.includes("404") || health?.colab_accounting?.includes("404");
+              const isOk = health?.status === "ok" || health?.status === "healthy";
+              const badge = getStatusBadge(
+                isOk ? "online" : has404 ? "404_error" : health?.status || "offline",
+                isOk ? 200 : has404 ? 404 : undefined
+              );
+              const BadgeIcon = badge.icon;
+              return (
+                <button
+                  type="button"
+                  onClick={() => setStatusModalOpen(true)}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: "6px",
+                    background: badge.bg,
+                    border: `1px solid ${badge.border}`,
+                    color: badge.text,
+                    fontSize: "12px",
+                    fontWeight: "600",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: "6px",
+                    cursor: "pointer",
+                    transition: "all 0.15s ease",
+                  }}
+                  title="Click to view live system diagnostics and status codes"
+                >
+                  <span
+                    style={{
+                      width: "7px",
+                      height: "7px",
+                      borderRadius: "50%",
+                      backgroundColor: badge.dot,
+                    }}
+                  />
+                  <span>
+                    {isOk ? "200 OK Active" : has404 ? "AI Engine: 404" : health?.status === "degraded" ? "Degraded" : "API Offline"}
+                  </span>
+                  <Activity size={13} style={{ opacity: 0.7 }} />
+                </button>
+              );
+            })()}
+
             {actions}
+
             <Link
               href="/finance/upload"
               className="btn btn-secondary"
@@ -460,6 +552,15 @@ export default function AppShell({
 
         {/* Page Content */}
         <main style={{ flex: 1, padding: "24px" }}>{children}</main>
+
+        {/* Universal System Status Diagnostics Modal */}
+        <SystemStatusModal
+          isOpen={statusModalOpen}
+          onClose={() => setStatusModalOpen(false)}
+          health={health}
+          loading={isRefreshingHealth}
+          onRefresh={fetchHealth}
+        />
       </div>
 
       <style jsx>{`

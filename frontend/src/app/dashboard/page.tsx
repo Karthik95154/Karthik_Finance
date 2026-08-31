@@ -24,7 +24,13 @@ import {
   Layers,
   ChevronRight,
   RefreshCw,
+  Server,
+  Database,
+  Cpu,
+  Brain,
+  Activity,
 } from "lucide-react";
+import { getStatusBadge } from "@/components/SystemStatusModal";
 
 export default function DashboardPage() {
   const [invoices, setInvoices] = useState<InvoiceListItem[]>([]);
@@ -125,6 +131,131 @@ export default function DashboardPage() {
           <span>{error}</span>
         </div>
       )}
+
+      {/* ============================================================
+          LIVE APPLICATION & AI ENGINE STATUS BAR
+          ============================================================ */}
+      <div
+        className="card"
+        style={{
+          padding: "12px 18px",
+          marginBottom: "20px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: "12px",
+          background: "#ffffff",
+          border: "1px solid var(--border-subtle)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <Activity size={16} color="var(--accent)" />
+          <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--text-primary)" }}>
+            Application & AI Services:
+          </span>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+          {/* FastAPI Core */}
+          <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px" }}>
+            <span style={{ color: "var(--text-secondary)", fontWeight: "500" }}>FastAPI:</span>
+            {(() => {
+              const b = getStatusBadge(health ? "online" : "offline", health ? 200 : undefined);
+              return (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: "600",
+                    padding: "2px 7px",
+                    borderRadius: "4px",
+                    background: b.bg,
+                    color: b.text,
+                    border: `1px solid ${b.border}`,
+                  }}
+                >
+                  {b.label}
+                </span>
+              );
+            })()}
+          </div>
+
+          {/* Database */}
+          <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px" }}>
+            <span style={{ color: "var(--text-secondary)", fontWeight: "500" }}>PostgreSQL:</span>
+            {(() => {
+              const b = getStatusBadge(health?.database || "error");
+              return (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: "600",
+                    padding: "2px 7px",
+                    borderRadius: "4px",
+                    background: b.bg,
+                    color: b.text,
+                    border: `1px solid ${b.border}`,
+                  }}
+                >
+                  {b.label}
+                </span>
+              );
+            })()}
+          </div>
+
+          {/* Qwen3-VL Colab Engine */}
+          <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px" }}>
+            <span style={{ color: "var(--text-secondary)", fontWeight: "500" }}>Qwen-VL AI:</span>
+            {(() => {
+              const vlmSvc = health?.services?.["colab_vlm"];
+              const statusStr = vlmSvc?.status || (health?.colab_vlm?.includes("404") ? "404_error" : health?.colab_vlm ? "online" : "offline");
+              const code = vlmSvc?.status_code || (statusStr === "404_error" ? 404 : statusStr === "online" ? 200 : null);
+              const b = getStatusBadge(statusStr, code);
+              return (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: "600",
+                    padding: "2px 7px",
+                    borderRadius: "4px",
+                    background: b.bg,
+                    color: b.text,
+                    border: `1px solid ${b.border}`,
+                  }}
+                >
+                  {b.label}
+                </span>
+              );
+            })()}
+          </div>
+
+          {/* Qwen3-4B Accounting Colab Engine */}
+          <div style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px" }}>
+            <span style={{ color: "var(--text-secondary)", fontWeight: "500" }}>Qwen-Accounting:</span>
+            {(() => {
+              const accSvc = health?.services?.["colab_accounting"];
+              const statusStr = accSvc?.status || (health?.colab_accounting?.includes("404") ? "404_error" : health?.colab_accounting ? "online" : "offline");
+              const code = accSvc?.status_code || (statusStr === "404_error" ? 404 : statusStr === "online" ? 200 : null);
+              const b = getStatusBadge(statusStr, code);
+              return (
+                <span
+                  style={{
+                    fontSize: "11px",
+                    fontWeight: "600",
+                    padding: "2px 7px",
+                    borderRadius: "4px",
+                    background: b.bg,
+                    color: b.text,
+                    border: `1px solid ${b.border}`,
+                  }}
+                >
+                  {b.label}
+                </span>
+              );
+            })()}
+          </div>
+        </div>
+      </div>
 
       {/* ============================================================
           TOP SUMMARY METRICS CARDS (REAL DATA ONLY)

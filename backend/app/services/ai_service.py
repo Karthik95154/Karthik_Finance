@@ -14,16 +14,75 @@ class AIService:
 
     async def check_colab_health(self) -> bool:
         """Checks if the Colab / ngrok Qwen3-VL server is reachable."""
+        detailed = await self.check_colab_health_detailed()
+        return detailed.get("status") == "online"
+
+    async def check_colab_health_detailed(self) -> Dict[str, Any]:
+        """Checks if the Colab / ngrok Qwen3-VL server is reachable with exact status code and latency."""
+        import time
+        start_t = time.time()
+        endpoint = f"{self.colab_url}/health"
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=4.0) as client:
                 res = await client.get(
-                    f"{self.colab_url}/health",
+                    endpoint,
                     headers={"ngrok-skip-browser-warning": "1"},
                 )
-                return res.status_code == 200
+                latency = round((time.time() - start_t) * 1000, 1)
+                if res.status_code == 200:
+                    return {
+                        "name": "Qwen3-VL Vision Engine",
+                        "status": "online",
+                        "status_code": 200,
+                        "message": "200 OK - Active & Responsive",
+                        "latency_ms": latency,
+                        "endpoint": self.colab_url,
+                    }
+                elif res.status_code == 404:
+                    return {
+                        "name": "Qwen3-VL Vision Engine",
+                        "status": "404_error",
+                        "status_code": 404,
+                        "message": "404 Not Found - Health endpoint missing on server",
+                        "latency_ms": latency,
+                        "endpoint": self.colab_url,
+                    }
+                else:
+                    return {
+                        "name": "Qwen3-VL Vision Engine",
+                        "status": f"{res.status_code}_error",
+                        "status_code": res.status_code,
+                        "message": f"HTTP {res.status_code} Error",
+                        "latency_ms": latency,
+                        "endpoint": self.colab_url,
+                    }
+        except httpx.ConnectError:
+            return {
+                "name": "Qwen3-VL Vision Engine",
+                "status": "offline",
+                "status_code": None,
+                "message": "Offline (Connection Refused / ngrok Tunnel Down)",
+                "latency_ms": None,
+                "endpoint": self.colab_url,
+            }
+        except httpx.TimeoutException:
+            return {
+                "name": "Qwen3-VL Vision Engine",
+                "status": "timeout",
+                "status_code": None,
+                "message": "Timeout (>4s) - Endpoint not responding",
+                "latency_ms": None,
+                "endpoint": self.colab_url,
+            }
         except Exception as e:
-            logger.warning(f"Colab health check failed: {e}")
-            return False
+            return {
+                "name": "Qwen3-VL Vision Engine",
+                "status": "error",
+                "status_code": None,
+                "message": f"Error: {str(e)}",
+                "latency_ms": None,
+                "endpoint": self.colab_url,
+            }
 
     async def extract_invoice_vlm(self, file_bytes: bytes) -> Dict[str, Any]:
         """Calls Qwen3-VL on Colab with the Base64-encoded PDF/Image.

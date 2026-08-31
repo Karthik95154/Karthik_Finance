@@ -94,6 +94,15 @@ class InvoiceListItemResponse(BaseModel):
     updated_at: datetime
 
 
+class ServiceHealthDetail(BaseModel):
+    name: str
+    status: str  # "online" | "404_error" | "offline" | "connected" | "disconnected" | "degraded" | "error" | "timeout"
+    status_code: Optional[int] = None
+    message: str
+    latency_ms: Optional[float] = None
+    endpoint: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
     status: str
     project: str
@@ -101,4 +110,5 @@ class HealthResponse(BaseModel):
     storage: str
     colab_vlm: Optional[str] = None
     colab_accounting: Optional[str] = None
+    services: Optional[Dict[str, ServiceHealthDetail]] = None
     timestamp: datetime

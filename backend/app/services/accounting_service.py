@@ -40,16 +40,75 @@ class AccountingService:
 
     async def check_health(self) -> bool:
         """Check if Colab Qwen3-4B accounting endpoint is reachable and responsive."""
+        detailed = await self.check_health_detailed()
+        return detailed.get("status") == "online"
+
+    async def check_health_detailed(self) -> Dict[str, Any]:
+        """Check if Colab Qwen3-4B accounting endpoint is reachable with exact status code and latency."""
+        import time
+        start_t = time.time()
+        endpoint = f"{self.base_url}/health"
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=4.0) as client:
                 res = await client.get(
-                    f"{self.base_url}/health",
+                    endpoint,
                     headers={"ngrok-skip-browser-warning": "1"},
                 )
-                return res.status_code == 200
+                latency = round((time.time() - start_t) * 1000, 1)
+                if res.status_code == 200:
+                    return {
+                        "name": "Qwen3-4B Accounting Engine",
+                        "status": "online",
+                        "status_code": 200,
+                        "message": "200 OK - Active & Responsive",
+                        "latency_ms": latency,
+                        "endpoint": self.base_url,
+                    }
+                elif res.status_code == 404:
+                    return {
+                        "name": "Qwen3-4B Accounting Engine",
+                        "status": "404_error",
+                        "status_code": 404,
+                        "message": "404 Not Found - Health endpoint missing on server",
+                        "latency_ms": latency,
+                        "endpoint": self.base_url,
+                    }
+                else:
+                    return {
+                        "name": "Qwen3-4B Accounting Engine",
+                        "status": f"{res.status_code}_error",
+                        "status_code": res.status_code,
+                        "message": f"HTTP {res.status_code} Error",
+                        "latency_ms": latency,
+                        "endpoint": self.base_url,
+                    }
+        except httpx.ConnectError:
+            return {
+                "name": "Qwen3-4B Accounting Engine",
+                "status": "offline",
+                "status_code": None,
+                "message": "Offline (Connection Refused / ngrok Tunnel Down)",
+                "latency_ms": None,
+                "endpoint": self.base_url,
+            }
+        except httpx.TimeoutException:
+            return {
+                "name": "Qwen3-4B Accounting Engine",
+                "status": "timeout",
+                "status_code": None,
+                "message": "Timeout (>4s) - Endpoint not responding",
+                "latency_ms": None,
+                "endpoint": self.base_url,
+            }
         except Exception as e:
-            logger.warning(f"Accounting Colab health check failed: {e}")
-            return False
+            return {
+                "name": "Qwen3-4B Accounting Engine",
+                "status": "error",
+                "status_code": None,
+                "message": f"Error: {str(e)}",
+                "latency_ms": None,
+                "endpoint": self.base_url,
+            }
 
     async def categorize_accounting(
         self,
