@@ -508,8 +508,8 @@ export default function InvoiceWorkspacePage() {
   // Accept AI suggestions into approved fields for all lines
   const handleAcceptAllAccounts = () => {
     const updated = (accountingData.accounting || []).map((acc, idx) => {
-      const id = acc.final_account_id || acc.ai_account_id || `ACC_${idx + 1}`;
-      const name = acc.final_account_name || acc.ai_account_name || "General Expenses";
+      const id = acc.final_account_id || acc.account_id || acc.ai_account_id || `ACC_${idx + 1}`;
+      const name = acc.final_account_name || acc.account_name || acc.ai_account_name || "General Expenses";
       return {
         ...acc,
         approved_account_id: id,
@@ -527,8 +527,8 @@ export default function InvoiceWorkspacePage() {
   const handleAcceptAccount = (index: number) => {
     const updated = [...(accountingData.accounting || [])];
     if (updated[index]) {
-      const id = updated[index].final_account_id || updated[index].ai_account_id || `ACC_${index + 1}`;
-      const name = updated[index].final_account_name || updated[index].ai_account_name || "General Expenses";
+      const id = updated[index].final_account_id || updated[index].account_id || updated[index].ai_account_id || `ACC_${index + 1}`;
+      const name = updated[index].final_account_name || updated[index].account_name || updated[index].ai_account_name || "General Expenses";
       updated[index] = {
         ...updated[index],
         approved_account_id: id,
@@ -576,11 +576,13 @@ export default function InvoiceWorkspacePage() {
           const approvedId =
             item.approved_account_id ||
             item.final_account_id ||
+            item.account_id ||
             item.ai_account_id ||
             `ACC_${idx + 1}`;
           const approvedName =
             item.approved_account_name ||
             item.final_account_name ||
+            item.account_name ||
             item.ai_account_name ||
             "General Expenses";
           return {
@@ -698,7 +700,8 @@ export default function InvoiceWorkspacePage() {
 
   const accountingLines: AccountingLineItem[] =
     accountingData.accounting || [];
-  const tdsResult: TdsResult | undefined = accountingData.tds || undefined;
+  const tdsResultRaw = accountingData.tds_assessment || accountingData.tds || undefined;
+  const tdsResult: TdsResult | undefined = (tdsResultRaw && Object.keys(tdsResultRaw).length > 0) ? tdsResultRaw : (accountingData.tds || undefined);
 
   return (
     <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
@@ -1784,14 +1787,21 @@ export default function InvoiceWorkspacePage() {
                               <td style={{ padding: "8px", color: "var(--text-tertiary)", textAlign: "center" }}>
                                 {acc.line_index || idx + 1}
                               </td>
-                              <td style={{ padding: "8px", fontWeight: "500" }}>
-                                {acc.source_description || formData.line_items?.[idx]?.description || "-"}
+                              <td style={{ padding: "8px" }}>
+                                <div style={{ fontWeight: "500" }}>
+                                  {acc.source_description || formData.line_items?.[idx]?.description || "-"}
+                                </div>
+                                {acc.accounting_reason && (
+                                  <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "4px" }}>
+                                    Reason: {acc.accounting_reason}
+                                  </div>
+                                )}
                               </td>
                               <td style={{ padding: "8px" }}>
                                 <input
                                   type="text"
                                   className="table-input"
-                                  value={acc.approved_account_name || acc.final_account_name || acc.ai_account_name || ""}
+                                  value={acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || ""}
                                   placeholder="Approved Account"
                                   onChange={(e) => {
                                     handleAccountingItemChange(idx, "final_account_name", e.target.value);
@@ -1800,24 +1810,27 @@ export default function InvoiceWorkspacePage() {
                                 />
                               </td>
                               <td style={{ padding: "8px" }}>
-                                <code>{acc.approved_account_id || acc.final_account_id || acc.ai_account_id || "-"}</code>
+                                <code>{acc.approved_account_id || acc.final_account_id || acc.account_id || acc.ai_account_id || "-"}</code>
                               </td>
                               <td style={{ padding: "8px", textAlign: "center" }}>
-                                {acc.ai_confidence !== undefined && acc.ai_confidence !== null ? (
-                                  <span
-                                    className={`badge ${acc.ai_confidence >= 0.85
-                                        ? "badge-success"
-                                        : acc.ai_confidence >= 0.6
-                                          ? "badge-uploaded"
-                                          : "badge-danger"
-                                      }`}
-                                    style={{ fontSize: "11px" }}
-                                  >
-                                    {Math.round(acc.ai_confidence * 100)}%
-                                  </span>
-                                ) : (
-                                  "-"
-                                )}
+                                {(() => {
+                                  const conf = acc.confidence_score ?? acc.ai_confidence;
+                                  return conf !== undefined && conf !== null ? (
+                                    <span
+                                      className={`badge ${conf >= 0.85
+                                          ? "badge-success"
+                                          : conf >= 0.6
+                                            ? "badge-uploaded"
+                                            : "badge-danger"
+                                        }`}
+                                      style={{ fontSize: "11px" }}
+                                    >
+                                      {Math.round(conf * 100)}%
+                                    </span>
+                                  ) : (
+                                    "-"
+                                  );
+                                })()}
                               </td>
                               <td style={{ padding: "8px", textAlign: "center" }}>
                                 {acc.approved_account_id ? (
@@ -1868,14 +1881,38 @@ export default function InvoiceWorkspacePage() {
                       <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
                         9. TDS Analysis (Qwen3-4B)
                       </h3>
-                      {tdsResult.applicable !== null && tdsResult.applicable !== undefined && (
-                        <span
-                          className={`badge ${tdsResult.applicable ? "badge-uploaded" : "badge-success"}`}
-                          style={{ fontSize: "11px" }}
-                        >
-                          {tdsResult.applicable ? "TDS Applicable" : "TDS Not Applicable"}
-                        </span>
-                      )}
+                      {(() => {
+                        const isApp = tdsResult.tds_applicable ?? tdsResult.applicable;
+                        if (isApp === null || isApp === undefined) {
+                          return (
+                            <span
+                              className="badge badge-pending"
+                              style={{ fontSize: "11px", backgroundColor: "#f1f5f9", color: "#475569" }}
+                            >
+                              Not determined by AI / Pending backend validation
+                            </span>
+                          );
+                        }
+                        return (
+                          <span
+                            className={`badge ${isApp ? "badge-uploaded" : "badge-success"}`}
+                            style={{ fontSize: "11px" }}
+                          >
+                            {isApp ? "TDS Applicable" : "TDS Not Applicable"}
+                          </span>
+                        );
+                      })()}
+                      {(() => {
+                        const needsRev = tdsResult.tds_needs_review ?? tdsResult.needs_review;
+                        if (needsRev) {
+                          return (
+                            <span className="badge badge-danger" style={{ fontSize: "11px", marginLeft: "8px" }}>
+                              Review Required
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
 
                     <div
@@ -1891,12 +1928,23 @@ export default function InvoiceWorkspacePage() {
                     >
                       <div>
                         <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          TDS Section
+                          TDS Section / Provision
                         </div>
                         <div style={{ fontWeight: "600", fontSize: "13px" }}>
-                          {tdsResult.tds_section ? `Sec ${tdsResult.tds_section}` : "Not specified"}
+                          {tdsResult.tds_section || tdsResult.tds_provision ? `Sec ${tdsResult.tds_section || tdsResult.tds_provision}` : "Not specified"}
                         </div>
                       </div>
+
+                      {tdsResult.nature_of_payment && (
+                        <div>
+                          <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                            Nature of Payment
+                          </div>
+                          <div style={{ fontWeight: "600", fontSize: "13px" }}>
+                            {tdsResult.nature_of_payment}
+                          </div>
+                        </div>
+                      )}
 
                       <div>
                         <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
@@ -1922,25 +1970,42 @@ export default function InvoiceWorkspacePage() {
 
                       <div>
                         <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          Calculated TDS
+                          AI Proposed TDS
                         </div>
                         <div style={{ fontWeight: "700", fontSize: "13px", color: "var(--accent)" }}>
-                          {tdsResult.calculated_tds_amount !== null && tdsResult.calculated_tds_amount !== undefined
-                            ? `₹${tdsResult.calculated_tds_amount.toLocaleString()}`
+                          {tdsResult.proposed_tds_amount !== null && tdsResult.proposed_tds_amount !== undefined
+                            ? `₹${tdsResult.proposed_tds_amount.toLocaleString()}`
                             : "-"}
                         </div>
                       </div>
 
-                      {tdsResult.reason && (
-                        <div style={{ gridColumn: "1 / -1", marginTop: "4px" }}>
-                          <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "2px" }}>
-                            Model Reasoning
+                      {(tdsResult.calculated_tds_amount !== null && tdsResult.calculated_tds_amount !== undefined) && (
+                        <div>
+                          <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                            Final TDS
                           </div>
-                          <div style={{ fontSize: "12px", color: "var(--text-primary)" }}>
-                            {tdsResult.reason}
+                          <div style={{ fontWeight: "700", fontSize: "13px", color: "var(--success)" }}>
+                            ₹{tdsResult.calculated_tds_amount.toLocaleString()}
                           </div>
                         </div>
                       )}
+
+                      {(() => {
+                        const reason = tdsResult.tds_reasoning ?? tdsResult.reason;
+                        if (reason) {
+                          return (
+                            <div style={{ gridColumn: "1 / -1", marginTop: "4px" }}>
+                              <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "2px" }}>
+                                Model Reasoning
+                              </div>
+                              <div style={{ fontSize: "12px", color: "var(--text-primary)" }}>
+                                {reason}
+                              </div>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
                   </section>
                 )}
