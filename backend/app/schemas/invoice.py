@@ -120,5 +120,6 @@ class HealthResponse(BaseModel):
     storage: str
     colab_vlm: Optional[str] = None
     colab_accounting: Optional[str] = None
+    colab_tds: Optional[str] = None
     services: Optional[Dict[str, ServiceHealthDetail]] = None
     timestamp: datetime

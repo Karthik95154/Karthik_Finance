@@ -353,15 +353,38 @@ class JournalGenerator:
         cess_amt = 0.0
         supply_type = "INTRA_STATE"
 
-        if gst_result:
-            supply_type = gst_result.get("supply_type") or "INTRA_STATE"
-            gst_calc = gst_result.get("calculated") or {}
-            gst_ext = gst_result.get("extracted") or {}
+        effective_gst = gst_result
+        if not effective_gst:
+            from app.services.gst_engine import gst_engine
+            effective_gst = gst_engine.evaluate_gst(inv)
+
+        if effective_gst:
+            supply_type = effective_gst.get("supply_type") or "INTRA_STATE"
+            gst_calc = effective_gst.get("calculated") or {}
+            gst_ext = effective_gst.get("extracted") or {}
             
-            cgst_amt = self._clean_num(gst_calc.get("cgst_amount") or gst_ext.get("cgst_amount")) or 0.0
-            sgst_amt = self._clean_num(gst_calc.get("sgst_amount") or gst_ext.get("sgst_amount")) or 0.0
-            igst_amt = self._clean_num(gst_calc.get("igst_amount") or gst_ext.get("igst_amount")) or 0.0
-            cess_amt = self._clean_num(gst_calc.get("cess_amount") or gst_ext.get("cess_amount")) or 0.0
+            # Authoritatively consume calculated tax if valid, or extracted tax matching supply type
+            if supply_type == "INTER_STATE":
+                igst_amt = self._clean_num(gst_calc.get("igst_amount"))
+                if igst_amt is None or igst_amt == 0.0:
+                    igst_amt = self._clean_num(gst_ext.get("igst_amount")) or self._clean_num(inv.get("igst_amount") or inv.get("igst")) or 0.0
+                cgst_amt = 0.0
+                sgst_amt = 0.0
+            elif supply_type == "INTRA_STATE":
+                cgst_amt = self._clean_num(gst_calc.get("cgst_amount"))
+                if cgst_amt is None or cgst_amt == 0.0:
+                    cgst_amt = self._clean_num(gst_ext.get("cgst_amount")) or self._clean_num(inv.get("cgst_amount") or inv.get("cgst")) or 0.0
+                sgst_amt = self._clean_num(gst_calc.get("sgst_amount"))
+                if sgst_amt is None or sgst_amt == 0.0:
+                    sgst_amt = self._clean_num(gst_ext.get("sgst_amount")) or self._clean_num(inv.get("sgst_amount") or inv.get("sgst")) or 0.0
+                igst_amt = 0.0
+            else:
+                # REVIEW_REQUIRED
+                cgst_amt = self._clean_num(gst_ext.get("cgst_amount")) or self._clean_num(inv.get("cgst_amount") or inv.get("cgst")) or 0.0
+                sgst_amt = self._clean_num(gst_ext.get("sgst_amount")) or self._clean_num(inv.get("sgst_amount") or inv.get("sgst")) or 0.0
+                igst_amt = self._clean_num(gst_ext.get("igst_amount")) or self._clean_num(inv.get("igst_amount") or inv.get("igst")) or 0.0
+
+            cess_amt = self._clean_num(gst_calc.get("cess_amount") or gst_ext.get("cess_amount") or inv.get("cess_amount") or inv.get("cess")) or 0.0
         else:
             cgst_amt = self._clean_num(inv.get("cgst_amount") or inv.get("cgst")) or 0.0
             sgst_amt = self._clean_num(inv.get("sgst_amount") or inv.get("sgst")) or 0.0
@@ -369,13 +392,34 @@ class JournalGenerator:
             cess_amt = self._clean_num(inv.get("cess_amount") or inv.get("cess")) or 0.0
 
         total_extracted_gst = round(cgst_amt + sgst_amt + igst_amt + cess_amt, 2)
+        unitemized_tax_amt = 0.0
+
+        # Unitemized tax: If header has tax_total > 0 and no explicit CGST/SGST/IGST breakdown exists at all,
+        # DO NOT synthesize a fake 50/50 split. Flag transaction for review and book to pending review tax expense
+        # so that journal remains mathematically grounded to actual invoice total obligation without balancing hacks.
         if total_extracted_gst == 0.0 and tax_total is not None and tax_total > 0:
-            total_extracted_gst = round(tax_total, 2)
-            if supply_type == "INTER_STATE":
-                igst_amt = tax_total
-            else:
-                cgst_amt = round(tax_total / 2.0, 2)
-                sgst_amt = round(tax_total - cgst_amt, 2)
+            requires_review = True
+            unitemized_tax_amt = round(tax_total, 2)
+            warnings.append(
+                f"Invoice contains unitemized Tax Total (₹{tax_total:,.2f}) without explicit CGST/SGST/IGST breakdown. "
+                "Review required; synthetic tax split is prohibited."
+            )
+            lines.append(
+                JournalLine(
+                    account_id=STANDARD_ACCOUNTS["INELIGIBLE_TAX"]["account_id"],
+                    account_name="Unitemized Tax (Pending Review)",
+                    line_type="EXPENSE",
+                    debit=unitemized_tax_amt,
+                    credit=0.0,
+                    amount=unitemized_tax_amt,
+                    provenance="DETERMINISTIC",
+                    description=f"Unitemized Tax Total ₹{unitemized_tax_amt:,.2f} awaiting manual tax-type classification",
+                    cost_center=cost_center,
+                    project=project,
+                    department=department,
+                    rule_reference="Review Required - No Fake 50/50 Split",
+                )
+            )
 
         # Authoritative ITC Evaluation Consumption
         itc_status = "ELIGIBLE"
