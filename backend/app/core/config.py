@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     COLAB_ACCOUNTING_API_URL: str = "https://parcel-curtsy-retiring.ngrok-free.dev"
     INFERENCE_TIMEOUT: float = 900.0  # seconds (15 minutes)
 
+    # Groq AI Financial Document Classifier
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "qwen/qwen3.8-27b"
+
     # File Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB
     ALLOWED_MIME_TYPES: List[str] = [

@@ -60,6 +60,11 @@ class InvoiceResponse(BaseModel):
     itc_result: Optional[Dict[str, Any]] = None
     financial_validation_result: Optional[Dict[str, Any]] = None
     journal_entry: Optional[Dict[str, Any]] = None
+    financial_relevance: Optional[str] = None
+    document_type: Optional[str] = None
+    classification_confidence: Optional[float] = None
+    classification_reason: Optional[str] = None
+    classification_model: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -85,6 +90,11 @@ class InvoiceListItemResponse(BaseModel):
     accounting_status: Optional[str] = None
     approval_status: Optional[str] = "PENDING_REVIEW"
     export_status: Optional[str] = "NOT_EXPORTED"
+    financial_relevance: Optional[str] = None
+    document_type: Optional[str] = None
+    classification_confidence: Optional[float] = None
+    classification_reason: Optional[str] = None
+    classification_model: Optional[str] = None
     zoho_bill_id: Optional[str] = None
     zoho_bill_number: Optional[str] = None
     vendor_name: Optional[str] = None

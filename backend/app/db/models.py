@@ -230,6 +230,13 @@ class Invoice(Base):
     email_received_at = Column(DateTime(timezone=True), nullable=True)
     email_message_id = Column(String(255), nullable=True)
 
+    # GPT-OSS Document Classification Fields
+    financial_relevance = Column(String(50), nullable=True, index=True)
+    document_type = Column(String(50), nullable=True, index=True)
+    classification_confidence = Column(Float, nullable=True)
+    classification_reason = Column(Text, nullable=True)
+    classification_model = Column(String(100), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

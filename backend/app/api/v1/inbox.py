@@ -3,13 +3,16 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Invoice, Integration
+from app.core.config import settings
 from app.storage.supabase_storage import storage_service
 from app.services.imap_service import imap_service
 from app.services.invoice_processing import process_invoice_background
+from app.services.document_context import prepare_classification_context
+from app.services.groq_classifier import classify_document, get_unknown_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +21,22 @@ router = APIRouter(prefix="", tags=["Inbox / Ingestion"])
 
 @router.get("/inbox/staged")
 async def get_staged_documents(db: AsyncSession = Depends(get_db)):
-    """Retrieves all staged invoices downloaded from email that are waiting for user review/extraction."""
-    query = select(Invoice).where(Invoice.status == "STAGED").order_by(Invoice.created_at.desc())
+    """Retrieves all staged invoices waiting for review, excluding NOT_FINANCIAL records while preserving FINANCIAL, UNKNOWN, and legacy NULL records."""
+    query = (
+        select(Invoice)
+        .where(
+            Invoice.status == "STAGED",
+            or_(
+                Invoice.financial_relevance != "NOT_FINANCIAL",
+                Invoice.financial_relevance.is_(None),
+            ),
+        )
+        .order_by(Invoice.created_at.desc())
+    )
     result = await db.execute(query)
     staged = result.scalars().all()
     return staged
+
 
 
 @router.post("/inbox/staged/{invoice_id}/process")
@@ -228,6 +242,19 @@ async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(ge
                 
             logger.info("STORAGE UPLOAD = SUCCESS")
             
+            # Prepare classification context and perform AI classification for unique attachment
+            classification_res = None
+            try:
+                ctx = prepare_classification_context(attachment)
+                classification_res = classify_document(ctx)
+                logger.info(f"AI CLASSIFICATION = {classification_res.financial_relevance.value} | {classification_res.document_type.value}")
+            except Exception as class_err:
+                logger.error(f"Classification failed safely for {attachment['filename']}: {class_err}")
+                classification_res = get_unknown_fallback(f"Classification failure: {class_err}")
+
+            rel_val = classification_res.financial_relevance.value if hasattr(classification_res.financial_relevance, "value") else str(classification_res.financial_relevance)
+            type_val = classification_res.document_type.value if hasattr(classification_res.document_type, "value") else str(classification_res.document_type)
+
             # Save record as STAGED invoice
             new_invoice = Invoice(
                 id=invoice_id,
@@ -242,6 +269,11 @@ async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(ge
                 email_sender=attachment["email_sender"],
                 email_received_at=attachment["email_received_at"],
                 email_message_id=attachment["email_message_id"],
+                financial_relevance=rel_val,
+                document_type=type_val,
+                classification_confidence=classification_res.confidence,
+                classification_reason=classification_res.reason,
+                classification_model=getattr(settings, "GROQ_MODEL", "openai/gpt-oss-20b"),
             )
             try:
                 db.add(new_invoice)

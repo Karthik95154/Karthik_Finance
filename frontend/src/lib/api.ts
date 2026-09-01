@@ -815,6 +815,11 @@ export interface StagedDocument {
   email_subject?: string | null;
   email_received_at?: string | null;
   created_at: string;
+  financial_relevance?: string | null;
+  document_type?: string | null;
+  classification_confidence?: number | null;
+  classification_reason?: string | null;
+  classification_model?: string | null;
 }
 
 export interface IMAPSettings {
