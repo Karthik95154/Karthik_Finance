@@ -8,8 +8,8 @@ logger = logging.getLogger(__name__)
 
 
 class AIService:
-    def __init__(self):
-        self.colab_url = settings.COLAB_API_URL.rstrip("/")
+    def __init__(self, base_url: str = None):
+        self.colab_url = (base_url or settings.vl_service_url).strip().rstrip("/")
         self.timeout = float(settings.INFERENCE_TIMEOUT)
 
     async def check_colab_health(self) -> bool:

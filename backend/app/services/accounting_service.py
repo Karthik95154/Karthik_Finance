@@ -35,8 +35,8 @@ class AccountingService:
     """Client for Qwen3-4B Accounting & Tax Reasoning endpoint in Google Colab."""
 
     def __init__(self, base_url: Optional[str] = None, timeout: Optional[float] = None):
-        self.base_url = (base_url or settings.COLAB_ACCOUNTING_API_URL).rstrip("/")
-        self.timeout = timeout or settings.INFERENCE_TIMEOUT
+        self.base_url = (base_url or settings.coa_service_url).strip().rstrip("/")
+        self.timeout = float(timeout or settings.INFERENCE_TIMEOUT)
 
     async def check_health(self) -> bool:
         """Check if Colab Qwen3-4B accounting endpoint is reachable and responsive."""
@@ -46,6 +46,16 @@ class AccountingService:
     async def check_health_detailed(self) -> Dict[str, Any]:
         """Check if Colab Qwen3-4B accounting endpoint is reachable with exact status code and latency."""
         import time
+        if not self.base_url:
+            return {
+                "name": "Qwen3-4B Accounting Engine",
+                "status": "offline",
+                "status_code": None,
+                "message": "COA Service URL not configured",
+                "latency_ms": None,
+                "endpoint": "",
+            }
+
         start_t = time.time()
         endpoint = f"{self.base_url}/health"
         try:
@@ -118,10 +128,14 @@ class AccountingService:
     ) -> Dict[str, Any]:
         """
         Sends complete extracted invoice JSON to Qwen3-4B for line-item accounting
-        classification and TDS analysis.
+        classification.
         """
         if not isinstance(invoice_json, dict) or not invoice_json:
             raise ValueError("invoice_json must be a non-empty dictionary")
+
+        if not self.base_url:
+            logger.warning("[COA-QWEN] COA Service URL not configured. Returning unassigned review lines.")
+            return self._build_unavailable_response(invoice_json, "COA Service URL not configured")
 
         coa = chart_of_accounts or DEFAULT_CHART_OF_ACCOUNTS
         taxes = available_taxes or DEFAULT_AVAILABLE_TAXES
@@ -134,7 +148,7 @@ class AccountingService:
         }
 
         logger.info(
-            f"Sending accounting categorization request to Colab Qwen3-4B ({endpoint}) with timeout={self.timeout}s"
+            f"[COA-QWEN] request started to ({endpoint}) with timeout={self.timeout}s"
         )
 
         try:
@@ -151,46 +165,71 @@ class AccountingService:
             if response.status_code != 200:
                 error_body = response.text[:500]
                 logger.error(
-                    f"Colab accounting API returned status {response.status_code}: {error_body}"
+                    f"[COA-QWEN] API returned status {response.status_code}: {error_body}"
                 )
-                raise RuntimeError(
-                    f"Colab accounting inference error (status {response.status_code}): {error_body}"
-                )
+                return self._build_unavailable_response(invoice_json, f"HTTP {response.status_code}: {error_body}")
 
+            logger.info("[COA-QWEN] response received")
             data = response.json()
             if not isinstance(data, dict):
-                raise ValueError(
-                    f"Malformed response from Colab accounting API: expected dict, got {type(data).__name__}"
-                )
+                logger.error(f"[COA-QWEN] Malformed response type: expected dict, got {type(data).__name__}")
+                return self._build_unavailable_response(invoice_json, f"Malformed response type: {type(data).__name__}")
 
-            # Ensure expected top-level keys are present or initialized
-            if "accounting" not in data:
-                data["accounting"] = []
-            if "tds" not in data:
-                data["tds"] = {}
+            # Ensure expected accounting list is present
+            raw_accounting = data.get("accounting")
+            if not isinstance(raw_accounting, list):
+                logger.error("[COA-QWEN] Response missing 'accounting' list")
+                return self._build_unavailable_response(invoice_json, "Missing 'accounting' list in response")
 
-            logger.info("Successfully received and validated Qwen3-4B accounting output.")
-            return data
+            logger.info("[COA-QWEN] accounting parsed successfully")
+            return {"accounting": raw_accounting}
 
         except httpx.TimeoutException as exc:
             logger.error(
-                f"Colab Qwen3-4B inference timed out after {self.timeout}s: {exc}"
+                f"[COA-QWEN] Inference timed out after {self.timeout}s: {exc}"
             )
-            raise TimeoutError(
-                f"Accounting inference request timed out after {self.timeout} seconds on Colab."
-            ) from exc
+            return self._build_unavailable_response(invoice_json, f"Inference timed out after {self.timeout}s")
 
         except httpx.ConnectError as exc:
             logger.error(
-                f"Failed to connect to Colab accounting server at {self.base_url}: {exc}"
+                f"[COA-QWEN] Failed to connect to server at {self.base_url}: {exc}"
             )
-            raise RuntimeError(
-                f"Colab accounting server at {self.base_url} is unreachable or offline."
-            ) from exc
+            return self._build_unavailable_response(invoice_json, f"Connection refused at {self.base_url}")
 
-        except httpx.HTTPError as exc:
-            logger.error(f"HTTP error communicating with Colab accounting server: {exc}")
-            raise RuntimeError(f"HTTP communication error: {str(exc)}") from exc
+        except Exception as exc:
+            logger.error(f"[COA-QWEN] Error communicating with COA server: {exc}")
+            return self._build_unavailable_response(invoice_json, str(exc))
+
+    def _build_unavailable_response(self, invoice_json: Dict[str, Any], error_reason: str) -> Dict[str, Any]:
+        """
+        Builds explicit review-required records without fabricating account_id or account_name.
+        """
+        line_items = invoice_json.get("line_items") or []
+        fallback = []
+        if line_items:
+            for pos, item in enumerate(line_items, 1):
+                item_dict = item if isinstance(item, dict) else {}
+                desc = item_dict.get("description") or f"Line {pos}"
+                fallback.append({
+                    "line_index": pos,
+                    "source_description": desc,
+                    "account_id": None,
+                    "account_name": None,
+                    "confidence_score": 0.0,
+                    "ai_needs_review": True,
+                    "accounting_reason": f"COA service unavailable: {error_reason}",
+                })
+        else:
+            fallback.append({
+                "line_index": 1,
+                "source_description": invoice_json.get("vendor_name") or "Invoice Expense",
+                "account_id": None,
+                "account_name": None,
+                "confidence_score": 0.0,
+                "ai_needs_review": True,
+                "accounting_reason": f"COA service unavailable: {error_reason}",
+            })
+        return {"accounting": fallback}
 
 
 accounting_service = AccountingService()

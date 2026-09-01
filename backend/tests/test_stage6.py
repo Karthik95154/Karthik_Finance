@@ -274,9 +274,11 @@ def test_10_round_off_treatment():
     inv_pos = {
         "subtotal": 1000.0,
         "tax_total": 180.0,
+        "cgst_amount": 90.0,
+        "sgst_amount": 90.0,
         "round_off": 0.40,
         "total_amount": 1180.40,
-        "line_items": [{"description": "Goods", "taxable_amount": 1000.0}],
+        "line_items": [{"description": "Goods", "taxable_amount": 1000.0, "cgst_amount": 90.0, "sgst_amount": 90.0}],
     }
     acc = {"accounting": [{"line_index": 0, "ai_account_id": "ACC_1", "ai_account_name": "Cloud"}]}
     res_pos = journal_generator.generate_journal(inv_pos, acc)
@@ -288,9 +290,11 @@ def test_10_round_off_treatment():
     inv_neg = {
         "subtotal": 1000.0,
         "tax_total": 180.0,
+        "cgst_amount": 90.0,
+        "sgst_amount": 90.0,
         "round_off": -0.40,
         "total_amount": 1179.60,
-        "line_items": [{"description": "Goods", "taxable_amount": 1000.0}],
+        "line_items": [{"description": "Goods", "taxable_amount": 1000.0, "cgst_amount": 90.0, "sgst_amount": 90.0}],
     }
     res_neg = journal_generator.generate_journal(inv_neg, acc)
     assert res_neg["total_debit"] == 1180.00
@@ -303,9 +307,11 @@ def test_11_discount_treatment():
     invoice_data = {
         "subtotal": 900.0,
         "tax_total": 162.0,
+        "cgst_amount": 81.0,
+        "sgst_amount": 81.0,
         "total_amount": 1062.0,
         "line_items": [
-            {"description": "Item with discount", "quantity": 10, "unit_price": 100.0, "discount": 100.0, "taxable_amount": 900.0}
+            {"description": "Item with discount", "quantity": 10, "unit_price": 100.0, "discount": 100.0, "taxable_amount": 900.0, "cgst_amount": 81.0, "sgst_amount": 81.0}
         ],
     }
     acc = {"accounting": [{"line_index": 0, "ai_account_id": "ACC_3", "ai_account_name": "Office Supplies"}]}
@@ -322,10 +328,12 @@ def test_12_shipping_and_other_charges():
     invoice_data = {
         "subtotal": 1000.0,
         "tax_total": 180.0,
+        "cgst_amount": 90.0,
+        "sgst_amount": 90.0,
         "shipping_charges": 150.0,
         "other_charges": 50.0,
         "total_amount": 1380.0,
-        "line_items": [{"description": "Hardware", "taxable_amount": 1000.0}],
+        "line_items": [{"description": "Hardware", "taxable_amount": 1000.0, "cgst_amount": 90.0, "sgst_amount": 90.0}],
     }
     acc = {"accounting": [{"line_index": 0, "ai_account_id": "ACC_6", "ai_account_name": "Hardware"}]}
 
