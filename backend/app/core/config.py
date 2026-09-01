@@ -84,10 +84,32 @@ class Settings(BaseSettings):
     ZOHO_ACCOUNTS_URL: str = "https://accounts.zoho.in"
     ZOHO_BOOKS_API_BASE_URL: str = "https://www.zohoapis.in/books/v3"
 
-    # Colab Inference Endpoints
+    # Colab / AI Inference Endpoints
+    # Primary variables with backward-compatible fallbacks
+    QWEN_VL_SERVICE_URL: str = ""
+    QWEN_COA_SERVICE_URL: str = ""
+    QWEN_TDS_SERVICE_URL: str = ""
+
+    # Legacy variables
     COLAB_API_URL: str = "https://physiognomically-sane-dexter.ngrok-free.dev"
     COLAB_ACCOUNTING_API_URL: str = "https://parcel-curtsy-retiring.ngrok-free.dev"
+    COLAB_TDS_API_URL: str = ""
     INFERENCE_TIMEOUT: float = 900.0  # seconds (15 minutes)
+
+    @property
+    def vl_service_url(self) -> str:
+        url = self.QWEN_VL_SERVICE_URL or self.COLAB_API_URL or ""
+        return url.strip().rstrip("/")
+
+    @property
+    def coa_service_url(self) -> str:
+        url = self.QWEN_COA_SERVICE_URL or self.COLAB_ACCOUNTING_API_URL or ""
+        return url.strip().rstrip("/")
+
+    @property
+    def tds_service_url(self) -> str:
+        url = self.QWEN_TDS_SERVICE_URL or self.COLAB_TDS_API_URL or ""
+        return url.strip().rstrip("/")
 
     # File Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB

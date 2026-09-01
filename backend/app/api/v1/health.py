@@ -11,6 +11,8 @@ from app.storage.supabase_storage import storage_service
 from app.services.ai_service import ai_service
 from app.services.accounting_service import accounting_service
 
+from app.services.tds_service import tds_service
+
 router = APIRouter(tags=["Health"])
 
 
@@ -77,7 +79,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         endpoint=vlm_detailed.get("endpoint"),
     )
 
-    # 4. Colab Qwen3-4B Accounting Engine Check
+    # 4. Colab Qwen3-4B Accounting / COA Engine Check
     acc_detailed = await accounting_service.check_health_detailed()
     services_map["colab_accounting"] = ServiceHealthDetail(
         name=acc_detailed.get("name", "Qwen3-4B Accounting Engine"),
@@ -88,7 +90,18 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         endpoint=acc_detailed.get("endpoint"),
     )
 
-    # 5. FastAPI Backend Engine
+    # 5. Colab Qwen3-4B TDS Engine Check
+    tds_detailed = await tds_service.check_health_detailed()
+    services_map["colab_tds"] = ServiceHealthDetail(
+        name=tds_detailed.get("name", "Qwen3-4B TDS Engine"),
+        status=tds_detailed.get("status", "offline"),
+        status_code=tds_detailed.get("status_code"),
+        message=tds_detailed.get("message", "Unknown"),
+        latency_ms=tds_detailed.get("latency_ms"),
+        endpoint=tds_detailed.get("endpoint"),
+    )
+
+    # 6. FastAPI Backend Engine
     services_map["backend"] = ServiceHealthDetail(
         name="FastAPI Finance Core",
         status="online",
@@ -102,6 +115,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
     is_core_ok = (db_status == "connected" and storage_status == "connected")
     is_vlm_ok = (vlm_detailed.get("status") == "online")
     is_acc_ok = (acc_detailed.get("status") == "online")
+    is_tds_ok = (tds_detailed.get("status") == "online")
 
     if is_core_ok and is_vlm_ok and is_acc_ok:
         overall_status = "ok"
@@ -117,6 +131,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         storage=storage_status,
         colab_vlm=vlm_detailed.get("message"),
         colab_accounting=acc_detailed.get("message"),
+        colab_tds=tds_detailed.get("message"),
         services=services_map,
         timestamp=datetime.now(timezone.utc),
     )
