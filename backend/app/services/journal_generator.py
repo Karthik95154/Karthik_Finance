@@ -312,8 +312,8 @@ class JournalGenerator:
             acc_info = accounting_list[0] if accounting_list else {}
             approved_acc_id = acc_info.get("approved_account_id") or acc_info.get("final_account_id")
             approved_acc_name = acc_info.get("approved_account_name") or acc_info.get("final_account_name")
-            ai_acc_id = acc_info.get("ai_account_id") or acc_info.get("account_id") or "ACC_3"
-            ai_acc_name = acc_info.get("ai_account_name") or acc_info.get("account_name") or "Office Supplies & Stationery"
+            ai_acc_id = acc_info.get("ai_account_id") or acc_info.get("account_id")
+            ai_acc_name = acc_info.get("ai_account_name") or acc_info.get("account_name") or (f"[Unapproved] {ai_acc_id}" if ai_acc_id else "[Unassigned Expense]")
 
             if approved_acc_id and approved_acc_name:
                 acc_id = approved_acc_id

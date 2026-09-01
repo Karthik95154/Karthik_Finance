@@ -57,7 +57,10 @@ async def test_coa_service_payload_and_response():
         }
         mock_post.return_value = mock_response
 
-        result = await service.categorize_accounting(sample_invoice)
+        result = await service.categorize_accounting(
+            sample_invoice,
+            chart_of_accounts=DEFAULT_CHART_OF_ACCOUNTS,
+        )
 
         # Assert payload was sent with valid keys
         mock_post.assert_called_once()
