@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     # Supabase Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/postgres"
 
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def ensure_asyncpg_dialect(cls, v: Any) -> str:
+        if isinstance(v, str):
+            v_str = v.strip()
+            if v_str.startswith("postgresql+psycopg2://"):
+                return v_str.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+            elif v_str.startswith("postgresql://") and not v_str.startswith("postgresql+asyncpg://"):
+                return v_str.replace("postgresql://", "postgresql+asyncpg://", 1)
+            return v_str
+        return v
+
     # Supabase Storage
     SUPABASE_URL: str = "https://placeholder.supabase.co"
     SUPABASE_SERVICE_ROLE_KEY: str = "placeholder-key"
@@ -84,14 +96,35 @@ class Settings(BaseSettings):
     ZOHO_ACCOUNTS_URL: str = "https://accounts.zoho.in"
     ZOHO_BOOKS_API_BASE_URL: str = "https://www.zohoapis.in/books/v3"
 
-    # Colab Inference Endpoints
+    # Colab / AI Inference Endpoints
+    # Primary variables with backward-compatible fallbacks
+    QWEN_VL_SERVICE_URL: str = ""
+    QWEN_COA_SERVICE_URL: str = ""
+    QWEN_TDS_SERVICE_URL: str = ""
+
+    # Legacy variables
     COLAB_API_URL: str = "https://physiognomically-sane-dexter.ngrok-free.dev"
     COLAB_ACCOUNTING_API_URL: str = "https://parcel-curtsy-retiring.ngrok-free.dev"
+    COLAB_TDS_API_URL: str = ""
     INFERENCE_TIMEOUT: float = 900.0  # seconds (15 minutes)
 
     # Groq AI Financial Document Classifier
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
+    @property
+    def vl_service_url(self) -> str:
+        url = self.QWEN_VL_SERVICE_URL or self.COLAB_API_URL or ""
+        return url.strip().rstrip("/")
+
+    @property
+    def coa_service_url(self) -> str:
+        url = self.QWEN_COA_SERVICE_URL or self.COLAB_ACCOUNTING_API_URL or ""
+        return url.strip().rstrip("/")
+
+    @property
+    def tds_service_url(self) -> str:
+        url = self.QWEN_TDS_SERVICE_URL or self.COLAB_TDS_API_URL or ""
+        return url.strip().rstrip("/")
 
     # File Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB

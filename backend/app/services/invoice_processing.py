@@ -1,5 +1,6 @@
 import logging
 import uuid
+import asyncio
 from datetime import datetime, timezone
 from sqlalchemy import select, delete
 from app.db.database import AsyncSessionLocal
@@ -7,6 +8,8 @@ from app.db.models import Invoice, JournalEntry, JournalLine
 from app.storage.supabase_storage import storage_service
 from app.services.ai_service import ai_service
 from app.services.accounting_service import accounting_service
+from app.services.tds_service import tds_service
+from app.services.tds_engine import tds_engine
 from app.services.gst_engine import gst_engine
 from app.services.itc_engine import itc_engine
 from app.services.financial_validator import financial_validator
@@ -52,7 +55,7 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
 
 async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
     """
-    Runs Stage 3 (Qwen3-4B Accounting & Tax reasoning) and Stage 4-6 (Deterministic GST, ITC,
+    Runs Stage 3 (Qwen3-4B COA & Qwen3-4B/Groq TDS) and Stage 4-6 (Deterministic GST, ITC,
     Financial Validator & Journal Generator) on an existing invoice using its stored extraction.
     DOES NOT call Qwen3-VL again.
     """
@@ -82,41 +85,89 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             invoice.updated_at = datetime.now(timezone.utc)
             await session.commit()
 
-            # Prepare complete effective invoice JSON for Qwen3-4B and GST/ITC
+            # Prepare complete single effective invoice JSON for COA, TDS, GST/ITC
             invoice_payload = get_effective_invoice_data(invoice)
             tenant_id = invoice.tenant_id or "default-tenant-001"
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
             cached_taxes = await master_data_service.get_cached_taxes(tenant_id, session)
 
-            # 1. Call Qwen3-4B Accounting endpoint
-            accounting_result = await accounting_service.categorize_accounting(
+            # 1. Call COA and TDS services concurrently using the EXACT SAME invoice_payload
+            coa_task = accounting_service.categorize_accounting(
                 invoice_json=invoice_payload,
                 chart_of_accounts=cached_coa,
                 available_taxes=cached_taxes,
             )
+            tds_task = tds_service.assess_tds(
+                invoice_json=invoice_payload,
+            )
+
+            coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
+
+            accounting_lines = []
+            if isinstance(coa_res, dict):
+                accounting_lines = coa_res.get("accounting") or []
+            elif isinstance(coa_res, Exception):
+                logger.warning(f"COA service exception for invoice {invoice_id}: {coa_res}")
+                accounting_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
+
+            tds_assessment = {}
+            if isinstance(tds_res, dict):
+                tds_assessment = tds_res.get("tds_assessment") or {}
+            elif isinstance(tds_res, Exception):
+                logger.warning(f"TDS service exception for invoice {invoice_id}: {tds_res}")
+                tds_assessment = tds_service._build_unavailable_response(str(tds_res)).get("tds_assessment", {})
 
             # 2. Call Deterministic Stage 4 GST Engine
             gst_result = gst_engine.evaluate_gst(invoice_payload)
 
             # 3. Call Deterministic Stage 4 ITC Engine
-            itc_result = itc_engine.evaluate_itc(invoice_payload, accounting_result)
+            combined_accounting_context = {
+                "accounting": accounting_lines,
+                "tds_assessment": tds_assessment,
+            }
+            itc_result = itc_engine.evaluate_itc(invoice_payload, combined_accounting_context)
 
             # 4. Call Deterministic Stage 5 Financial Validator
             financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-            # 5. Call Deterministic Stage 6 Journal Generator (Double-Entry General Ledger Preview)
+            # 5. Deterministic Final TDS (Authoritative statutory calculation on subtotal)
+            subtotal = float(invoice_payload.get("subtotal") or 0.0)
+            tds_rate = tds_assessment.get("tds_rate")
+            tds_section = tds_assessment.get("tds_section")
+            tds_provision = tds_assessment.get("tds_provision")
+            tds_nature = tds_assessment.get("nature_of_payment")
+            vendor_pan = invoice_payload.get("vendor_pan")
+
+            final_tds_calc = tds_engine.calculate_tds(
+                section=tds_section,
+                provision=tds_provision,
+                nature_of_payment=tds_nature,
+                base_amount=subtotal,
+                rate=float(tds_rate) if tds_rate is not None else None,
+                vendor_pan=vendor_pan,
+            )
+
+            # Build unified accounting output maintaining clear proposal vs final separation
+            persisted_accounting_output = {
+                "accounting": accounting_lines,
+                "tds_assessment": tds_assessment,
+                "tds_final": final_tds_calc,
+                "tds": final_tds_calc,  # Backward compatibility
+            }
+
+            # 6. Call Deterministic Stage 6 Journal Generator (Double-Entry General Ledger Preview)
             journal_result = journal_generator.generate_journal(
                 invoice_data=invoice_payload,
-                accounting_classification=accounting_result,
+                accounting_classification=persisted_accounting_output,
                 gst_result=gst_result,
                 itc_result=itc_result,
-                tds_result=accounting_result.get("tds") if accounting_result else None,
+                tds_result=final_tds_calc,
                 financial_validation_result=financial_validation_result,
             )
 
             # Persist results (Zero Data Loss)
-            invoice.accounting_output = accounting_result
-            invoice.current_accounting_output = accounting_result
+            invoice.accounting_output = persisted_accounting_output
+            invoice.current_accounting_output = persisted_accounting_output
             invoice.gst_result = gst_result
             invoice.itc_result = itc_result
             invoice.financial_validation_result = financial_validation_result
@@ -127,12 +178,11 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             invoice.updated_at = datetime.now(timezone.utc)
 
             # Calculate average confidence across line items if available
-            line_accounting = accounting_result.get("accounting") or []
-            if isinstance(line_accounting, list) and len(line_accounting) > 0:
+            if isinstance(accounting_lines, list) and len(accounting_lines) > 0:
                 confidences = [
-                    float(item.get("ai_confidence") or 0.0)
-                    for item in line_accounting
-                    if isinstance(item, dict) and item.get("ai_confidence") is not None
+                    float(item.get("confidence_score") if item.get("confidence_score") is not None else (item.get("ai_confidence") or 0.0))
+                    for item in accounting_lines
+                    if isinstance(item, dict) and (item.get("confidence_score") is not None or item.get("ai_confidence") is not None)
                 ]
                 if confidences:
                     invoice.accounting_confidence = round(sum(confidences) / len(confidences), 2)
@@ -157,7 +207,7 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
     """
     Asynchronous background pipeline executing:
     Stage 2: Qwen3-VL Extraction ->
-    Stage 3: Qwen3-4B Accounting Classification & TDS Reasoning ->
+    Stage 3: Qwen3-4B COA & Qwen3-4B TDS Proposal (Concurrent with exact same normalized JSON) ->
     Stage 4: Deterministic GST & ITC Engine ->
     Stage 5: Deterministic Financial Validation / Reconciliation ->
     Stage 6: Deterministic Balanced Journal Generation Preview
@@ -211,13 +261,13 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                         "invoice_date": today_str,
                         "due_date": today_str,
                         "vendor_name": vendor_candidate or "Vendor Invoice",
-                        "vendor_gstin": "",
-                        "vendor_pan": "",
-                        "place_of_supply": "35-Andaman & Nicobar Islands",
+                        "vendor_gstin": "36AABCU9603R1ZM",
+                        "vendor_pan": "AABCU9603R",
+                        "place_of_supply": "36-Telangana",
                         "buyer_name": "Sakshi Finance",
-                        "buyer_gstin": "",
+                        "buyer_gstin": "36AAACH7409R1ZZ",
                         "subtotal": 1000.0,
-                        "tax_amount": 180.0,
+                        "tax_total": 180.0,
                         "total_amount": 1180.0,
                         "cgst_amount": 90.0,
                         "sgst_amount": 90.0,
@@ -234,8 +284,6 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                                 "sgst_rate": 9.0,
                                 "sgst_amount": 90.0,
                                 "total": 1180.0,
-                                "account_id": "ACC_1",
-                                "account_name": "General Expenses",
                             }
                         ],
                     },
@@ -257,80 +305,90 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             invoice.accounting_status = "PROCESSING_ACCOUNTING"
             invoice.updated_at = datetime.now(timezone.utc)
             await session.commit()
-            logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Starting Stage 3 Qwen3-4B accounting...")
+            logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Starting Stage 3 COA & TDS reasoning...")
 
             # 6. Fetch live tenant Chart of Accounts & Taxes
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
             cached_taxes = await master_data_service.get_cached_taxes(tenant_id, session)
 
-            # 7. Call Qwen3-4B Accounting on Colab with graceful fallback
+            # 7. Call COA & TDS concurrently with the EXACT SAME normalized invoice JSON
             invoice_payload = extraction_result.get("data") if isinstance(extraction_result, dict) and "data" in extraction_result else extraction_result
-            accounting_result = None
-            try:
-                accounting_result = await accounting_service.categorize_accounting(
-                    invoice_json=invoice_payload,
-                    chart_of_accounts=cached_coa,
-                    available_taxes=cached_taxes,
-                )
-            except Exception as acc_err:
-                logger.warning(
-                    f"Colab Qwen3-4B accounting unavailable for invoice {invoice_id} ({acc_err}). Initializing default accounting lines."
-                )
-                raw_lines = invoice_payload.get("line_items") or []
-                acct_list = []
-                for idx, line in enumerate(raw_lines, 1):
-                    acct_list.append({
-                        "line_index": idx,
-                        "source_description": line.get("description") or f"Item {idx}",
-                        "ai_account_id": line.get("account_id") or f"ACC_{idx}",
-                        "ai_account_name": line.get("account_name") or "General Expenses",
-                        "approved_account_id": line.get("account_id") or f"ACC_{idx}",
-                        "approved_account_name": line.get("account_name") or "General Expenses",
-                        "final_account_id": line.get("account_id") or f"ACC_{idx}",
-                        "final_account_name": line.get("account_name") or "General Expenses",
-                        "ai_confidence": 0.85,
-                        "reasoning": "Default initial mapping for manual review",
-                    })
-                if not acct_list:
-                    acct_list = [{
-                        "line_index": 1,
-                        "source_description": "General Expenses",
-                        "ai_account_id": "ACC_1",
-                        "ai_account_name": "General Expenses",
-                        "approved_account_id": "ACC_1",
-                        "approved_account_name": "General Expenses",
-                        "final_account_id": "ACC_1",
-                        "final_account_name": "General Expenses",
-                        "ai_confidence": 0.85,
-                        "reasoning": "Default general expense mapping",
-                    }]
-                accounting_result = {
-                    "accounting": acct_list,
-                    "tds": {"applicable": False, "tds_section": None, "calculated_tds_amount": 0.0},
-                }
+
+            coa_task = accounting_service.categorize_accounting(
+                invoice_json=invoice_payload,
+                chart_of_accounts=cached_coa,
+                available_taxes=cached_taxes,
+            )
+            tds_task = tds_service.assess_tds(
+                invoice_json=invoice_payload,
+            )
+
+            coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
+
+            accounting_lines = []
+            if isinstance(coa_res, dict):
+                accounting_lines = coa_res.get("accounting") or []
+            elif isinstance(coa_res, Exception):
+                logger.warning(f"COA service error for invoice {invoice_id}: {coa_res}")
+                accounting_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
+
+            tds_assessment = {}
+            if isinstance(tds_res, dict):
+                tds_assessment = tds_res.get("tds_assessment") or {}
+            elif isinstance(tds_res, Exception):
+                logger.warning(f"TDS service error for invoice {invoice_id}: {tds_res}")
+                tds_assessment = tds_service._build_unavailable_response(str(tds_res)).get("tds_assessment", {})
 
             # 8. Call Deterministic Stage 4 GST Engine
             gst_result = gst_engine.evaluate_gst(invoice_payload)
 
             # 9. Call Deterministic Stage 4 ITC Engine
-            itc_result = itc_engine.evaluate_itc(invoice_payload, accounting_result)
+            combined_accounting_context = {
+                "accounting": accounting_lines,
+                "tds_assessment": tds_assessment,
+            }
+            itc_result = itc_engine.evaluate_itc(invoice_payload, combined_accounting_context)
 
             # 10. Call Deterministic Stage 5 Financial Validator
             financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-            # 11. Call Deterministic Stage 6 Journal Generator
+            # 11. Deterministic Final TDS (Authoritative calculation)
+            subtotal = float(invoice_payload.get("subtotal") or 0.0)
+            tds_rate = tds_assessment.get("tds_rate")
+            tds_section = tds_assessment.get("tds_section")
+            tds_provision = tds_assessment.get("tds_provision")
+            tds_nature = tds_assessment.get("nature_of_payment")
+            vendor_pan = invoice_payload.get("vendor_pan")
+
+            final_tds_calc = tds_engine.calculate_tds(
+                section=tds_section,
+                provision=tds_provision,
+                nature_of_payment=tds_nature,
+                base_amount=subtotal,
+                rate=float(tds_rate) if tds_rate is not None else None,
+                vendor_pan=vendor_pan,
+            )
+
+            persisted_accounting_output = {
+                "accounting": accounting_lines,
+                "tds_assessment": tds_assessment,
+                "tds_final": final_tds_calc,
+                "tds": final_tds_calc,
+            }
+
+            # 12. Call Deterministic Stage 6 Journal Generator
             journal_result = journal_generator.generate_journal(
                 invoice_data=invoice_payload,
-                accounting_classification=accounting_result,
+                accounting_classification=persisted_accounting_output,
                 gst_result=gst_result,
                 itc_result=itc_result,
-                tds_result=accounting_result.get("tds") if accounting_result else None,
+                tds_result=final_tds_calc,
                 financial_validation_result=financial_validation_result,
             )
 
-            # 12. Persist complete accounting, GST/ITC, financial validation, and journal responses
-            invoice.accounting_output = accounting_result
-            invoice.current_accounting_output = accounting_result
+            # 13. Persist complete accounting, GST/ITC, financial validation, and journal responses
+            invoice.accounting_output = persisted_accounting_output
+            invoice.current_accounting_output = persisted_accounting_output
             invoice.gst_result = gst_result
             invoice.itc_result = itc_result
             invoice.financial_validation_result = financial_validation_result
@@ -340,12 +398,11 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             invoice.error_message = None
             invoice.updated_at = datetime.now(timezone.utc)
 
-            line_accounting = accounting_result.get("accounting") or []
-            if isinstance(line_accounting, list) and len(line_accounting) > 0:
+            if isinstance(accounting_lines, list) and len(accounting_lines) > 0:
                 confidences = [
-                    float(item.get("ai_confidence") or 0.0)
-                    for item in line_accounting
-                    if isinstance(item, dict) and item.get("ai_confidence") is not None
+                    float(item.get("confidence_score") if item.get("confidence_score") is not None else (item.get("ai_confidence") or 0.0))
+                    for item in accounting_lines
+                    if isinstance(item, dict) and (item.get("confidence_score") is not None or item.get("ai_confidence") is not None)
                 ]
                 if confidences:
                     invoice.accounting_confidence = round(sum(confidences) / len(confidences), 2)

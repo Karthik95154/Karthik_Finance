@@ -21,6 +21,14 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.PROJECT_NAME} backend...")
+    try:
+        from app.db.database import engine, Base
+        import app.db.models
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables initialized / verified successfully.")
+    except Exception as exc:
+        logger.warning(f"Database table verification error: {exc}")
     yield
     logger.info(f"Shutting down {settings.PROJECT_NAME} backend...")
 
