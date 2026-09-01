@@ -646,16 +646,100 @@ export async function switchDevRole(role: string): Promise<UserProfile> {
   return { id: "dev-user", email: "finance@sakshi.ai", role, tenant_id: "default-tenant-001" };
 }
 
-export async function getZohoStatus(): Promise<ZohoStatusResponse> {
+// Cache storage keys & in-memory caches for seamless page navigations
+const ZOHO_STATUS_CACHE_KEY = "sakshi_zoho_status_cache";
+const ZOHO_MASTER_DATA_CACHE_KEY = "sakshi_zoho_md_cache";
+let inMemoryZohoStatus: ZohoStatusResponse | null = null;
+let inMemoryZohoStatusTime = 0;
+let inMemoryMasterData: ZohoMasterDataSummary | null = null;
+let inMemoryMasterDataTime = 0;
+
+export function getCachedZohoStatus(): ZohoStatusResponse | null {
+  if (inMemoryZohoStatus) return inMemoryZohoStatus;
+  if (typeof window !== "undefined") {
+    try {
+      const raw = sessionStorage.getItem(ZOHO_STATUS_CACHE_KEY);
+      if (raw) {
+        inMemoryZohoStatus = JSON.parse(raw);
+        return inMemoryZohoStatus;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+export function getCachedMasterData(): ZohoMasterDataSummary | null {
+  if (inMemoryMasterData) return inMemoryMasterData;
+  if (typeof window !== "undefined") {
+    try {
+      const raw = sessionStorage.getItem(ZOHO_MASTER_DATA_CACHE_KEY);
+      if (raw) {
+        inMemoryMasterData = JSON.parse(raw);
+        return inMemoryMasterData;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+export function invalidateZohoCache() {
+  inMemoryZohoStatus = null;
+  inMemoryZohoStatusTime = 0;
+  inMemoryMasterData = null;
+  inMemoryMasterDataTime = 0;
+  if (typeof window !== "undefined") {
+    try {
+      sessionStorage.removeItem(ZOHO_STATUS_CACHE_KEY);
+      sessionStorage.removeItem(ZOHO_MASTER_DATA_CACHE_KEY);
+    } catch (_) {}
+  }
+}
+
+export async function getZohoStatus(forceRefresh = false): Promise<ZohoStatusResponse> {
+  const now = Date.now();
+  // Return cached result if fresh (within 20s) and not forced
+  if (!forceRefresh && inMemoryZohoStatus && now - inMemoryZohoStatusTime < 20000) {
+    return inMemoryZohoStatus;
+  }
+
+  // Check sessionStorage fallback if in-memory is empty
+  if (!forceRefresh && !inMemoryZohoStatus && typeof window !== "undefined") {
+    const cached = getCachedZohoStatus();
+    if (cached) {
+      // Return cached immediately and refresh in background
+      fetchFreshZohoStatus().catch(() => {});
+      return cached;
+    }
+  }
+
+  return await fetchFreshZohoStatus();
+}
+
+async function fetchFreshZohoStatus(): Promise<ZohoStatusResponse> {
   const authHeaders = await getAuthHeaders();
-  const res = await fetch(`${API_BASE}/zoho/status`, {
-    headers: authHeaders,
-    cache: "no-store",
-  });
-  if (!res.ok) {
+  try {
+    const res = await fetch(`${API_BASE}/zoho/status`, {
+      headers: authHeaders,
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      const fallback: ZohoStatusResponse = { connected: false, status: "DISCONNECTED" };
+      return fallback;
+    }
+    const data: ZohoStatusResponse = await res.json();
+    inMemoryZohoStatus = data;
+    inMemoryZohoStatusTime = Date.now();
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem(ZOHO_STATUS_CACHE_KEY, JSON.stringify(data));
+        window.dispatchEvent(new CustomEvent("zoho-status-updated", { detail: data }));
+      } catch (_) {}
+    }
+    return data;
+  } catch (err) {
+    if (inMemoryZohoStatus) return inMemoryZohoStatus;
     return { connected: false, status: "DISCONNECTED" };
   }
-  return res.json();
 }
 
 export async function getZohoConnectUrl(accountsServer?: string, redirectUri?: string): Promise<{ auth_url: string; authorization_url?: string; state: string }> {
@@ -687,12 +771,13 @@ export async function getZohoOrganizations(): Promise<ZohoOrganization[]> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to fetch Zoho organizations");
   }
-  return res.json();
+  const data = await res.json();
+  return Array.isArray(data) ? data : data.organizations || [];
 }
 
 export async function selectZohoOrganization(organizationId: string, organizationName?: string): Promise<{ success: boolean; message: string; accounts_synced?: number; taxes_synced?: number; vendors_synced?: number }> {
   const authHeaders = await getAuthHeaders();
-  const res = await fetch(`${API_BASE}/zoho/select-organization`, {
+  let res = await fetch(`${API_BASE}/zoho/select-org`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -701,10 +786,23 @@ export async function selectZohoOrganization(organizationId: string, organizatio
     body: JSON.stringify({ organization_id: organizationId, organization_name: organizationName }),
   });
   if (!res.ok) {
+    res = await fetch(`${API_BASE}/zoho/select-organization`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+      },
+      body: JSON.stringify({ organization_id: organizationId, organization_name: organizationName }),
+    });
+  }
+  if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to select Zoho organization");
   }
-  return res.json();
+  const result = await res.json();
+  invalidateZohoCache();
+  await getZohoStatus(true);
+  return result;
 }
 
 export async function triggerZohoSync(): Promise<{ message: string; chart_of_accounts?: number; tax_rates?: number; vendors?: number; accounts_synced?: number; taxes_synced?: number; vendors_synced?: number }> {
@@ -717,19 +815,73 @@ export async function triggerZohoSync(): Promise<{ message: string; chart_of_acc
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to sync Zoho master data");
   }
-  return res.json();
+  const result = await res.json();
+  invalidateZohoCache();
+  await Promise.allSettled([getZohoStatus(true), getMasterDataSummary(true)]);
+  return result;
 }
 
-export async function getMasterDataSummary(): Promise<ZohoMasterDataSummary> {
+export async function getMasterDataSummary(forceRefresh = false): Promise<ZohoMasterDataSummary> {
+  const now = Date.now();
+  if (!forceRefresh && inMemoryMasterData && now - inMemoryMasterDataTime < 30000) {
+    return inMemoryMasterData;
+  }
+
+  if (!forceRefresh && !inMemoryMasterData && typeof window !== "undefined") {
+    const cached = getCachedMasterData();
+    if (cached && (cached.chart_of_accounts_count > 0 || cached.tax_rates_count > 0 || cached.vendors_count > 0)) {
+      fetchFreshMasterData().catch(() => {});
+      return cached;
+    }
+  }
+
+  return await fetchFreshMasterData();
+}
+
+async function fetchFreshMasterData(): Promise<ZohoMasterDataSummary> {
   const authHeaders = await getAuthHeaders();
-  const res = await fetch(`${API_BASE}/zoho/master-data-summary`, {
-    headers: authHeaders,
-    cache: "no-store",
-  });
-  if (!res.ok) {
+  try {
+    const res = await fetch(`${API_BASE}/zoho/master-data-summary`, {
+      headers: authHeaders,
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return { chart_of_accounts_count: 0, tax_rates_count: 0, vendors_count: 0 };
+    }
+    const data: ZohoMasterDataSummary = await res.json();
+    inMemoryMasterData = data;
+    inMemoryMasterDataTime = Date.now();
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem(ZOHO_MASTER_DATA_CACHE_KEY, JSON.stringify(data));
+      } catch (_) {}
+    }
+    return data;
+  } catch (err) {
+    if (inMemoryMasterData) return inMemoryMasterData;
     return { chart_of_accounts_count: 0, tax_rates_count: 0, vendors_count: 0 };
   }
-  return res.json();
+}
+
+export async function getZohoMasterData(): Promise<{ accounts: any[]; taxes: any[]; vendors: any[] }> {
+  const authHeaders = await getAuthHeaders();
+  try {
+    const res = await fetch(`${API_BASE}/zoho/master-data`, {
+      headers: authHeaders,
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      return { accounts: [], taxes: [], vendors: [] };
+    }
+    const data = await res.json();
+    return {
+      accounts: data.accounts || [],
+      taxes: data.taxes || [],
+      vendors: data.vendors || [],
+    };
+  } catch (err) {
+    return { accounts: [], taxes: [], vendors: [] };
+  }
 }
 
 export async function disconnectZoho(): Promise<{ success: boolean; message: string }> {
@@ -742,7 +894,16 @@ export async function disconnectZoho(): Promise<{ success: boolean; message: str
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to disconnect Zoho");
   }
-  return res.json();
+  const data = await res.json();
+  invalidateZohoCache();
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("zoho-status-updated", {
+        detail: { connected: false, status: "DISCONNECTED" },
+      })
+    );
+  }
+  return data;
 }
 
 export async function approveInvoice(id: string): Promise<Invoice> {

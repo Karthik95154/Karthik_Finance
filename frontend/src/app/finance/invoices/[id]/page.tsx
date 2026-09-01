@@ -12,6 +12,7 @@ import {
   approveInvoice,
   rejectInvoice,
   exportInvoiceToZoho,
+  getZohoMasterData,
   Invoice,
   InvoiceListItem,
   ExtractedInvoiceData,
@@ -256,6 +257,7 @@ export default function InvoiceWorkspacePage() {
   const [financialValidationResult, setFinancialValidationResult] = useState<FinancialValidationResult | null>(null);
   const [journalEntry, setJournalEntry] = useState<JournalEntry | null>(null);
   const [additionalFieldsText, setAdditionalFieldsText] = useState<string>("");
+  const [zohoAccounts, setZohoAccounts] = useState<any[]>([]);
 
   useEffect(() => {
     if (!invoiceId) return;
@@ -263,14 +265,16 @@ export default function InvoiceWorkspacePage() {
     async function loadData() {
       try {
         setLoading(true);
-        const [invData, listData, jPreview] = await Promise.all([
+        const [invData, listData, jPreview, masterData] = await Promise.all([
           getInvoice(invoiceId),
           listInvoices().catch(() => []),
           getJournalPreview(invoiceId).catch(() => null),
+          getZohoMasterData().catch(() => ({ accounts: [], taxes: [], vendors: [] })),
         ]);
 
         setInvoice(invData);
         setWorkflowInvoices(listData);
+        setZohoAccounts(masterData.accounts || []);
         getJournalPreview(invoiceId).then(setJournalPreview).catch(() => null);
 
         // If still in initial stages, route to processing page
@@ -508,18 +512,38 @@ export default function InvoiceWorkspacePage() {
   // Accept AI suggestions into approved fields for all lines
   const handleAcceptAllAccounts = () => {
     const updated = (accountingData.accounting || []).map((acc, idx) => {
-      const id = acc.final_account_id || acc.account_id || acc.ai_account_id || `ACC_${idx + 1}`;
-      const name = acc.final_account_name || acc.account_name || acc.ai_account_name || "General Expenses";
+      let resolvedId = acc.final_account_id || acc.approved_account_id || acc.account_id || acc.ai_account_id;
+      let resolvedName = acc.final_account_name || acc.approved_account_name || acc.account_name || acc.ai_account_name || "General Expenses";
+
+      // If Zoho accounts are available, map to matching Zoho account
+      if (zohoAccounts && zohoAccounts.length > 0) {
+        const match = zohoAccounts.find(
+          (za: any) =>
+            String(za.zoho_account_id) === String(resolvedId) ||
+            String(za.account_name).toLowerCase().trim() === String(resolvedName).toLowerCase().trim() ||
+            String(za.account_code || "").toLowerCase().trim() === String(resolvedId || "").toLowerCase().trim()
+        );
+        if (match) {
+          resolvedId = match.zoho_account_id;
+          resolvedName = match.account_name;
+        } else if (!resolvedId || String(resolvedId).startsWith("ACC_")) {
+          resolvedId = zohoAccounts[0].zoho_account_id;
+          resolvedName = zohoAccounts[0].account_name;
+        }
+      } else if (!resolvedId) {
+        resolvedId = `ACC_${idx + 1}`;
+      }
+
       return {
         ...acc,
-        approved_account_id: id,
-        approved_account_name: name,
-        final_account_id: id,
-        final_account_name: name,
+        approved_account_id: resolvedId,
+        approved_account_name: resolvedName,
+        final_account_id: resolvedId,
+        final_account_name: resolvedName,
       };
     });
     setAccountingData({ ...accountingData, accounting: updated });
-    setActionNotice("Accepted all suggested Chart of Accounts.");
+    setActionNotice("Accepted and approved all Chart of Accounts.");
     setTimeout(() => setActionNotice(null), 3000);
   };
 
@@ -527,14 +551,32 @@ export default function InvoiceWorkspacePage() {
   const handleAcceptAccount = (index: number) => {
     const updated = [...(accountingData.accounting || [])];
     if (updated[index]) {
-      const id = updated[index].final_account_id || updated[index].account_id || updated[index].ai_account_id || `ACC_${index + 1}`;
-      const name = updated[index].final_account_name || updated[index].account_name || updated[index].ai_account_name || "General Expenses";
+      let resolvedId = updated[index].final_account_id || updated[index].approved_account_id || updated[index].account_id || updated[index].ai_account_id;
+      let resolvedName = updated[index].final_account_name || updated[index].approved_account_name || updated[index].account_name || updated[index].ai_account_name || "General Expenses";
+
+      if (zohoAccounts && zohoAccounts.length > 0) {
+        const match = zohoAccounts.find(
+          (za: any) =>
+            String(za.zoho_account_id) === String(resolvedId) ||
+            String(za.account_name).toLowerCase().trim() === String(resolvedName).toLowerCase().trim()
+        );
+        if (match) {
+          resolvedId = match.zoho_account_id;
+          resolvedName = match.account_name;
+        } else if (!resolvedId || String(resolvedId).startsWith("ACC_")) {
+          resolvedId = zohoAccounts[0].zoho_account_id;
+          resolvedName = zohoAccounts[0].account_name;
+        }
+      } else if (!resolvedId) {
+        resolvedId = `ACC_${index + 1}`;
+      }
+
       updated[index] = {
         ...updated[index],
-        approved_account_id: id,
-        approved_account_name: name,
-        final_account_id: id,
-        final_account_name: name,
+        approved_account_id: resolvedId,
+        approved_account_name: resolvedName,
+        final_account_id: resolvedId,
+        final_account_name: resolvedName,
       };
       setAccountingData({ ...accountingData, accounting: updated });
     }
@@ -550,47 +592,67 @@ export default function InvoiceWorkspacePage() {
       const currentLines = [...(accountingData.accounting || [])];
       let updatedLines = currentLines;
       
+      const defaultZohoId = zohoAccounts && zohoAccounts.length > 0 ? zohoAccounts[0].zoho_account_id : "ACC_1";
+      const defaultZohoName = zohoAccounts && zohoAccounts.length > 0 ? zohoAccounts[0].account_name : "General Expenses";
+
       if (!currentLines || currentLines.length === 0) {
         const formItems = formData.line_items || [];
         if (formItems.length > 0) {
           updatedLines = formItems.map((item, idx) => ({
             line_index: idx + 1,
             source_description: item.description || `Item ${idx + 1}`,
-            approved_account_id: `ACC_${idx + 1}`,
-            approved_account_name: "General Expenses",
-            final_account_id: `ACC_${idx + 1}`,
-            final_account_name: "General Expenses",
+            approved_account_id: defaultZohoId,
+            approved_account_name: defaultZohoName,
+            final_account_id: defaultZohoId,
+            final_account_name: defaultZohoName,
           }));
         } else {
           updatedLines = [{
             line_index: 1,
             source_description: "General Expenses",
-            approved_account_id: "ACC_1",
-            approved_account_name: "General Expenses",
-            final_account_id: "ACC_1",
-            final_account_name: "General Expenses",
+            approved_account_id: defaultZohoId,
+            approved_account_name: defaultZohoName,
+            final_account_id: defaultZohoId,
+            final_account_name: defaultZohoName,
           }];
         }
       } else {
         updatedLines = currentLines.map((item, idx) => {
-          const approvedId =
+          let approvedId =
             item.approved_account_id ||
             item.final_account_id ||
             item.account_id ||
-            item.ai_account_id ||
-            `ACC_${idx + 1}`;
-          const approvedName =
+            item.ai_account_id;
+          let approvedName =
             item.approved_account_name ||
             item.final_account_name ||
             item.account_name ||
-            item.ai_account_name ||
-            "General Expenses";
+            item.ai_account_name;
+
+          if (zohoAccounts && zohoAccounts.length > 0) {
+            const match = zohoAccounts.find(
+              (za: any) =>
+                String(za.zoho_account_id) === String(approvedId) ||
+                String(za.account_name).toLowerCase().trim() === String(approvedName || "").toLowerCase().trim()
+            );
+            if (match) {
+              approvedId = match.zoho_account_id;
+              approvedName = match.account_name;
+            } else if (!approvedId || String(approvedId).startsWith("ACC_")) {
+              approvedId = defaultZohoId;
+              approvedName = approvedName || defaultZohoName;
+            }
+          } else if (!approvedId) {
+            approvedId = `ACC_${idx + 1}`;
+            approvedName = approvedName || "General Expenses";
+          }
+
           return {
             ...item,
             approved_account_id: approvedId,
-            approved_account_name: approvedName,
+            approved_account_name: approvedName || "General Expenses",
             final_account_id: approvedId,
-            final_account_name: approvedName,
+            final_account_name: approvedName || "General Expenses",
           };
         });
       }
@@ -638,6 +700,7 @@ export default function InvoiceWorkspacePage() {
       if (updatedJournal) setJournalPreview(updatedJournal);
     } catch (err: any) {
       setError(err.message || "Failed to approve invoice.");
+      throw err;
     } finally {
       setIsApproving(false);
     }
@@ -672,6 +735,12 @@ export default function InvoiceWorkspacePage() {
     try {
       setIsExporting(true);
       setError(null);
+
+      // If not yet approved, automatically approve first
+      if (invoice?.approval_status !== "APPROVED") {
+        await handleApprove();
+      }
+
       const res = await exportInvoiceToZoho(invoiceId);
       setActionNotice(`Successfully exported to Zoho Books! Bill #${res.zoho_bill_number || res.zoho_bill_id}`);
       
@@ -827,7 +896,7 @@ export default function InvoiceWorkspacePage() {
             onClick={handleExport}
             disabled={
               isExporting ||
-              invoice?.approval_status !== "APPROVED" ||
+              isApproving ||
               invoice?.export_status === "EXPORTED"
             }
             className="btn btn-primary"
@@ -837,25 +906,25 @@ export default function InvoiceWorkspacePage() {
               background:
                 invoice?.export_status === "EXPORTED"
                   ? "#34c759"
-                  : invoice?.approval_status === "APPROVED"
-                  ? "linear-gradient(135deg, #0071e3 0%, #005bb5 100%)"
-                  : "var(--border-subtle)",
-              color: invoice?.approval_status === "APPROVED" ? "#ffffff" : "var(--text-tertiary)",
+                  : "linear-gradient(135deg, #0071e3 0%, #005bb5 100%)",
+              color: "#ffffff",
               cursor:
-                invoice?.approval_status === "APPROVED" && invoice?.export_status !== "EXPORTED"
+                invoice?.export_status !== "EXPORTED"
                   ? "pointer"
-                  : "not-allowed",
+                  : "default",
             }}
             title={
-              invoice?.approval_status !== "APPROVED"
-                ? "Must approve invoice with authoritative Chart of Accounts before exporting to Zoho Books"
-                : "Export bill to Zoho Books"
+              invoice?.export_status === "EXPORTED"
+                ? "Already exported to Zoho Books"
+                : "Approve and Export bill to Zoho Books"
             }
           >
             <Send size={13} />
             <span>
               {isExporting
                 ? "Syncing to Zoho..."
+                : isApproving
+                ? "Approving & Syncing..."
                 : invoice?.export_status === "EXPORTED"
                 ? "Exported to Zoho ✓"
                 : "Export to Zoho"}
@@ -1798,16 +1867,53 @@ export default function InvoiceWorkspacePage() {
                                 )}
                               </td>
                               <td style={{ padding: "8px" }}>
-                                <input
-                                  type="text"
-                                  className="table-input"
-                                  value={acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || ""}
-                                  placeholder="Approved Account"
-                                  onChange={(e) => {
-                                    handleAccountingItemChange(idx, "final_account_name", e.target.value);
-                                    handleAccountingItemChange(idx, "approved_account_name", e.target.value);
-                                  }}
-                                />
+                                {zohoAccounts && zohoAccounts.length > 0 ? (
+                                  <select
+                                    className="table-input"
+                                    style={{
+                                      background: "#ffffff",
+                                      border: "1px solid var(--border-subtle)",
+                                      borderRadius: "var(--radius-sm)",
+                                      padding: "6px 8px",
+                                      width: "100%",
+                                      fontSize: "12px",
+                                      fontWeight: "500",
+                                      color: "var(--text-primary)",
+                                    }}
+                                    value={
+                                      zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(acc.approved_account_id || acc.final_account_id || acc.account_id))
+                                        ? String(acc.approved_account_id || acc.final_account_id || acc.account_id)
+                                        : (zohoAccounts.find((za: any) => za.account_name.toLowerCase().trim() === String(acc.approved_account_name || acc.final_account_name || acc.account_name || "").toLowerCase().trim())?.zoho_account_id || "")
+                                    }
+                                    onChange={(e) => {
+                                      const selId = e.target.value;
+                                      const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(selId));
+                                      const selName = match ? match.account_name : selId;
+                                      handleAccountingItemChange(idx, "approved_account_id", selId);
+                                      handleAccountingItemChange(idx, "approved_account_name", selName);
+                                      handleAccountingItemChange(idx, "final_account_id", selId);
+                                      handleAccountingItemChange(idx, "final_account_name", selName);
+                                    }}
+                                  >
+                                    <option value="">-- Select Zoho Account --</option>
+                                    {zohoAccounts.map((za: any) => (
+                                      <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
+                                        {za.account_name} ({za.account_type || "expense"})
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <input
+                                    type="text"
+                                    className="table-input"
+                                    value={acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || ""}
+                                    placeholder="Approved Account"
+                                    onChange={(e) => {
+                                      handleAccountingItemChange(idx, "final_account_name", e.target.value);
+                                      handleAccountingItemChange(idx, "approved_account_name", e.target.value);
+                                    }}
+                                  />
+                                )}
                               </td>
                               <td style={{ padding: "8px" }}>
                                 <code>{acc.approved_account_id || acc.final_account_id || acc.account_id || acc.ai_account_id || "-"}</code>

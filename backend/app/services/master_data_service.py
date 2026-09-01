@@ -90,8 +90,7 @@ class MasterDataService:
         accounts = result.scalars().all()
 
         if not accounts:
-            from app.services.accounting_service import DEFAULT_CHART_OF_ACCOUNTS
-            return DEFAULT_CHART_OF_ACCOUNTS
+            return []
 
         return [
             {
@@ -190,8 +189,7 @@ class MasterDataService:
         taxes = result.scalars().all()
 
         if not taxes:
-            from app.services.accounting_service import DEFAULT_AVAILABLE_TAXES
-            return DEFAULT_AVAILABLE_TAXES
+            return []
 
         return [
             {

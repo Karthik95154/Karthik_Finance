@@ -203,6 +203,7 @@ async def list_zoho_organizations(
 
 
 @router.post("/select-org")
+@router.post("/select-organization")
 async def select_zoho_organization(
     req: SelectOrgRequest,
     current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),

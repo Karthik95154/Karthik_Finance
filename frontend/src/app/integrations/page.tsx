@@ -37,6 +37,8 @@ import {
   disconnectIMAP,
   pollEmails,
   getZohoStatus,
+  getCachedZohoStatus,
+  getCachedMasterData,
   getZohoConnectUrl,
   getZohoOrganizations,
   selectZohoOrganization,
@@ -88,11 +90,11 @@ function IntegrationsContent() {
   });
 
   // ==========================================
-  // Zoho State
+  // Zoho State (Initialized from persistent cache for instant stable rendering)
   // ==========================================
-  const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(null);
-  const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(() => getCachedZohoStatus());
+  const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(() => getCachedMasterData());
+  const [isLoading, setIsLoading] = useState<boolean>(() => !getCachedZohoStatus());
   const [isConnectingZoho, setIsConnectingZoho] = useState<boolean>(false);
   const [isSyncingZoho, setIsSyncingZoho] = useState<boolean>(false);
   const [isDisconnectingZoho, setIsDisconnectingZoho] = useState<boolean>(false);
@@ -112,10 +114,12 @@ function IntegrationsContent() {
   const [masterDataSearch, setMasterDataSearch] = useState<string>("");
 
   // ==========================================
-  // Load All Integration Statuses
+  // Load All Integration Statuses (Non-blocking background refresh)
   // ==========================================
-  const loadAllData = async () => {
-    setIsLoading(true);
+  const loadAllData = async (forceRefresh = false) => {
+    if (forceRefresh || !zohoStatus) {
+      setIsLoading(true);
+    }
     try {
       // 1. Fetch IMAP
       try {
@@ -137,13 +141,13 @@ function IntegrationsContent() {
         console.warn("Could not load IMAP settings:", err);
       }
 
-      // 2. Fetch Zoho
+      // 2. Fetch Zoho (Uses fast cache with background revalidation)
       try {
-        const zoho = await getZohoStatus();
+        const zoho = await getZohoStatus(forceRefresh);
         setZohoStatus(zoho);
         if (zoho.connected) {
           try {
-            const md = await getMasterDataSummary();
+            const md = await getMasterDataSummary(forceRefresh);
             setMasterData(md);
           } catch (_) {}
         }
@@ -156,7 +160,18 @@ function IntegrationsContent() {
   };
 
   useEffect(() => {
-    loadAllData();
+    loadAllData(false);
+
+    // Listen for cross-page zoho status updates
+    const handleStatusUpdate = (e: any) => {
+      if (e.detail) {
+        setZohoStatus(e.detail);
+        if (e.detail.connected) {
+          getMasterDataSummary().then((md) => setMasterData(md)).catch(() => {});
+        }
+      }
+    };
+    window.addEventListener("zoho-status-updated", handleStatusUpdate);
 
     // Check OAuth return params
     const zohoRedirectStatus = searchParams.get("zoho_status");
@@ -169,14 +184,26 @@ function IntegrationsContent() {
         message: `Zoho Books successfully connected${orgName ? ` to ${orgName}` : ""}! Master Chart of Accounts, Tax Rates, and Vendors synchronized.`,
       });
       setActiveTab("zoho");
+      // Clean query string immediately so navigation or refresh doesn't re-trigger
+      if (typeof window !== "undefined") {
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+      loadAllData(true);
     } else if (zohoRedirectStatus === "error") {
       setNotification({
         type: "error",
         message: `Zoho OAuth Connection failed: ${errorDetail || "Authorization was denied or expired."}`,
       });
       setActiveTab("zoho");
+      if (typeof window !== "undefined") {
+        window.history.replaceState({}, "", window.location.pathname);
+      }
     }
-  }, [searchParams]);
+
+    return () => {
+      window.removeEventListener("zoho-status-updated", handleStatusUpdate);
+    };
+  }, []);
 
   // Clear notification banner
   useEffect(() => {
@@ -392,7 +419,7 @@ function IntegrationsContent() {
       subtitle="Corporate Ingestion Pipelines & ERP Connections"
       actions={
         <button
-          onClick={loadAllData}
+          onClick={() => loadAllData(true)}
           className="btn btn-secondary"
           style={{ display: "flex", alignItems: "center", gap: "8px" }}
           disabled={isLoading}

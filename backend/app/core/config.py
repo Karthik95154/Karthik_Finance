@@ -43,14 +43,16 @@ class Settings(BaseSettings):
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
-    def ensure_asyncpg_dialect(cls, v: Any) -> str:
+    def normalize_database_url(cls, v: Any) -> str:
         if isinstance(v, str):
-            v_str = v.strip()
-            if v_str.startswith("postgresql+psycopg2://"):
-                return v_str.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
-            elif v_str.startswith("postgresql://") and not v_str.startswith("postgresql+asyncpg://"):
-                return v_str.replace("postgresql://", "postgresql+asyncpg://", 1)
-            return v_str
+            val = v.strip()
+            if val.startswith("postgresql+psycopg2://"):
+                return val.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+            elif val.startswith("postgresql://"):
+                return val.replace("postgresql://", "postgresql+asyncpg://", 1)
+            elif val.startswith("postgres://"):
+                return val.replace("postgres://", "postgresql+asyncpg://", 1)
+            return val
         return v
 
     # Supabase Storage

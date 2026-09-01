@@ -29,6 +29,8 @@ import {
 } from "lucide-react";
 import {
   getZohoStatus,
+  getCachedZohoStatus,
+  getCachedMasterData,
   getZohoConnectUrl,
   getZohoOrganizations,
   selectZohoOrganization,
@@ -55,11 +57,11 @@ const DATA_CENTERS = [
 function SettingsContent() {
   const searchParams = useSearchParams();
 
-  // Core state
-  const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(null);
+  // Core state (Initialized from cache for instant stable display)
+  const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(() => getCachedZohoStatus());
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(() => getCachedMasterData());
+  const [isLoading, setIsLoading] = useState<boolean>(() => !getCachedZohoStatus());
 
   // Active UI tab for master data tables
   const [activeTab, setActiveTab] = useState<"overview" | "coa" | "taxes" | "vendors">("overview");
@@ -83,12 +85,14 @@ function SettingsContent() {
   // Notifications
   const [notice, setNotice] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
 
-  // 1. Initial Load: Fetch Status, Profile, and Cached Master Data
-  const fetchStatusAndProfile = async () => {
+  // 1. Initial Load: Fetch Status, Profile, and Cached Master Data (Non-blocking)
+  const fetchStatusAndProfile = async (forceRefresh = false) => {
     try {
-      setIsLoading(true);
+      if (forceRefresh || !zohoStatus) {
+        setIsLoading(true);
+      }
       const [statusRes, profileRes] = await Promise.allSettled([
-        getZohoStatus(),
+        getZohoStatus(forceRefresh),
         getCurrentUser(),
       ]);
 
@@ -96,7 +100,7 @@ function SettingsContent() {
         setZohoStatus(statusRes.value);
         if (statusRes.value.connected) {
           try {
-            const md = await getMasterDataSummary();
+            const md = await getMasterDataSummary(forceRefresh);
             setMasterData(md);
           } catch (_) {}
         }
@@ -112,7 +116,18 @@ function SettingsContent() {
   };
 
   useEffect(() => {
-    fetchStatusAndProfile();
+    fetchStatusAndProfile(false);
+
+    // Listen for cross-page zoho status updates
+    const handleStatusUpdate = (e: any) => {
+      if (e.detail) {
+        setZohoStatus(e.detail);
+        if (e.detail.connected) {
+          getMasterDataSummary().then((md) => setMasterData(md)).catch(() => {});
+        }
+      }
+    };
+    window.addEventListener("zoho-status-updated", handleStatusUpdate);
 
     // Check URL parameters for OAuth redirect notices
     const zohoRedirectStatus = searchParams.get("zoho_status");
@@ -124,13 +139,24 @@ function SettingsContent() {
         type: "success",
         message: `Zoho Books successfully connected${orgName ? ` to ${orgName}` : ""}! Master Chart of Accounts, Tax Rates, and Vendors synchronized.`,
       });
+      if (typeof window !== "undefined") {
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+      fetchStatusAndProfile(true);
     } else if (zohoRedirectStatus === "error") {
       setNotice({
         type: "error",
         message: `Zoho OAuth Connection failed: ${errorDetail || "Authorization was denied or expired."}`,
       });
+      if (typeof window !== "undefined") {
+        window.history.replaceState({}, "", window.location.pathname);
+      }
     }
-  }, [searchParams]);
+
+    return () => {
+      window.removeEventListener("zoho-status-updated", handleStatusUpdate);
+    };
+  }, []);
 
   // Derived connection state
   const computedState: ZohoConnectionState = isConnecting

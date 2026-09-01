@@ -120,8 +120,10 @@ class InvoiceExportService:
             if not acct_lines:
                 raise ValueError("Cannot export to Zoho: Invoice has no accounting line items.")
 
-            # Retrieve active synchronized Zoho accounts to strictly validate if available in DB
+            # Retrieve active synchronized Zoho accounts to validate and resolve if available in DB
             valid_zoho_accounts = {}
+            name_to_zoho_id = {}
+            default_expense_id = None
             try:
                 coa_query = select(ChartOfAccount).where(
                     ChartOfAccount.tenant_id == tenant_id,
@@ -130,11 +132,21 @@ class InvoiceExportService:
                 coa_res = await db.execute(coa_query)
                 if coa_res:
                     coa_rows = coa_res.scalars().all()
-                    valid_zoho_accounts = {
-                        str(getattr(a, "zoho_account_id", "")): getattr(a, "account_name", "")
-                        for a in coa_rows
-                        if getattr(a, "zoho_account_id", None)
-                    }
+                    for a in coa_rows:
+                        zid = str(getattr(a, "zoho_account_id", "") or "").strip()
+                        aname = getattr(a, "account_name", "") or ""
+                        acode = getattr(a, "account_code", "") or ""
+                        atype = str(getattr(a, "account_type", "") or "").lower()
+                        if zid:
+                            valid_zoho_accounts[zid] = aname
+                            if aname:
+                                name_to_zoho_id[aname.lower().strip()] = zid
+                            if acode:
+                                name_to_zoho_id[acode.lower().strip()] = zid
+                            if "expense" in atype and not default_expense_id:
+                                default_expense_id = zid
+                    if not default_expense_id and valid_zoho_accounts:
+                        default_expense_id = next(iter(valid_zoho_accounts.keys()))
             except Exception:
                 valid_zoho_accounts = {}
 
@@ -142,16 +154,25 @@ class InvoiceExportService:
             for item in acct_lines:
                 idx = item.get("line_index", 1)
                 approved_acc_id = item.get("approved_account_id") or item.get("final_account_id")
+                approved_acc_name = item.get("approved_account_name") or item.get("final_account_name") or item.get("account_name") or ""
+                
                 if not approved_acc_id or str(approved_acc_id).startswith("ACC_"):
-                    raise ValueError(
-                        f"Cannot export to Zoho: Line item {idx} ('{item.get('source_description') or idx}') has an unmapped/placeholder account '{approved_acc_id}'. "
-                        f"An active Zoho Chart of Accounts account must be selected and approved by Finance before export."
-                    )
+                    if approved_acc_name and str(approved_acc_name).lower().strip() in name_to_zoho_id:
+                        approved_acc_id = name_to_zoho_id[str(approved_acc_name).lower().strip()]
+                    else:
+                        raise ValueError(
+                            f"Cannot export to Zoho: Line item {idx} ('{item.get('source_description') or idx}') has an unmapped/placeholder account '{approved_acc_id}'. "
+                            f"An active Zoho Chart of Accounts account must be selected and approved by Finance before export."
+                        )
+
                 if valid_zoho_accounts and str(approved_acc_id) not in valid_zoho_accounts:
-                    raise ValueError(
-                        f"Cannot export to Zoho: Line item {idx} account '{approved_acc_id}' is not in the synchronized active Zoho Chart of Accounts. "
-                        f"Please sync COA in integrations and select a valid Zoho account."
-                    )
+                    if approved_acc_name and str(approved_acc_name).lower().strip() in name_to_zoho_id:
+                        approved_acc_id = name_to_zoho_id[str(approved_acc_name).lower().strip()]
+                    else:
+                        raise ValueError(
+                            f"Cannot export to Zoho: Line item {idx} account '{approved_acc_id}' is not in the synchronized active Zoho Chart of Accounts. "
+                            f"Please sync COA in integrations and select a valid Zoho account."
+                        )
                 acct_map[idx] = str(approved_acc_id)
 
             # 8. Resolve Supply Type & TDS Configuration

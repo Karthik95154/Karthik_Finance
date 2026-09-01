@@ -137,8 +137,8 @@ class AccountingService:
             logger.warning("[COA-QWEN] COA Service URL not configured. Returning unassigned review lines.")
             return self._build_unavailable_response(invoice_json, "COA Service URL not configured")
 
-        coa = chart_of_accounts or DEFAULT_CHART_OF_ACCOUNTS
-        taxes = available_taxes or DEFAULT_AVAILABLE_TAXES
+        coa = chart_of_accounts if chart_of_accounts is not None else []
+        taxes = available_taxes if available_taxes is not None else []
 
         endpoint = f"{self.base_url}/api/infer/categorize-accounting"
         payload = {
