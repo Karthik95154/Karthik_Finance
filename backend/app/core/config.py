@@ -110,6 +110,9 @@ class Settings(BaseSettings):
     COLAB_TDS_API_URL: str = ""
     INFERENCE_TIMEOUT: float = 900.0  # seconds (15 minutes)
 
+    # Groq AI Financial Document Classifier
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "qwen/qwen3.8-27b"
     @property
     def vl_service_url(self) -> str:
         url = self.QWEN_VL_SERVICE_URL or self.COLAB_API_URL or ""

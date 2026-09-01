@@ -222,12 +222,25 @@ def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str
                 logger.info(f"  MIME ATTACHMENTS FOUND = {len(parts_list)}")
                 mime_parse_time_ms += (time.perf_counter() - start_mime) * 1000.0
                 
-                # Walk through MIME parts to find attachments
+                # Walk through MIME parts to find attachments and email body
+                email_body_text = ""
                 for index, part in enumerate(parts_list):
                     part_content_type = part.get_content_type()
                     content_disposition = part.get("Content-Disposition", "")
                     
                     if part.get_content_maintype() == "multipart":
+                        continue
+                        
+                    # Capture email body (plain text preferred)
+                    if part_content_type in ("text/plain", "text/html") and "attachment" not in content_disposition.lower():
+                        try:
+                            decoded_body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                            if part_content_type == "text/plain":
+                                email_body_text = decoded_body  # Prefer plain text
+                            elif not email_body_text:
+                                email_body_text = decoded_body  # Fallback to HTML if no plain text yet
+                        except Exception as e:
+                            logger.warning(f"  Failed to decode email body part: {e}")
                         continue
                     
                     raw_filename = part.get_filename()
@@ -288,6 +301,7 @@ def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str
                         "email_sender": sender,
                         "email_received_at": received_date_utc,
                         "email_message_id": message_id,
+                        "email_body": email_body_text.strip(),
                         "filename": decoded_filename,
                         "mime_type": part_content_type,
                         "file_bytes": content_bytes,

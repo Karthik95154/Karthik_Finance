@@ -279,9 +279,29 @@ export default function InboxPage() {
                         </div>
                       </td>
                       <td style={{ padding: "16px 20px", verticalAlign: "top" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: "7px", fontWeight: "500", color: "var(--text-primary)", marginBottom: "4px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "7px", fontWeight: "500", color: "var(--text-primary)", marginBottom: "4px", flexWrap: "wrap" }}>
                           <FileText size={13} color="var(--accent)" />
                           <span>{doc.file_name}</span>
+                          {doc.financial_relevance === "UNKNOWN" && (
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "3px",
+                                fontSize: "10.5px",
+                                fontWeight: "600",
+                                color: "#b45309",
+                                backgroundColor: "#fef3c7",
+                                border: "1px solid #fde68a",
+                                padding: "1px 6px",
+                                borderRadius: "4px",
+                                marginLeft: "6px",
+                              }}
+                              title={doc.classification_reason || "AI could not confidently classify this document. Manual review required."}
+                            >
+                              <AlertCircle size={10} color="#b45309" /> ⚠ UNCERTAIN
+                            </span>
+                          )}
                         </div>
                         <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
                           {formatSize(doc.file_size || 0)} · {doc.mime_type}
