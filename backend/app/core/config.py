@@ -41,6 +41,18 @@ class Settings(BaseSettings):
     # Supabase Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/postgres"
 
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def ensure_asyncpg_dialect(cls, v: Any) -> str:
+        if isinstance(v, str):
+            v_str = v.strip()
+            if v_str.startswith("postgresql+psycopg2://"):
+                return v_str.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+            elif v_str.startswith("postgresql://") and not v_str.startswith("postgresql+asyncpg://"):
+                return v_str.replace("postgresql://", "postgresql+asyncpg://", 1)
+            return v_str
+        return v
+
     # Supabase Storage
     SUPABASE_URL: str = "https://placeholder.supabase.co"
     SUPABASE_SERVICE_ROLE_KEY: str = "placeholder-key"
