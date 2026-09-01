@@ -1,4 +1,5 @@
 import logging
+import re
 import urllib.parse
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -253,14 +254,50 @@ class ZohoClientService:
         connection: ZohoConnection,
         db: AsyncSession,
     ) -> List[Dict[str, Any]]:
-        """Fetches tax rates & tax authorities from Zoho Books."""
+        """Fetches tax rates, tax groups & tax authorities from Zoho Books."""
         res = await self._make_authorized_request(
             connection=connection,
             db=db,
             method="GET",
             endpoint_path="settings/taxes",
         )
-        return res.get("taxes", [])
+        all_taxes = list(res.get("taxes", []))
+
+        # Include Tax Groups (Crucial for Indian GST Intra-State CGST+SGST groups e.g. GST18, GST12, GST5, GST28)
+        for tg in res.get("tax_groups", []):
+            tg_id = str(tg.get("tax_group_id") or tg.get("tax_id"))
+            tg_name = tg.get("tax_group_name") or tg.get("tax_name")
+            tg_pct = float(
+                tg.get("tax_group_percentage")
+                if tg.get("tax_group_percentage") is not None
+                else tg.get("tax_percentage", 0.0)
+            )
+            all_taxes.append({
+                "tax_id": tg_id,
+                "tax_name": tg_name,
+                "tax_percentage": tg_pct,
+                "tax_type": "tax_group",
+                "is_value_added": tg.get("is_value_added", True),
+            })
+
+        return all_taxes
+
+    async def get_tax_exemptions(
+        self,
+        connection: ZohoConnection,
+        db: AsyncSession,
+    ) -> List[Dict[str, Any]]:
+        """Fetches tax exemptions from Zoho Books settings."""
+        try:
+            res = await self._make_authorized_request(
+                connection=connection,
+                db=db,
+                method="GET",
+                endpoint_path="settings/taxexemptions",
+            )
+            return res.get("tax_exemptions", [])
+        except Exception:
+            return []
 
     async def get_bill_editpage(
         self,
@@ -290,6 +327,19 @@ class ZohoClientService:
         )
         return res.get("contacts", [])
 
+    def _normalize_name(self, name: Optional[str]) -> str:
+        """Normalizes company/vendor names for reliable matching."""
+        if not name:
+            return ""
+        cleaned = re.sub(r"[^A-Za-z0-9\s]", " ", name).lower()
+        suffixes = [
+            "private limited", "pvt ltd", "pvt", "limited", "ltd", "llp",
+            "inc", "corp", "corporation", "enterprises", "solutions", "systems", "services"
+        ]
+        for s in suffixes:
+            cleaned = re.sub(r"\b" + s + r"\b", "", cleaned)
+        return re.sub(r"\s+", " ", cleaned).strip()
+
     async def search_vendor(
         self,
         connection: ZohoConnection,
@@ -298,27 +348,70 @@ class ZohoClientService:
         pan: Optional[str] = None,
         vendor_name: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Searches for existing vendor contact by GSTIN, PAN, or Contact Name."""
-        # 1. Search by name or keyword
-        search_query = gstin or vendor_name
-        if search_query:
+        """
+        Searches for existing vendor contact by GSTIN, PAN, or Contact/Company Name.
+        Strictly requires a genuine match — NEVER returns arbitrary contacts.
+        """
+        clean_gst = re.sub(r"[^A-Za-z0-9]", "", gstin).upper().strip() if gstin else None
+        clean_pan = re.sub(r"[^A-Za-z0-9]", "", pan).upper().strip() if pan else None
+        norm_input_name = self._normalize_name(vendor_name) if vendor_name else None
+
+        # 1. Search by GSTIN if provided
+        if clean_gst:
             res = await self._make_authorized_request(
                 connection=connection,
                 db=db,
                 method="GET",
                 endpoint_path="contacts",
-                params={"contact_type": "vendor", "search_text": search_query},
+                params={"contact_type": "vendor", "search_text": clean_gst},
+            )
+            for c in res.get("contacts", []):
+                contact_gst = re.sub(r"[^A-Za-z0-9]", "", c.get("gst_no") or "").upper().strip()
+                if contact_gst and contact_gst == clean_gst:
+                    logger.info(f"Resolved Zoho vendor by GSTIN match: {c.get('contact_name')} ({c.get('contact_id')})")
+                    return c
+
+        # 2. Search by Vendor Name if provided
+        if vendor_name:
+            res = await self._make_authorized_request(
+                connection=connection,
+                db=db,
+                method="GET",
+                endpoint_path="contacts",
+                params={"contact_type": "vendor", "search_text": vendor_name[:50]},
             )
             contacts = res.get("contacts", [])
             for c in contacts:
-                # Exact match check
-                if gstin and c.get("gst_no") == gstin:
-                    return c
-                if vendor_name and c.get("contact_name", "").lower() == vendor_name.lower():
-                    return c
-            if contacts:
-                return contacts[0]
+                c_name = (c.get("contact_name") or "").strip()
+                c_comp = (c.get("company_name") or "").strip()
 
+                # Exact name check
+                if vendor_name.strip().lower() in (c_name.lower(), c_comp.lower()):
+                    logger.info(f"Resolved Zoho vendor by exact name match: {c_name} ({c.get('contact_id')})")
+                    return c
+
+                # Normalized name check (e.g. 'Aravalli Software Systems Pvt Ltd' vs 'Aravalli Software Systems')
+                if norm_input_name and (self._normalize_name(c_name) == norm_input_name or self._normalize_name(c_comp) == norm_input_name):
+                    logger.info(f"Resolved Zoho vendor by normalized name match: {c_name} ({c.get('contact_id')})")
+                    return c
+
+        # 3. Search by PAN if provided
+        if clean_pan:
+            res = await self._make_authorized_request(
+                connection=connection,
+                db=db,
+                method="GET",
+                endpoint_path="contacts",
+                params={"contact_type": "vendor", "search_text": clean_pan},
+            )
+            for c in res.get("contacts", []):
+                contact_pan = re.sub(r"[^A-Za-z0-9]", "", c.get("pan_no") or "").upper().strip()
+                if contact_pan and contact_pan == clean_pan:
+                    logger.info(f"Resolved Zoho vendor by PAN match: {c.get('contact_name')} ({c.get('contact_id')})")
+                    return c
+
+        # No confident match found — Return None to allow dynamic vendor creation
+        logger.info(f"No existing Zoho vendor matched for '{vendor_name}' (GSTIN: {gstin}).")
         return None
 
     async def create_vendor(
@@ -331,30 +424,82 @@ class ZohoClientService:
         email: Optional[str] = None,
         phone: Optional[str] = None,
         address: Optional[str] = None,
+        state_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Creates a new Vendor Contact in Zoho Books."""
+        """Creates a new Vendor Contact in Zoho Books with proper GST state classification."""
         payload: Dict[str, Any] = {
             "contact_name": vendor_name,
             "company_name": vendor_name,
             "contact_type": "vendor",
         }
-        if gstin:
-            payload["gst_no"] = gstin
+
+        # Normalize state to valid 2-letter Zoho state code (e.g. "TS", "MH", "KA", "TN", "AD", "DL")
+        from app.services.gst_engine import normalize_indian_state, validate_gstin
+        zoho_state_code, numeric_state_code, full_state_name = normalize_indian_state(
+            state_input=state_name,
+            gstin=gstin,
+        )
+
+        # Validate GSTIN format before passing to Zoho API
+        is_valid_gst, clean_gst = validate_gstin(gstin)
+
+        if is_valid_gst and clean_gst:
+            payload["gst_no"] = clean_gst
             payload["gst_treatment"] = "business_gst"
+        else:
+            payload["gst_treatment"] = "business_none"
+
+        # Zoho Books India Contact API strictly requires place_of_contact to be the 2-letter Zoho state code (e.g. "TS", "MH")
+        if zoho_state_code:
+            payload["place_of_contact"] = zoho_state_code
+
         if pan:
-            payload["pan_no"] = pan
+            clean_pan = re.sub(r"[^A-Za-z0-9]", "", pan).upper().strip()
+            if len(clean_pan) == 10:
+                payload["pan_no"] = clean_pan
         if email:
             payload["email"] = email
         if phone:
             payload["phone"] = phone
+
+        billing_addr: Dict[str, Any] = {"country": "India"}
         if address:
-            payload["billing_address"] = {"address": address}
+            billing_addr["address"] = address
+        if full_state_name:
+            billing_addr["state"] = full_state_name
+        if zoho_state_code:
+            billing_addr["state_code"] = zoho_state_code
+        payload["billing_address"] = billing_addr
 
         res = await self._make_authorized_request(
             connection=connection,
             db=db,
             method="POST",
             endpoint_path="contacts",
+            json_data=payload,
+        )
+        return res.get("contact", {})
+
+    async def update_vendor(
+        self,
+        connection: ZohoConnection,
+        db: AsyncSession,
+        contact_id: str,
+        vendor_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Updates an existing Contact in Zoho Books."""
+        payload = dict(vendor_payload)
+        if "place_of_contact" in payload:
+            from app.services.gst_engine import normalize_indian_state
+            zoho_code, _, _ = normalize_indian_state(state_input=payload["place_of_contact"])
+            if zoho_code:
+                payload["place_of_contact"] = zoho_code
+
+        res = await self._make_authorized_request(
+            connection=connection,
+            db=db,
+            method="PUT",
+            endpoint_path=f"contacts/{contact_id}",
             json_data=payload,
         )
         return res.get("contact", {})

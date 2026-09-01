@@ -48,62 +48,252 @@ GST_STATE_CODES: Dict[str, str] = {
     "99": "Centre Jurisdiction",
 }
 
-# Reverse lookup dictionary for state names to 2-digit codes
+# Reverse lookup dictionary for state names & common aliases to 2-digit numeric GST codes
 STATE_NAME_TO_CODE: Dict[str, str] = {
+    # 01 Jammu & Kashmir
     "jammu and kashmir": "01",
     "jammu & kashmir": "01",
+    "jammu": "01",
+    "kashmir": "01",
+    "j&k": "01",
+    "jk": "01",
+    # 02 Himachal Pradesh
     "himachal pradesh": "02",
+    "himachal": "02",
+    "hp": "02",
+    # 03 Punjab
     "punjab": "03",
+    "pb": "03",
+    # 04 Chandigarh
     "chandigarh": "04",
+    "ch": "04",
+    # 05 Uttarakhand
     "uttarakhand": "05",
     "uttaranchal": "05",
+    "uk": "05",
+    "ua": "05",
+    # 06 Haryana
     "haryana": "06",
+    "hr": "06",
+    # 07 Delhi
     "delhi": "07",
     "new delhi": "07",
+    "nct of delhi": "07",
+    "dl": "07",
+    # 08 Rajasthan
     "rajasthan": "08",
+    "rj": "08",
+    # 09 Uttar Pradesh
     "uttar pradesh": "09",
     "up": "09",
+    # 10 Bihar
     "bihar": "10",
+    "br": "10",
+    "bh": "10",
+    # 11 Sikkim
     "sikkim": "11",
+    "sk": "11",
+    # 12 Arunachal Pradesh
     "arunachal pradesh": "12",
+    "arunachal": "12",
+    "ar": "12",
+    # 13 Nagaland
     "nagaland": "13",
+    "nl": "13",
+    # 14 Manipur
     "manipur": "14",
+    "mn": "14",
+    # 15 Mizoram
     "mizoram": "15",
+    "mz": "15",
+    # 16 Tripura
     "tripura": "16",
+    "tr": "16",
+    # 17 Meghalaya
     "meghalaya": "17",
+    "ml": "17",
+    # 18 Assam
     "assam": "18",
+    "as": "18",
+    # 19 West Bengal
     "west bengal": "19",
     "bengal": "19",
     "wb": "19",
+    # 20 Jharkhand
     "jharkhand": "20",
+    "jh": "20",
+    # 21 Odisha
     "odisha": "21",
     "orissa": "21",
+    "od": "21",
+    "or": "21",
+    # 22 Chhattisgarh
     "chhattisgarh": "22",
+    "chattisgarh": "22",
+    "cg": "22",
+    "ct": "22",
+    # 23 Madhya Pradesh
     "madhya pradesh": "23",
     "mp": "23",
+    # 24 Gujarat
     "gujarat": "24",
-    "daman and diu": "25",
+    "gj": "24",
+    # 25 & 26 Dadra & Nagar Haveli and Daman & Diu
+    "daman and diu": "26",
+    "daman & diu": "26",
     "dadra and nagar haveli": "26",
+    "dadra & nagar haveli": "26",
+    "dadra & nagar haveli and daman & diu": "26",
+    "dadra and nagar haveli and daman and diu": "26",
+    "dn": "26",
+    "dd": "26",
+    "dnh": "26",
+    # 27 Maharashtra
     "maharashtra": "27",
+    "mh": "27",
+    # 29 Karnataka
     "karnataka": "29",
+    "ka": "29",
+    # 30 Goa
     "goa": "30",
+    "ga": "30",
+    # 31 Lakshadweep
     "lakshadweep": "31",
+    "lakshadweep islands": "31",
+    "ld": "31",
+    # 32 Kerala
     "kerala": "32",
+    "kl": "32",
+    # 33 Tamil Nadu
     "tamil nadu": "33",
     "tamilnadu": "33",
     "tn": "33",
+    # 34 Puducherry
     "puducherry": "34",
     "pondicherry": "34",
+    "py": "34",
+    "pd": "34",
+    # 35 Andaman & Nicobar Islands
     "andaman and nicobar": "35",
     "andaman & nicobar": "35",
+    "andaman and nicobar islands": "35",
+    "andaman & nicobar islands": "35",
+    "an": "35",
+    # 36 Telangana
     "telangana": "36",
     "ts": "36",
     "tg": "36",
+    # 37 Andhra Pradesh
     "andhra pradesh": "37",
     "andhra": "37",
+    "ad": "37",
     "ap": "37",
+    # 38 Ladakh
     "ladakh": "38",
+    "la": "38",
+    "lk": "38",
+    # 97 Other Territory
+    "other territory": "97",
+    "ot": "97",
 }
+
+# Zoho Books India Official 2-letter State Code Mapping
+GST_NUMERIC_TO_ZOHO_CODE: Dict[str, str] = {
+    "01": "JK",  # Jammu & Kashmir
+    "02": "HP",  # Himachal Pradesh
+    "03": "PB",  # Punjab
+    "04": "CH",  # Chandigarh
+    "05": "UK",  # Uttarakhand
+    "06": "HR",  # Haryana
+    "07": "DL",  # Delhi
+    "08": "RJ",  # Rajasthan
+    "09": "UP",  # Uttar Pradesh
+    "10": "BR",  # Bihar
+    "11": "SK",  # Sikkim
+    "12": "AR",  # Arunachal Pradesh
+    "13": "NL",  # Nagaland
+    "14": "MN",  # Manipur
+    "15": "MZ",  # Mizoram
+    "16": "TR",  # Tripura
+    "17": "ML",  # Meghalaya
+    "18": "AS",  # Assam
+    "19": "WB",  # West Bengal
+    "20": "JH",  # Jharkhand
+    "21": "OD",  # Odisha
+    "22": "CG",  # Chhattisgarh
+    "23": "MP",  # Madhya Pradesh
+    "24": "GJ",  # Gujarat
+    "25": "DN",  # Daman & Diu
+    "26": "DN",  # Dadra & Nagar Haveli and Daman & Diu
+    "27": "MH",  # Maharashtra
+    "28": "AD",  # Andhra Pradesh (Old)
+    "29": "KA",  # Karnataka
+    "30": "GA",  # Goa
+    "31": "LD",  # Lakshadweep
+    "32": "KL",  # Kerala
+    "33": "TN",  # Tamil Nadu
+    "34": "PY",  # Puducherry / Pondicherry
+    "35": "AN",  # Andaman & Nicobar Islands
+    "36": "TS",  # Telangana (Zoho Books India official code is TS)
+    "37": "AD",  # Andhra Pradesh (Zoho Books India official code is AD)
+    "38": "LA",  # Ladakh
+    "97": "OT",  # Other Territory
+}
+
+
+def normalize_indian_state(
+    state_input: Optional[str] = None,
+    gstin: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Normalizes arbitrary Indian state representations (e.g. 'Telangana', 'TG', 'TS', '36',
+    'Maharashtra', 'MH', '27', 'Karnataka', 'KA', 'Andhra Pradesh', 'AP', 'AD', etc.) or GSTIN
+    into standard Zoho Books India representations.
+
+    Returns:
+        (zoho_state_code, numeric_gst_code, full_state_name)
+        Example for Telangana: ("TS", "36", "Telangana")
+        Example for Maharashtra: ("MH", "27", "Maharashtra")
+        Example for Andhra Pradesh: ("AD", "37", "Andhra Pradesh")
+    """
+    numeric_code: Optional[str] = None
+
+    # 1. Try resolving from state_input if provided
+    if state_input and isinstance(state_input, str):
+        clean_input = state_input.strip().lower()
+        # Direct numeric check (e.g. "36" or "27")
+        if clean_input in GST_STATE_CODES:
+            numeric_code = clean_input
+        # Lookup in alias dictionary
+        elif clean_input in STATE_NAME_TO_CODE:
+            numeric_code = STATE_NAME_TO_CODE[clean_input]
+        else:
+            # Check if input starts with a known numeric code e.g. "36 - Telangana" or contains parentheses
+            match_num = re.search(r"\b(0[1-9]|[1-3][0-9]|97)\b", clean_input)
+            if match_num and match_num.group(1) in GST_STATE_CODES:
+                numeric_code = match_num.group(1)
+            else:
+                # Fuzzy word matching for compound state names
+                for name, code in STATE_NAME_TO_CODE.items():
+                    if len(name) > 3 and (name in clean_input or clean_input in name):
+                        numeric_code = code
+                        break
+
+    # 2. Fallback to extracting from GSTIN if state_input didn't resolve
+    if not numeric_code and gstin and isinstance(gstin, str):
+        cleaned_gst = re.sub(r"[^A-Za-z0-9]", "", gstin).upper().strip()
+        if len(cleaned_gst) >= 2:
+            gst_prefix = cleaned_gst[:2]
+            if gst_prefix in GST_STATE_CODES:
+                numeric_code = gst_prefix
+
+    if numeric_code and numeric_code in GST_STATE_CODES:
+        full_name = GST_STATE_CODES[numeric_code]
+        zoho_code = GST_NUMERIC_TO_ZOHO_CODE.get(numeric_code, "TS")
+        return zoho_code, numeric_code, full_name
+
+    return None, None, None
+
 
 def validate_gstin(gstin: Optional[str]) -> Tuple[bool, Optional[str]]:
     """
@@ -137,6 +327,7 @@ def resolve_state_from_text(text: Optional[str]) -> Tuple[Optional[str], Optiona
     """
     if not text or not isinstance(text, str):
         return None, None
+
 
     cleaned = text.strip()
 

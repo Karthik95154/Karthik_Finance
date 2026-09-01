@@ -16,6 +16,25 @@ from app.services.journal_generator import journal_generator
 logger = logging.getLogger(__name__)
 
 
+def to_zoho_state_code(code_or_name: Optional[str]) -> Optional[str]:
+    """
+    Normalizes a state code or name into Zoho's accepted 2-digit GST state code (e.g. '36', '27', '29', '07').
+    Ensures length <= 4 characters for Zoho API compliance.
+    """
+    if not code_or_name:
+        return None
+    val = str(code_or_name).strip()
+    if val.isdigit() and len(val) == 2:
+        return val
+    if len(val) <= 3 and val.isalpha():
+        return val.upper()
+    from app.services.gst_engine import STATE_NAME_TO_CODE
+    resolved = STATE_NAME_TO_CODE.get(val.lower())
+    if resolved:
+        return resolved
+    return val[:2]
+
+
 class InvoiceExportService:
     """
     Manages pre-validation, vendor resolution, idempotent Bill creation with reconciliation,
@@ -73,13 +92,11 @@ class InvoiceExportService:
         ):
             raise ValueError("Invoice cannot be exported without an approved, balanced General Ledger journal entry.")
 
-        # 4. Check Date Validity
+        # 4. Check Date Validity & Authoritative Working Data
         from app.core.date_utils import parse_and_normalize_date, validate_invoice_due_dates
-        vlm_data_check = {}
-        if isinstance(invoice.current_vlm_output, dict):
-            vlm_data_check = invoice.current_vlm_output.get("data") or invoice.current_vlm_output
-        elif isinstance(invoice.raw_vlm_output, dict):
-            vlm_data_check = invoice.raw_vlm_output.get("data") or invoice.raw_vlm_output
+        from app.services.invoice_processing import get_effective_invoice_data
+        
+        vlm_data_check = get_effective_invoice_data(invoice)
 
         raw_inv_date = vlm_data_check.get("invoice_date")
         raw_due_date = vlm_data_check.get("due_date")
@@ -198,17 +215,26 @@ class InvoiceExportService:
                     db=db,
                 )
 
-            # 9. Resolve Vendor Contact in Zoho
-            vendor_contact = await zoho_client_service.search_vendor(
-                connection=connection,
-                db=db,
-                gstin=vendor_gstin,
-                pan=vendor_pan,
-                vendor_name=vendor_name,
-            )
+            # 9. Resolve Vendor Contact in Zoho (Strict matching, zero arbitrary fallback)
+            explicit_vendor_id = vlm_data.get("zoho_vendor_id")
+            vendor_contact = None
+            if explicit_vendor_id:
+                vendor_contact = {"contact_id": str(explicit_vendor_id)}
 
             if not vendor_contact:
-                logger.info(f"Vendor '{vendor_name}' not found in Zoho. Creating new vendor contact...")
+                vendor_contact = await zoho_client_service.search_vendor(
+                    connection=connection,
+                    db=db,
+                    gstin=vendor_gstin,
+                    pan=vendor_pan,
+                    vendor_name=vendor_name,
+                )
+
+            supplier_state_name = gst_eval.get("supplier_state_name")
+            pos_state_name = gst_eval.get("place_of_supply_state_name")
+
+            if not vendor_contact:
+                logger.info(f"Vendor '{vendor_name}' not matched in Zoho. Creating new vendor contact...")
                 vendor_contact = await zoho_client_service.create_vendor(
                     connection=connection,
                     db=db,
@@ -218,15 +244,64 @@ class InvoiceExportService:
                     email=vlm_data.get("vendor_email"),
                     phone=vlm_data.get("vendor_phone"),
                     address=vlm_data.get("vendor_address"),
+                    state_name=supplier_state_name,
                 )
+            elif vendor_contact.get("contact_id") and supplier_state_name:
+                # If existing vendor contact lacks state / place_of_contact, update it
+                contact_place = vendor_contact.get("place_of_contact")
+                contact_gst = vendor_contact.get("gst_no")
+                if not contact_place or (vendor_gstin and not contact_gst):
+                    try:
+                        update_payload: Dict[str, Any] = {}
+                        if not contact_place and supplier_state_name:
+                            from app.services.gst_engine import normalize_indian_state
+                            zoho_st, _, _ = normalize_indian_state(state_input=supplier_state_name, gstin=vendor_gstin)
+                            if zoho_st:
+                                update_payload["place_of_contact"] = zoho_st
+                        if vendor_gstin and not contact_gst:
+                            from app.services.gst_engine import validate_gstin
+                            is_valid_gst, clean_gst = validate_gstin(vendor_gstin)
+                            if is_valid_gst and clean_gst:
+                                update_payload["gst_no"] = clean_gst
+                                update_payload["gst_treatment"] = "business_gst"
+                        if update_payload:
+                            await zoho_client_service.update_vendor(
+                                connection=connection,
+                                db=db,
+                                contact_id=vendor_contact["contact_id"],
+                                vendor_payload=update_payload,
+                            )
+                    except Exception as upd_err:
+                        logger.warning(f"Could not update vendor place_of_contact in Zoho: {upd_err}")
 
             vendor_id = vendor_contact.get("contact_id")
             if not vendor_id:
-                raise RuntimeError(f"Could not resolve or create Zoho vendor contact for '{vendor_name}'.")
+                raise ValueError(
+                    f"Cannot export to Zoho: Vendor '{vendor_name}' (GSTIN: {vendor_gstin or 'N/A'}) "
+                    f"could not be confidently matched or created in Zoho Books. "
+                    f"Please click 'Add Vendor to Zoho' or check vendor details on the review workspace before exporting."
+                )
 
             # 10. Format Bill Line Items using STRICTLY approved accounts and dynamic GST & TDS taxes
             raw_items = vlm_data.get("line_items") or []
             bill_line_items = []
+            is_rcm = bool(gst_eval.get("is_reverse_charge") or vlm_data.get("is_reverse_charge"))
+
+            # Fallback invoice-level tax percentage if line-level rates are omitted
+            inv_subtotal = float(vlm_data.get("subtotal") or vlm_data.get("total_amount") or 0.0)
+            inv_tax_total = float(
+                vlm_data.get("tax_total")
+                or (
+                    float(vlm_data.get("cgst_amount") or 0.0)
+                    + float(vlm_data.get("sgst_amount") or 0.0)
+                    + float(vlm_data.get("igst_amount") or 0.0)
+                )
+            )
+            inv_default_tax_rate = (
+                round((inv_tax_total / inv_subtotal) * 100, 1)
+                if inv_subtotal > 0 and inv_tax_total > 0
+                else 0.0
+            )
 
             if raw_items:
                 for idx, item in enumerate(raw_items, 1):
@@ -234,14 +309,45 @@ class InvoiceExportService:
                     if not approved_account_id:
                         raise ValueError(f"Line item {idx} lacks an approved Zoho Chart of Accounts ID.")
 
-                    taxable_amount = float(item.get("taxable_amount") or 0.0)
+                    taxable_amount = float(item.get("taxable_amount") or item.get("total") or 0.0)
                     qty = float(item.get("quantity") or 1.0)
-                    rate = float(item.get("unit_price") or taxable_amount or 1.0)
+                    rate = float(
+                        item.get("unit_price")
+                        or item.get("rate")
+                        or (taxable_amount / qty if qty > 0 and taxable_amount > 0 else taxable_amount)
+                        or 1.0
+                    )
 
+                    # Extract line-level tax rate
                     cgst_rate = float(item.get("cgst_rate") or 0.0)
                     sgst_rate = float(item.get("sgst_rate") or 0.0)
                     igst_rate = float(item.get("igst_rate") or 0.0)
-                    line_tax_rate = (igst_rate if supply_type == "INTER_STATE" and igst_rate > 0 else (cgst_rate + sgst_rate)) or float(item.get("gst_rate") or item.get("tax_rate") or 0.0)
+                    explicit_tax_rate = float(item.get("gst_rate") or item.get("tax_rate") or 0.0)
+
+                    if supply_type == "INTER_STATE":
+                        line_tax_rate = igst_rate or (cgst_rate + sgst_rate) or explicit_tax_rate
+                    else:
+                        line_tax_rate = (cgst_rate + sgst_rate) or igst_rate or explicit_tax_rate
+
+                    # If line rates are 0, try computing from line tax amounts
+                    if line_tax_rate <= 0 and taxable_amount > 0:
+                        line_tax_amt = (
+                            float(item.get("cgst_amount") or 0.0)
+                            + float(item.get("sgst_amount") or 0.0)
+                            + float(item.get("igst_amount") or 0.0)
+                            or float(item.get("tax_amount") or 0.0)
+                        )
+                        if line_tax_amt > 0:
+                            line_tax_rate = round((line_tax_amt / taxable_amount) * 100, 1)
+
+                    has_explicit_tax_spec = any(
+                        item.get(k) is not None
+                        for k in ["cgst_rate", "sgst_rate", "igst_rate", "gst_rate", "tax_rate", "cgst_amount", "sgst_amount", "igst_amount", "tax_amount"]
+                    )
+
+                    # Only fallback to overall invoice tax rate if NO tax fields were present at all on this line
+                    if not has_explicit_tax_spec and line_tax_rate <= 0 and inv_default_tax_rate > 0:
+                        line_tax_rate = inv_default_tax_rate
 
                     tax_id = None
                     if line_tax_rate > 0:
@@ -251,6 +357,11 @@ class InvoiceExportService:
                             supply_type=supply_type,
                             db=db,
                         )
+                        if not tax_id:
+                            raise ValueError(
+                                f"Cannot export to Zoho: Line item {idx} has a taxable GST rate of {line_tax_rate}% ({supply_type}), "
+                                f"but no matching tax or tax group was found in Zoho Books. Please sync taxes in Integrations."
+                            )
 
                     line_dict: Dict[str, Any] = {
                         "account_id": approved_account_id,
@@ -258,8 +369,25 @@ class InvoiceExportService:
                         "rate": rate,
                         "quantity": qty,
                     }
+
+                    # Zoho India GST tax requirement: Specify either Tax, Tax Exemption, or Reverse Charge
                     if tax_id:
                         line_dict["tax_id"] = tax_id
+                    elif line_tax_rate == 0.0:
+                        zero_tax_id = await master_data_service.get_zoho_tax_for_line(
+                            tenant_id=tenant_id,
+                            tax_percentage=0.0,
+                            supply_type=supply_type,
+                            db=db,
+                        )
+                        if zero_tax_id:
+                            line_dict["tax_id"] = zero_tax_id
+                        else:
+                            line_dict["tax_exemption_code"] = "NON_GST_SUPPLY"
+
+                    if is_rcm:
+                        line_dict["is_reverse_charge_applied"] = True
+
                     if zoho_tds_tax_id:
                         line_dict["tds_tax_id"] = zoho_tds_tax_id
 
@@ -275,12 +403,43 @@ class InvoiceExportService:
                 if not approved_account_id:
                     raise ValueError("Invoice lacks an approved Zoho Chart of Accounts ID.")
 
+                tax_id = None
+                if inv_default_tax_rate > 0:
+                    tax_id = await master_data_service.get_zoho_tax_for_line(
+                        tenant_id=tenant_id,
+                        tax_percentage=inv_default_tax_rate,
+                        supply_type=supply_type,
+                        db=db,
+                    )
+                    if not tax_id:
+                        raise ValueError(
+                            f"Cannot export to Zoho: Invoice has a taxable GST rate of {inv_default_tax_rate}% ({supply_type}), "
+                            f"but no matching tax or tax group was found in Zoho Books. Please sync taxes in Integrations."
+                        )
+
                 line_dict = {
                     "account_id": approved_account_id,
                     "description": f"Invoice {invoice_num} Expenses",
-                    "rate": total_amt,
+                    "rate": inv_subtotal if inv_subtotal > 0 else total_amt,
                     "quantity": 1.0,
                 }
+                if tax_id:
+                    line_dict["tax_id"] = tax_id
+                else:
+                    zero_tax_id = await master_data_service.get_zoho_tax_for_line(
+                        tenant_id=tenant_id,
+                        tax_percentage=0.0,
+                        supply_type=supply_type,
+                        db=db,
+                    )
+                    if zero_tax_id:
+                        line_dict["tax_id"] = zero_tax_id
+                    else:
+                        line_dict["tax_exemption_code"] = "NON_GST_SUPPLY"
+
+                if is_rcm:
+                    line_dict["is_reverse_charge_applied"] = True
+
                 if zoho_tds_tax_id:
                     line_dict["tds_tax_id"] = zoho_tds_tax_id
                 bill_line_items.append(line_dict)
@@ -292,6 +451,29 @@ class InvoiceExportService:
                 "due_date": due_date,
                 "line_items": bill_line_items,
             }
+
+            supplier_state_code = to_zoho_state_code(gst_eval.get("supplier_state_code") or gst_eval.get("supplier_state_name"))
+            pos_state_code = to_zoho_state_code(gst_eval.get("place_of_supply_state_code") or gst_eval.get("place_of_supply_state_name") or gst_eval.get("buyer_state_code"))
+
+            if supplier_state_code:
+                bill_payload["source_of_supply"] = supplier_state_code
+            if pos_state_code:
+                bill_payload["destination_of_supply"] = pos_state_code
+
+            if vendor_gstin:
+                from app.services.gst_engine import validate_gstin
+                is_valid_gst, clean_gst = validate_gstin(vendor_gstin)
+                if is_valid_gst and clean_gst:
+                    bill_payload["gst_treatment"] = "business_gst"
+                    bill_payload["gst_no"] = clean_gst
+                else:
+                    bill_payload["gst_treatment"] = "business_none"
+            else:
+                bill_payload["gst_treatment"] = "business_none"
+
+            if is_rcm:
+                bill_payload["is_reverse_charge_applied"] = True
+                bill_payload["is_reverse_charge"] = True
 
             # Header metadata (Terms, Reference Number, Notes)
             payment_terms = vlm_data.get("payment_terms")
@@ -333,7 +515,12 @@ class InvoiceExportService:
             # If still not found, create new Bill in Zoho
             if not bill_id:
                 try:
-                    logger.info(f"Submitting Bill {invoice_num} to Zoho Books...")
+                    # Safe payload logging (sanitized, no secrets)
+                    logger.info(
+                        f"Submitting Bill to Zoho Books [Tenant: {tenant_id}, Invoice: {invoice_num}]: "
+                        f"Vendor ID: {vendor_id}, Date: {invoice_date}, Lines: {len(bill_line_items)}, "
+                        f"Line Config: {[{'account_id': l.get('account_id'), 'rate': l.get('rate'), 'qty': l.get('quantity'), 'tax_id': l.get('tax_id'), 'tax_exemption_code': l.get('tax_exemption_code'), 'tds_tax_id': l.get('tds_tax_id'), 'rcm': l.get('is_reverse_charge_applied')} for l in bill_line_items]}"
+                    )
                     created_bill = await zoho_client_service.create_bill(
                         connection=connection,
                         db=db,

@@ -10,9 +10,14 @@ import {
   listInvoices,
   getJournalPreview,
   approveInvoice,
+  approveJournal,
+  approveTds,
   rejectInvoice,
   exportInvoiceToZoho,
   getZohoMasterData,
+  getInvoiceVendorStatus,
+  addVendorToZoho,
+  InvoiceVendorStatusResponse,
   Invoice,
   InvoiceListItem,
   ExtractedInvoiceData,
@@ -240,6 +245,8 @@ export default function InvoiceWorkspacePage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isCategorizing, setIsCategorizing] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
+  const [isApprovingJournal, setIsApprovingJournal] = useState(false);
+  const [isApprovingTds, setIsApprovingTds] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [rejectModalOpen, setRejectModalOpen] = useState(false);
@@ -258,6 +265,13 @@ export default function InvoiceWorkspacePage() {
   const [journalEntry, setJournalEntry] = useState<JournalEntry | null>(null);
   const [additionalFieldsText, setAdditionalFieldsText] = useState<string>("");
   const [zohoAccounts, setZohoAccounts] = useState<any[]>([]);
+  const [showRawJsonModal, setShowRawJsonModal] = useState<boolean>(false);
+  const [copiedJson, setCopiedJson] = useState<boolean>(false);
+  const [warningModalOpen, setWarningModalOpen] = useState<boolean>(false);
+  const [activeWarnings, setActiveWarnings] = useState<string[]>([]);
+  const [vendorStatus, setVendorStatus] = useState<InvoiceVendorStatusResponse | null>(null);
+  const [vendorModalOpen, setVendorModalOpen] = useState<boolean>(false);
+  const [isAddingVendor, setIsAddingVendor] = useState<boolean>(false);
 
   useEffect(() => {
     if (!invoiceId) return;
@@ -276,6 +290,7 @@ export default function InvoiceWorkspacePage() {
         setWorkflowInvoices(listData);
         setZohoAccounts(masterData.accounts || []);
         getJournalPreview(invoiceId).then(setJournalPreview).catch(() => null);
+        getInvoiceVendorStatus(invoiceId).then(setVendorStatus).catch(() => null);
 
         // If still in initial stages, route to processing page
         if (
@@ -462,7 +477,7 @@ export default function InvoiceWorkspacePage() {
     }
   };
 
-  // Save changes handler (persists both current VLM data and accounting classifications)
+  // Save changes handler (persists authoritative current VLM data and accounting classifications, triggers re-validation)
   const handleSaveChanges = async () => {
     try {
       setIsSaving(true);
@@ -492,20 +507,149 @@ export default function InvoiceWorkspacePage() {
         accountingData
       );
       setInvoice(updated);
-      if (updated.gst_result) setGstResult(updated.gst_result);
-      if (updated.itc_result) setItcResult(updated.itc_result);
-      if (updated.financial_validation_result) setFinancialValidationResult(updated.financial_validation_result);
-      if (updated.journal_entry) setJournalEntry(updated.journal_entry);
+      if (updated.current_accounting_output) {
+        setAccountingData(updated.current_accounting_output);
+      }
+      setGstResult(updated.gst_result || null);
+      setItcResult(updated.itc_result || null);
+      setFinancialValidationResult(updated.financial_validation_result || null);
+      setJournalEntry(updated.journal_entry || null);
       setSaveSuccess(true);
 
-      // Refresh journal preview with saved changes
-      getJournalPreview(invoiceId).then(setJournalPreview).catch(() => null);
+      // Check results for descriptive feedback
+      const hasErrors =
+        updated.financial_validation_result?.overall_status === "MISMATCH" ||
+        (updated.journal_entry &&
+          !updated.journal_entry.is_balanced &&
+          updated.journal_entry.difference !== 0);
+      const hasWarnings =
+        updated.itc_result?.status === "REVIEW_REQUIRED" ||
+        updated.gst_result?.validation_status === "GST_MISMATCH" ||
+        (updated.financial_validation_result?.warnings &&
+          updated.financial_validation_result.warnings.length > 0);
 
-      setTimeout(() => setSaveSuccess(false), 3000);
+      if (hasErrors) {
+        setActionNotice("⚠ Changes saved. Please review mathematical discrepancies or unbalanced journal.");
+      } else if (hasWarnings) {
+        setActionNotice("⚠ Changes saved with advisory statutory warnings.");
+      } else {
+        setActionNotice("✓ Invoice changes saved and re-validated successfully!");
+      }
+
+      // Refresh journal preview & vendor status with saved changes
+      getJournalPreview(invoiceId).then(setJournalPreview).catch(() => null);
+      getInvoiceVendorStatus(invoiceId).then(setVendorStatus).catch(() => null);
+
+      setTimeout(() => {
+        setSaveSuccess(false);
+        setActionNotice(null);
+      }, 5000);
     } catch (err: any) {
       setError(err.message || "Failed to save changes.");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // Explicit Add Vendor to Zoho Handler
+  const handleAddVendorToZoho = async () => {
+    if (!invoiceId) return;
+    try {
+      setIsAddingVendor(true);
+      setError(null);
+      const res = await addVendorToZoho(invoiceId);
+      setActionNotice(`✓ Vendor '${formData.vendor_name || "Vendor"}' successfully added to Zoho Books! (ID: ${res.contact_id})`);
+      setVendorStatus({
+        invoice_id: invoiceId,
+        is_zoho_connected: true,
+        match_status: "MATCHED",
+        invoice_vendor: {
+          vendor_name: formData.vendor_name,
+          vendor_gstin: formData.vendor_gstin,
+          vendor_pan: formData.vendor_pan,
+          vendor_address: formData.vendor_address,
+          vendor_phone: formData.vendor_phone,
+          vendor_email: formData.vendor_email,
+        },
+        matched_vendor: {
+          contact_id: res.contact_id,
+          contact_name: formData.vendor_name,
+          gst_no: formData.vendor_gstin,
+          pan_no: formData.vendor_pan,
+        },
+        requires_action: false,
+      });
+      setVendorModalOpen(false);
+      setTimeout(() => setActionNotice(null), 5000);
+    } catch (err: any) {
+      setError(err.message || "Failed to add vendor to Zoho Books.");
+    } finally {
+      setIsAddingVendor(false);
+    }
+  };
+
+  // Real Journal Approval Handler
+  const handleApproveJournal = async () => {
+    if (!invoiceId) return;
+    try {
+      setIsApprovingJournal(true);
+      setError(null);
+      const res = await approveJournal(invoiceId);
+      if (res.journal_entry) {
+        setJournalEntry(res.journal_entry);
+      } else {
+        setJournalEntry((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "APPROVED",
+                approval_status: "APPROVED",
+                approved_by: res.approved_by,
+                approved_at: res.approved_at,
+              }
+            : null
+        );
+      }
+      setInvoice((prev) =>
+        prev
+          ? {
+              ...prev,
+              journal_entry: res.journal_entry || prev.journal_entry,
+            }
+          : null
+      );
+      setActionNotice("General Ledger journal approved successfully!");
+      setTimeout(() => setActionNotice(null), 5000);
+    } catch (err: any) {
+      setError(err.message || "Failed to approve General Ledger journal");
+    } finally {
+      setIsApprovingJournal(false);
+    }
+  };
+
+  // Real TDS Approval Handler
+  const handleApproveTds = async () => {
+    if (!invoiceId) return;
+    try {
+      setIsApprovingTds(true);
+      setError(null);
+      const res = await approveTds(invoiceId);
+      if (res.tds) {
+        setAccountingData((prev) => ({
+          ...prev,
+          tds: res.tds,
+          tds_assessment: res.tds,
+        }));
+      }
+      if (res.journal_entry) {
+        setJournalEntry(res.journal_entry);
+      }
+      setActionNotice("Statutory TDS assessment approved successfully!");
+      setTimeout(() => setActionNotice(null), 5000);
+    } catch (err: any) {
+      setError(err.message || "Failed to approve TDS assessment");
+    } finally {
+      setIsApprovingTds(false);
     }
   };
 
@@ -515,7 +659,6 @@ export default function InvoiceWorkspacePage() {
       let resolvedId = acc.final_account_id || acc.approved_account_id || acc.account_id || acc.ai_account_id;
       let resolvedName = acc.final_account_name || acc.approved_account_name || acc.account_name || acc.ai_account_name || "General Expenses";
 
-      // If Zoho accounts are available, map to matching Zoho account
       if (zohoAccounts && zohoAccounts.length > 0) {
         const match = zohoAccounts.find(
           (za: any) =>
@@ -582,128 +725,82 @@ export default function InvoiceWorkspacePage() {
     }
   };
 
-  // Real Approval Action Handler
-  const handleApprove = async () => {
+  // Execute authenticated backend invoice approval
+  const executeBackendApproval = async () => {
     try {
       setIsApproving(true);
       setError(null);
-
-      // 1. Ensure all line items have Finance-approved Chart of Accounts populated
-      const currentLines = [...(accountingData.accounting || [])];
-      let updatedLines = currentLines;
-      
-      const defaultZohoId = zohoAccounts && zohoAccounts.length > 0 ? zohoAccounts[0].zoho_account_id : "ACC_1";
-      const defaultZohoName = zohoAccounts && zohoAccounts.length > 0 ? zohoAccounts[0].account_name : "General Expenses";
-
-      if (!currentLines || currentLines.length === 0) {
-        const formItems = formData.line_items || [];
-        if (formItems.length > 0) {
-          updatedLines = formItems.map((item, idx) => ({
-            line_index: idx + 1,
-            source_description: item.description || `Item ${idx + 1}`,
-            approved_account_id: defaultZohoId,
-            approved_account_name: defaultZohoName,
-            final_account_id: defaultZohoId,
-            final_account_name: defaultZohoName,
-          }));
-        } else {
-          updatedLines = [{
-            line_index: 1,
-            source_description: "General Expenses",
-            approved_account_id: defaultZohoId,
-            approved_account_name: defaultZohoName,
-            final_account_id: defaultZohoId,
-            final_account_name: defaultZohoName,
-          }];
-        }
-      } else {
-        updatedLines = currentLines.map((item, idx) => {
-          let approvedId =
-            item.approved_account_id ||
-            item.final_account_id ||
-            item.account_id ||
-            item.ai_account_id;
-          let approvedName =
-            item.approved_account_name ||
-            item.final_account_name ||
-            item.account_name ||
-            item.ai_account_name;
-
-          if (zohoAccounts && zohoAccounts.length > 0) {
-            const match = zohoAccounts.find(
-              (za: any) =>
-                String(za.zoho_account_id) === String(approvedId) ||
-                String(za.account_name).toLowerCase().trim() === String(approvedName || "").toLowerCase().trim()
-            );
-            if (match) {
-              approvedId = match.zoho_account_id;
-              approvedName = match.account_name;
-            } else if (!approvedId || String(approvedId).startsWith("ACC_")) {
-              approvedId = defaultZohoId;
-              approvedName = approvedName || defaultZohoName;
-            }
-          } else if (!approvedId) {
-            approvedId = `ACC_${idx + 1}`;
-            approvedName = approvedName || "General Expenses";
-          }
-
-          return {
-            ...item,
-            approved_account_id: approvedId,
-            approved_account_name: approvedName || "General Expenses",
-            final_account_id: approvedId,
-            final_account_name: approvedName || "General Expenses",
-          };
-        });
-      }
-
-      const updatedAccounting = {
-        ...accountingData,
-        accounting: updatedLines,
-      };
-
-      // 2. Persist the approved accounts and form data to backend
-      let parsedAdditional = formData.additional_fields || {};
-      if (additionalFieldsText.trim()) {
-        try {
-          parsedAdditional = JSON.parse(additionalFieldsText);
-        } catch {
-          parsedAdditional = { raw_notes: additionalFieldsText };
-        }
-      }
-
-      const updatedVlmPayload: RawVlmOutput = {
-        ...(invoice?.current_vlm_output || invoice?.raw_vlm_output || {}),
-        data: {
-          ...formData,
-          additional_fields: parsedAdditional,
-        },
-      };
-
-      await updateInvoiceExtraction(
-        invoiceId,
-        updatedVlmPayload,
-        updatedAccounting
-      );
-      setAccountingData(updatedAccounting);
-
-      // 3. Execute authoritative Finance Approval and generate General Ledger Journal
       await approveInvoice(invoiceId);
       setActionNotice("Invoice approved and balanced double-entry journal created!");
       setTimeout(() => setActionNotice(null), 4000);
-      
+
       const [updatedInv, updatedJournal] = await Promise.all([
         getInvoice(invoiceId),
         getJournalPreview(invoiceId).catch(() => null),
       ]);
       setInvoice(updatedInv);
       if (updatedJournal) setJournalPreview(updatedJournal);
+      if (updatedInv.journal_entry) setJournalEntry(updatedInv.journal_entry);
     } catch (err: any) {
       setError(err.message || "Failed to approve invoice.");
-      throw err;
     } finally {
       setIsApproving(false);
     }
+  };
+
+  // Real Approval Action Handler with Hard Block & Non-blocking Warning validation
+  const handleApprove = async () => {
+    // 1. Check for Hard Blocks
+    const hardBlocks: string[] = [];
+    const isJournalUnbalanced =
+      journalEntry &&
+      (!journalEntry.is_balanced ||
+        journalEntry.difference !== 0 ||
+        (journalEntry.total_debit || 0) <= 0);
+
+    if (isJournalUnbalanced) {
+      hardBlocks.push(
+        `General Ledger journal is unbalanced (Difference: ₹${journalEntry.difference?.toLocaleString() || "0.00"}). Debits must equal Credits before approval.`
+      );
+    }
+    if (financialValidationResult?.overall_status === "MISMATCH") {
+      hardBlocks.push("Financial validation reported mathematical discrepancies.");
+    }
+    if (!formData.invoice_number?.trim()) {
+      hardBlocks.push("Invoice number is mandatory.");
+    }
+
+    if (hardBlocks.length > 0) {
+      setError(`Cannot Approve: ${hardBlocks.join(" ")} Please correct invoice line items or totals.`);
+      return;
+    }
+
+    // 2. Check for Non-blocking Warnings
+    const warnings: string[] = [];
+    if (itcResult?.status === "REVIEW_REQUIRED") {
+      warnings.push("Input Tax Credit (ITC) status is REVIEW_REQUIRED (Advisory Section 17(5) evaluation).");
+    }
+    if (gstResult?.validation_status === "GST_MISMATCH") {
+      warnings.push("GST structure reported an advisory discrepancy.");
+    }
+    if (tdsResult?.applicable && !tdsResult?.is_approved && tdsResult?.approval_status !== "APPROVED") {
+      warnings.push("Statutory TDS assessment has not been explicitly confirmed.");
+    }
+    if (gstResult?.errors && gstResult.errors.length > 0) {
+      gstResult.errors.forEach((e) => warnings.push(`GST Notice: ${e}`));
+    }
+    if (financialValidationResult?.warnings && financialValidationResult.warnings.length > 0) {
+      financialValidationResult.warnings.forEach((w) => warnings.push(w));
+    }
+
+    if (warnings.length > 0) {
+      setActiveWarnings(warnings);
+      setWarningModalOpen(true);
+      return;
+    }
+
+    // 3. No warnings and no hard blocks: execute directly
+    await executeBackendApproval();
   };
 
   // Real Rejection Action Handler
@@ -720,7 +817,7 @@ export default function InvoiceWorkspacePage() {
       setRejectReason("");
       setActionNotice("Invoice rejected.");
       setTimeout(() => setActionNotice(null), 4000);
-      
+
       const updatedInv = await getInvoice(invoiceId);
       setInvoice(updatedInv);
     } catch (err: any) {
@@ -732,18 +829,33 @@ export default function InvoiceWorkspacePage() {
 
   // Real Zoho Export Action Handler
   const handleExport = async () => {
+    if (invoice?.approval_status !== "APPROVED") {
+      setError("Invoice must be approved by Finance before exporting to Zoho Books.");
+      return;
+    }
+
+    const isJournalApproved =
+      journalEntry &&
+      (journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED");
+    if (!isJournalApproved) {
+      setError("Invoice cannot be exported without an approved, balanced General Ledger journal entry.");
+      return;
+    }
+
+    // Strict Vendor match guard: Stop export if vendor is not matched in Zoho
+    if (vendorStatus && vendorStatus.is_zoho_connected && vendorStatus.match_status !== "MATCHED") {
+      setVendorModalOpen(true);
+      setError("Vendor verification required: Please check vendor details or add the vendor to Zoho Books before exporting.");
+      return;
+    }
+
     try {
       setIsExporting(true);
       setError(null);
 
-      // If not yet approved, automatically approve first
-      if (invoice?.approval_status !== "APPROVED") {
-        await handleApprove();
-      }
-
       const res = await exportInvoiceToZoho(invoiceId);
       setActionNotice(`Successfully exported to Zoho Books! Bill #${res.zoho_bill_number || res.zoho_bill_id}`);
-      
+
       const updatedInv = await getInvoice(invoiceId);
       setInvoice(updatedInv);
     } catch (err: any) {
@@ -851,6 +963,50 @@ export default function InvoiceWorkspacePage() {
               {invoice?.export_status || "NOT_EXPORTED"}
             </span>
           )}
+
+          {/* Original Model Extraction JSON Modal Trigger */}
+          <button
+            type="button"
+            onClick={() => setShowRawJsonModal(true)}
+            className="btn btn-secondary"
+            style={{ padding: "6px 12px", fontSize: "12px" }}
+            title="View original immutable model extraction JSON for audit & comparison"
+          >
+            <FileText size={13} />
+            <span>Original Model JSON</span>
+          </button>
+
+          {/* Save Changes Button */}
+          <button
+            type="button"
+            onClick={handleSaveChanges}
+            disabled={isSaving || invoice?.approval_status === "APPROVED"}
+            className="btn btn-primary"
+            style={{
+              padding: "6px 14px",
+              fontSize: "12px",
+              background: saveSuccess
+                ? "#16a34a"
+                : "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)",
+              color: "#ffffff",
+            }}
+            title="Save all user edits and re-run deterministic validation engines"
+          >
+            {isSaving ? (
+              <RefreshCw size={13} className="animate-spin" />
+            ) : saveSuccess ? (
+              <Check size={13} />
+            ) : (
+              <Save size={13} />
+            )}
+            <span>
+              {isSaving
+                ? "Saving & Re-validating..."
+                : saveSuccess
+                ? "Saved ✓"
+                : "Save Changes"}
+            </span>
+          </button>
 
           {/* Action Buttons: Reject, Approve, Export to Zoho */}
           {invoice?.approval_status !== "APPROVED" && (
@@ -1165,7 +1321,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.invoice_date ?? ""}
-                        placeholder="Not provided"
+                        placeholder="DD-MM-YYYY"
                         onChange={(e) => handleFieldChange("invoice_date", e.target.value)}
                       />
                     </div>
@@ -1175,7 +1331,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.due_date ?? ""}
-                        placeholder="Not provided"
+                        placeholder="DD-MM-YYYY"
                         onChange={(e) => handleFieldChange("due_date", e.target.value)}
                       />
                     </div>
@@ -1195,7 +1351,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.place_of_supply ?? ""}
-                        placeholder="Not provided"
+                        placeholder="State name / code"
                         onChange={(e) => handleFieldChange("place_of_supply", e.target.value)}
                       />
                     </div>
@@ -1209,16 +1365,90 @@ export default function InvoiceWorkspacePage() {
                         onChange={(e) => handleFieldChange("currency", e.target.value)}
                       />
                     </div>
+                    <div>
+                      <label className="form-label">Payment Terms (Days)</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={formData.payment_terms ?? ""}
+                        placeholder="e.g. 15, 30, Net 30"
+                        onChange={(e) => handleFieldChange("payment_terms", e.target.value)}
+                      />
+                    </div>
+                    <div style={{ gridColumn: "span 2" }}>
+                      <label className="form-label">Invoice Notes / Remarks</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={formData.notes ?? ""}
+                        placeholder="Optional remarks or notes"
+                        onChange={(e) => handleFieldChange("notes", e.target.value)}
+                      />
+                    </div>
                   </div>
                 </section>
 
                 {/* 2. VENDOR / BILL FROM */}
-                <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                    <Building2 size={16} color="var(--text-secondary)" />
-                    <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      2. Vendor / Bill From
-                    </h3>
+                <section id="section-vendor-details" style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <Building2 size={16} color="var(--text-secondary)" />
+                      <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
+                        2. Vendor / Bill From
+                      </h3>
+                    </div>
+
+                    {vendorStatus && vendorStatus.is_zoho_connected && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        {vendorStatus.match_status === "MATCHED" ? (
+                          <div
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                              padding: "3px 10px",
+                              borderRadius: "12px",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              background: "#dcfce7",
+                              color: "#166534",
+                              border: "1px solid #bbf7d0",
+                            }}
+                          >
+                            <CheckCircle2 size={12} />
+                            <span>Matched in Zoho: {vendorStatus.matched_vendor?.contact_name || formData.vendor_name}</span>
+                          </div>
+                        ) : (
+                          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                            <div
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "5px",
+                                padding: "3px 10px",
+                                borderRadius: "12px",
+                                fontSize: "11px",
+                                fontWeight: "600",
+                                background: "#fef3c7",
+                                color: "#92400e",
+                                border: "1px solid #fde68a",
+                              }}
+                            >
+                              <AlertTriangle size={12} />
+                              <span>{vendorStatus.match_status === "MISMATCH" ? "Identity Mismatch" : "Not Found in Zoho"}</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setVendorModalOpen(true)}
+                              className="btn btn-secondary"
+                              style={{ padding: "3px 10px", fontSize: "11px", height: "auto" }}
+                            >
+                              Verify / Add to Zoho
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
@@ -1238,7 +1468,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.vendor_gstin ?? ""}
-                        placeholder="Not provided"
+                        placeholder="15-digit GSTIN"
                         onChange={(e) => handleFieldChange("vendor_gstin", e.target.value)}
                       />
                     </div>
@@ -1248,7 +1478,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.vendor_pan ?? ""}
-                        placeholder="Not provided"
+                        placeholder="10-digit PAN"
                         onChange={(e) => handleFieldChange("vendor_pan", e.target.value)}
                       />
                     </div>
@@ -1258,7 +1488,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.vendor_cin ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Corporate Identification Number"
                         onChange={(e) => handleFieldChange("vendor_cin", e.target.value)}
                       />
                     </div>
@@ -1268,7 +1498,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.vendor_phone ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Phone / Mobile"
                         onChange={(e) => handleFieldChange("vendor_phone", e.target.value)}
                       />
                     </div>
@@ -1278,7 +1508,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.vendor_email ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Email address"
                         onChange={(e) => handleFieldChange("vendor_email", e.target.value)}
                       />
                     </div>
@@ -1288,7 +1518,7 @@ export default function InvoiceWorkspacePage() {
                         className="form-input"
                         rows={2}
                         value={formData.vendor_address ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Full registered address"
                         onChange={(e) => handleFieldChange("vendor_address", e.target.value)}
                       />
                     </div>
@@ -1311,7 +1541,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.customer_name ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Customer / Company Name"
                         onChange={(e) => handleFieldChange("customer_name", e.target.value)}
                       />
                     </div>
@@ -1321,7 +1551,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.customer_gstin ?? ""}
-                        placeholder="Not provided"
+                        placeholder="15-digit GSTIN"
                         onChange={(e) => handleFieldChange("customer_gstin", e.target.value)}
                       />
                     </div>
@@ -1331,7 +1561,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.customer_pan ?? ""}
-                        placeholder="Not provided"
+                        placeholder="10-digit PAN"
                         onChange={(e) => handleFieldChange("customer_pan", e.target.value)}
                       />
                     </div>
@@ -1341,20 +1571,63 @@ export default function InvoiceWorkspacePage() {
                         className="form-input"
                         rows={2}
                         value={formData.customer_address ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Billing address"
                         onChange={(e) => handleFieldChange("customer_address", e.target.value)}
                       />
                     </div>
                   </div>
                 </section>
 
-                {/* 4. LINE ITEMS */}
+                {/* 4. SHIPPING DETAILS */}
+                <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+                    <Building2 size={16} color="var(--text-secondary)" />
+                    <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
+                      4. Shipping Details (Ship To)
+                    </h3>
+                  </div>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                    <div>
+                      <label className="form-label">Shipping Name / Consignee</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={formData.shipping_name ?? ""}
+                        placeholder="Consignee / Site Name"
+                        onChange={(e) => handleFieldChange("shipping_name", e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label">Shipping GSTIN</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={formData.shipping_gstin ?? ""}
+                        placeholder="Consignee GSTIN"
+                        onChange={(e) => handleFieldChange("shipping_gstin", e.target.value)}
+                      />
+                    </div>
+                    <div style={{ gridColumn: "span 2" }}>
+                      <label className="form-label">Shipping Address</label>
+                      <textarea
+                        className="form-input"
+                        rows={2}
+                        value={formData.shipping_address ?? ""}
+                        placeholder="Delivery / Warehouse / Site address"
+                        onChange={(e) => handleFieldChange("shipping_address", e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                {/* 5. LINE ITEMS */}
                 <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <Layers size={16} color="var(--accent)" />
                       <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                        4. Line Items
+                        5. Line Items
                       </h3>
                       <span className="badge badge-uploaded" style={{ fontSize: "11px" }}>
                         {formData.line_items?.length || 0} items
@@ -1383,21 +1656,24 @@ export default function InvoiceWorkspacePage() {
                     <table style={{ width: "100%", minWidth: "950px", borderCollapse: "collapse", fontSize: "12px" }}>
                       <thead>
                         <tr style={{ background: "#f9f9fb", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", textAlign: "left" }}>
-                          <th style={{ padding: "8px 6px", width: "30px" }}>#</th>
-                          <th style={{ padding: "8px 6px", minWidth: "160px" }}>Description</th>
-                          <th style={{ padding: "8px 6px", width: "80px" }}>HSN/SAC</th>
-                          <th style={{ padding: "8px 6px", width: "60px" }}>Qty</th>
-                          <th style={{ padding: "8px 6px", width: "80px" }}>Unit Price</th>
-                          <th style={{ padding: "8px 6px", width: "70px" }}>Discount</th>
-                          <th style={{ padding: "8px 6px", width: "80px" }}>Taxable</th>
-                          <th style={{ padding: "8px 6px", width: "60px" }}>CGST %</th>
-                          <th style={{ padding: "8px 6px", width: "70px" }}>CGST Amt</th>
-                          <th style={{ padding: "8px 6px", width: "60px" }}>SGST %</th>
-                          <th style={{ padding: "8px 6px", width: "70px" }}>SGST Amt</th>
-                          <th style={{ padding: "8px 6px", width: "60px" }}>IGST %</th>
-                          <th style={{ padding: "8px 6px", width: "70px" }}>IGST Amt</th>
-                          <th style={{ padding: "8px 6px", width: "90px" }}>Total</th>
-                          <th style={{ padding: "8px 6px", width: "36px" }}></th>
+                          <th style={{ padding: "8px 6px", width: "26px" }}>#</th>
+                          <th style={{ padding: "8px 6px", minWidth: "150px" }}>Description</th>
+                          <th style={{ padding: "8px 6px", width: "75px" }}>HSN/SAC</th>
+                          <th style={{ padding: "8px 6px", width: "50px" }}>Qty</th>
+                          <th style={{ padding: "8px 6px", width: "50px" }}>Unit</th>
+                          <th style={{ padding: "8px 6px", width: "75px" }}>Unit Price</th>
+                          <th style={{ padding: "8px 6px", width: "65px" }}>Discount</th>
+                          <th style={{ padding: "8px 6px", width: "75px" }}>Taxable</th>
+                          <th style={{ padding: "8px 6px", width: "55px" }}>CGST %</th>
+                          <th style={{ padding: "8px 6px", width: "65px" }}>CGST Amt</th>
+                          <th style={{ padding: "8px 6px", width: "55px" }}>SGST %</th>
+                          <th style={{ padding: "8px 6px", width: "65px" }}>SGST Amt</th>
+                          <th style={{ padding: "8px 6px", width: "55px" }}>IGST %</th>
+                          <th style={{ padding: "8px 6px", width: "65px" }}>IGST Amt</th>
+                          <th style={{ padding: "8px 6px", width: "55px" }}>Cess %</th>
+                          <th style={{ padding: "8px 6px", width: "65px" }}>Cess Amt</th>
+                          <th style={{ padding: "8px 6px", width: "85px" }}>Total</th>
+                          <th style={{ padding: "8px 6px", width: "32px" }}></th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1436,11 +1712,24 @@ export default function InvoiceWorkspacePage() {
                               </td>
                               <td style={{ padding: "6px" }}>
                                 <input
+                                  type="text"
+                                  className="table-input"
+                                  value={item.unit ?? ""}
+                                  placeholder="Nos/Kg"
+                                  onChange={(e) => handleLineItemChange(idx, "unit", e.target.value)}
+                                />
+                              </td>
+                              <td style={{ padding: "6px" }}>
+                                <input
                                   type="number"
                                   className="table-input"
-                                  value={item.unit_price ?? ""}
+                                  value={item.unit_price ?? item.rate ?? ""}
                                   placeholder="0.00"
-                                  onChange={(e) => handleLineItemChange(idx, "unit_price", parseFloat(e.target.value) || 0)}
+                                  onChange={(e) => {
+                                    const val = parseFloat(e.target.value) || 0;
+                                    handleLineItemChange(idx, "unit_price", val);
+                                    handleLineItemChange(idx, "rate", val);
+                                  }}
                                 />
                               </td>
                               <td style={{ padding: "6px" }}>
@@ -1519,6 +1808,24 @@ export default function InvoiceWorkspacePage() {
                                 <input
                                   type="number"
                                   className="table-input"
+                                  value={item.cess_rate ?? ""}
+                                  placeholder="0%"
+                                  onChange={(e) => handleLineItemChange(idx, "cess_rate", parseFloat(e.target.value) || 0)}
+                                />
+                              </td>
+                              <td style={{ padding: "6px" }}>
+                                <input
+                                  type="number"
+                                  className="table-input"
+                                  value={item.cess_amount ?? ""}
+                                  placeholder="0.00"
+                                  onChange={(e) => handleLineItemChange(idx, "cess_amount", parseFloat(e.target.value) || 0)}
+                                />
+                              </td>
+                              <td style={{ padding: "6px" }}>
+                                <input
+                                  type="number"
+                                  className="table-input"
                                   style={{ fontWeight: "600" }}
                                   value={item.total ?? ""}
                                   placeholder="0.00"
@@ -1539,7 +1846,7 @@ export default function InvoiceWorkspacePage() {
                           ))
                         ) : (
                           <tr>
-                            <td colSpan={15} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
+                            <td colSpan={18} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
                               No line items extracted. Click "+ Add Item Row" to add.
                             </td>
                           </tr>
@@ -1549,24 +1856,34 @@ export default function InvoiceWorkspacePage() {
                   </div>
                 </section>
 
-                {/* 5. PAYMENT & BANK DETAILS */}
+                {/* 6. PAYMENT & BANK DETAILS */}
                 <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
                     <CreditCard size={16} color="var(--text-secondary)" />
                     <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      5. Payment & Bank Details
+                      6. Payment & Bank Details
                     </h3>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                    <div style={{ gridColumn: "span 2" }}>
+                    <div>
                       <label className="form-label">Payment Terms</label>
                       <input
                         type="text"
                         className="form-input"
                         value={formData.payment_terms ?? ""}
-                        placeholder="Not provided"
+                        placeholder="e.g. Net 30, Due on Receipt"
                         onChange={(e) => handleFieldChange("payment_terms", e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label">UPI ID / VPA</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={formData.bank_details?.upi_id ?? ""}
+                        placeholder="e.g. merchant@upi"
+                        onChange={(e) => handleBankChange("upi_id", e.target.value)}
                       />
                     </div>
                     <div>
@@ -1575,7 +1892,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.bank_details?.account_holder_name ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Beneficiary / Account Name"
                         onChange={(e) => handleBankChange("account_holder_name", e.target.value)}
                       />
                     </div>
@@ -1585,7 +1902,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.bank_details?.bank_name ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Bank Name (e.g. HDFC, ICICI, SBI)"
                         onChange={(e) => handleBankChange("bank_name", e.target.value)}
                       />
                     </div>
@@ -1595,7 +1912,7 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.bank_details?.account_number ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Bank Account Number"
                         onChange={(e) => handleBankChange("account_number", e.target.value)}
                       />
                     </div>
@@ -1605,68 +1922,35 @@ export default function InvoiceWorkspacePage() {
                         type="text"
                         className="form-input"
                         value={formData.bank_details?.ifsc_code ?? ""}
-                        placeholder="Not provided"
+                        placeholder="11-character IFSC Code"
                         onChange={(e) => handleBankChange("ifsc_code", e.target.value)}
                       />
                     </div>
-                    <div>
-                      <label className="form-label">Branch</label>
+                    <div style={{ gridColumn: "span 2" }}>
+                      <label className="form-label">Branch & Address</label>
                       <input
                         type="text"
                         className="form-input"
                         value={formData.bank_details?.branch ?? ""}
-                        placeholder="Not provided"
+                        placeholder="Branch Name / City"
                         onChange={(e) => handleBankChange("branch", e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="form-label">UPI ID</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        value={formData.bank_details?.upi_id ?? ""}
-                        placeholder="Not provided"
-                        onChange={(e) => handleBankChange("upi_id", e.target.value)}
                       />
                     </div>
                   </div>
                 </section>
 
-                {/* 6. TAX DETAILS */}
+                {/* 7. FINANCIAL TOTALS & TAX BREAKDOWN */}
                 <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                    <Receipt size={16} color="var(--text-secondary)" />
+                    <FileSpreadsheet size={16} color="var(--accent)" />
                     <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      6. Tax Details
+                      7. Financial Totals & Tax Breakdown
                     </h3>
                   </div>
 
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
                     <div>
-                      <label className="form-label">Total Tax Amount</label>
-                      <input
-                        type="number"
-                        className="form-input"
-                        value={formData.tax_total ?? ""}
-                        placeholder="0.00"
-                        onChange={(e) => handleFieldChange("tax_total", e.target.value === "" ? null : parseFloat(e.target.value))}
-                      />
-                    </div>
-                  </div>
-                </section>
-
-                {/* 7. FINANCIAL TOTALS */}
-                <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                    <FileSpreadsheet size={16} color="var(--accent)" />
-                    <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      7. Financial Totals
-                    </h3>
-                  </div>
-
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                    <div>
-                      <label className="form-label">Subtotal</label>
+                      <label className="form-label">Subtotal (Taxable Amount)</label>
                       <input
                         type="number"
                         className="form-input"
@@ -1686,7 +1970,7 @@ export default function InvoiceWorkspacePage() {
                       />
                     </div>
                     <div>
-                      <label className="form-label">CGST</label>
+                      <label className="form-label">CGST Amount</label>
                       <input
                         type="number"
                         className="form-input"
@@ -1700,7 +1984,7 @@ export default function InvoiceWorkspacePage() {
                       />
                     </div>
                     <div>
-                      <label className="form-label">SGST</label>
+                      <label className="form-label">SGST Amount</label>
                       <input
                         type="number"
                         className="form-input"
@@ -1714,7 +1998,7 @@ export default function InvoiceWorkspacePage() {
                       />
                     </div>
                     <div>
-                      <label className="form-label">IGST</label>
+                      <label className="form-label">IGST Amount</label>
                       <input
                         type="number"
                         className="form-input"
@@ -1724,6 +2008,20 @@ export default function InvoiceWorkspacePage() {
                           const val = e.target.value === "" ? null : parseFloat(e.target.value);
                           handleFieldChange("igst_amount", val);
                           handleFieldChange("igst", val);
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label">Cess Amount</label>
+                      <input
+                        type="number"
+                        className="form-input"
+                        value={formData.cess_amount ?? formData.cess ?? ""}
+                        placeholder="0.00"
+                        onChange={(e) => {
+                          const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                          handleFieldChange("cess_amount", val);
+                          handleFieldChange("cess", val);
                         }}
                       />
                     </div>
@@ -1757,7 +2055,7 @@ export default function InvoiceWorkspacePage() {
                         onChange={(e) => handleFieldChange("other_charges", e.target.value === "" ? null : parseFloat(e.target.value))}
                       />
                     </div>
-                    <div style={{ gridColumn: "span 2" }}>
+                    <div>
                       <label className="form-label">Round Off</label>
                       <input
                         type="number"
@@ -1982,43 +2280,80 @@ export default function InvoiceWorkspacePage() {
                 {/* 9. TDS MODEL RESULT (ONLY IF RETURNED / AVAILABLE) */}
                 {tdsResult && (
                   <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                      <Scale size={16} color="var(--accent)" />
-                      <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                        9. TDS Analysis (Qwen3-4B)
-                      </h3>
-                      {(() => {
-                        const isApp = tdsResult.tds_applicable ?? tdsResult.applicable;
-                        if (isApp === null || isApp === undefined) {
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <Scale size={16} color="var(--accent)" />
+                        <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
+                          9. Statutory TDS Assessment
+                        </h3>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        {(() => {
+                          const isApp = tdsResult.tds_applicable ?? tdsResult.applicable;
+                          if (isApp === null || isApp === undefined) {
+                            return (
+                              <span
+                                className="badge badge-pending"
+                                style={{ fontSize: "11px", backgroundColor: "#f1f5f9", color: "#475569" }}
+                              >
+                                TDS Status: PROPOSED
+                              </span>
+                            );
+                          }
+                          if (!isApp) {
+                            return (
+                              <span className="badge badge-success" style={{ fontSize: "11px" }}>
+                                TDS Not Applicable ✓
+                              </span>
+                            );
+                          }
+                          const isApproved = tdsResult.is_approved || tdsResult.approval_status === "APPROVED";
                           return (
-                            <span
-                              className="badge badge-pending"
-                              style={{ fontSize: "11px", backgroundColor: "#f1f5f9", color: "#475569" }}
-                            >
-                              Not determined by AI / Pending backend validation
-                            </span>
+                            <>
+                              <span className="badge badge-uploaded" style={{ fontSize: "11px" }}>
+                                TDS Applicable
+                              </span>
+                              <span
+                                className={`badge ${isApproved ? "badge-success" : "badge-warning"}`}
+                                style={{ fontSize: "11px", fontWeight: "700" }}
+                              >
+                                {isApproved ? "Status: APPROVED ✓" : "Status: PENDING APPROVAL"}
+                              </span>
+                            </>
                           );
-                        }
-                        return (
-                          <span
-                            className={`badge ${isApp ? "badge-uploaded" : "badge-success"}`}
-                            style={{ fontSize: "11px" }}
+                        })()}
+                        {((tdsResult.tds_applicable ?? tdsResult.applicable) && !(tdsResult.is_approved || tdsResult.approval_status === "APPROVED")) && (
+                          <button
+                            type="button"
+                            onClick={handleApproveTds}
+                            disabled={isApprovingTds}
+                            className="btn btn-primary"
+                            style={{
+                              padding: "4px 12px",
+                              fontSize: "11px",
+                              fontWeight: "600",
+                              background: "#16a34a",
+                              borderColor: "#16a34a",
+                              color: "#ffffff",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
                           >
-                            {isApp ? "TDS Applicable" : "TDS Not Applicable"}
-                          </span>
-                        );
-                      })()}
-                      {(() => {
-                        const needsRev = tdsResult.tds_needs_review ?? tdsResult.needs_review;
-                        if (needsRev) {
-                          return (
-                            <span className="badge badge-danger" style={{ fontSize: "11px", marginLeft: "8px" }}>
-                              Review Required
-                            </span>
-                          );
-                        }
-                        return null;
-                      })()}
+                            {isApprovingTds ? (
+                              <>
+                                <div className="spinner" style={{ width: "10px", height: "10px", borderWidth: "2px" }} />
+                                <span>Approving...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Check size={12} />
+                                <span>Approve TDS</span>
+                              </>
+                            )}
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <div
@@ -2557,6 +2892,28 @@ export default function InvoiceWorkspacePage() {
                       </div>
                     </div>
 
+                    {itcResult.status === "REVIEW_REQUIRED" && (
+                      <div
+                        style={{
+                          background: "#eff6ff",
+                          border: "1px solid #bfdbfe",
+                          borderRadius: "var(--radius-sm)",
+                          padding: "8px 12px",
+                          marginBottom: "12px",
+                          fontSize: "12px",
+                          color: "#1e40af",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "8px",
+                        }}
+                      >
+                        <AlertCircle size={14} />
+                        <span>
+                          <strong>Statutory Notice:</strong> Input tax credit requires verification under CGST Rules, but does not block Invoice Approval or Zoho Export.
+                        </span>
+                      </div>
+                    )}
+
                     {/* Line-item ITC Breakdown Table */}
                     {itcResult.line_item_breakdown && itcResult.line_item_breakdown.length > 1 && (
                       <div style={{ overflowX: "auto" }}>
@@ -2866,6 +3223,8 @@ export default function InvoiceWorkspacePage() {
                         alignItems: "center",
                         justifyContent: "space-between",
                         marginBottom: "12px",
+                        flexWrap: "wrap",
+                        gap: "8px",
                       }}
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -2878,25 +3237,151 @@ export default function InvoiceWorkspacePage() {
                             textTransform: "uppercase",
                           }}
                         >
-                          12. Accounting Journal Entry Preview (Double-Entry)
+                          12. General Ledger Journal
                         </h3>
                       </div>
-                      <span
-                        className={`badge ${
-                          journalEntry.status === "BALANCED"
-                            ? "badge-success"
-                            : journalEntry.status === "UNBALANCED"
-                            ? "badge-danger"
-                            : "badge-warning"
-                        }`}
-                        style={{ fontSize: "11px", fontWeight: "700" }}
-                      >
-                        {journalEntry.status === "BALANCED"
-                          ? "✓ BALANCED"
-                          : journalEntry.status === "UNBALANCED"
-                          ? "✕ UNBALANCED"
-                          : "⚠ REVIEW REQUIRED"}
-                      </span>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+                        {/* Status Badge */}
+                        <span
+                          className={`badge ${
+                            (journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
+                              ? "badge-success"
+                              : "badge-danger"
+                          }`}
+                          style={{ fontSize: "11px", fontWeight: "700" }}
+                        >
+                          {(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
+                            ? "Status: BALANCED ✓"
+                            : "Status: NOT BALANCED"}
+                        </span>
+
+                        {/* Approval Badge */}
+                        <span
+                          className={`badge ${
+                            journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
+                              ? "badge-success"
+                              : (journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
+                              ? "badge-warning"
+                              : "badge-danger"
+                          }`}
+                          style={{ fontSize: "11px", fontWeight: "700" }}
+                        >
+                          {journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
+                            ? "Approval: APPROVED ✓"
+                            : (journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
+                            ? "Approval: PENDING"
+                            : "❌ Journal cannot be approved"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Journal Status & Approval Action Callout */}
+                    <div
+                      style={{
+                        background:
+                          journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
+                            ? "#f0fdf4"
+                            : !(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
+                            ? "#fef2f2"
+                            : "#fefce8",
+                        border:
+                          journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
+                            ? "1px solid #bbf7d0"
+                            : !(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
+                            ? "1px solid #fecaca"
+                            : "1px solid #fde68a",
+                        borderRadius: "var(--radius-sm)",
+                        padding: "12px 16px",
+                        marginBottom: "14px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        flexWrap: "wrap",
+                        gap: "10px",
+                      }}
+                    >
+                      <div>
+                        {journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED" ? (
+                          <div>
+                            <div style={{ fontWeight: "700", color: "#166534", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
+                              <CheckCircle2 size={15} /> General Ledger Journal Approved
+                            </div>
+                            <div style={{ fontSize: "11px", color: "#15803d", marginTop: "2px" }}>
+                              Balanced double-entry journal is approved and authorized for Invoice Approval &amp; Zoho Books Export.
+                              {journalEntry.approved_by && ` • Approved by ${journalEntry.approved_by}`}
+                            </div>
+                          </div>
+                        ) : !(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0)) ? (
+                          <div>
+                            <div style={{ fontWeight: "700", color: "#991b1b", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
+                              <AlertCircle size={15} /> Journal Not Balanced — Cannot Be Approved
+                            </div>
+                            <div style={{ fontSize: "11px", color: "#b91c1c", marginTop: "2px" }}>
+                              Debits (₹{journalEntry.total_debit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}) do not equal Credits (₹{journalEntry.total_credit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). Difference: ₹{journalEntry.difference?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Please correct invoice line items or financial totals.
+                            </div>
+                          </div>
+                        ) : (
+                          <div>
+                            <div style={{ fontWeight: "700", color: "#854d0e", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
+                              <Clock size={15} /> Balanced Journal Pending Finance Approval
+                            </div>
+                            <div style={{ fontSize: "11px", color: "#a16207", marginTop: "2px" }}>
+                              Total Debits equal Total Credits (₹{journalEntry.total_debit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}). Review and approve the General Ledger journal to authorize export.
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div>
+                        {!(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0)) ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              window.scrollTo({ top: 300, behavior: "smooth" });
+                            }}
+                            className="btn btn-secondary"
+                            style={{ padding: "6px 14px", fontSize: "12px", background: "#fff", borderColor: "#fca5a5", color: "#991b1b", fontWeight: "600" }}
+                          >
+                            Fix Invoice Data
+                          </button>
+                        ) : journalEntry.status !== "APPROVED" && journalEntry.approval_status !== "APPROVED" ? (
+                          <button
+                            type="button"
+                            onClick={handleApproveJournal}
+                            disabled={isApprovingJournal}
+                            className="btn btn-primary"
+                            style={{
+                              padding: "7px 18px",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              background: "#16a34a",
+                              borderColor: "#16a34a",
+                              color: "#ffffff",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              boxShadow: "0 2px 4px rgba(22, 163, 74, 0.2)",
+                            }}
+                          >
+                            {isApprovingJournal ? (
+                              <>
+                                <div className="spinner" style={{ width: "12px", height: "12px", borderWidth: "2px" }} />
+                                <span>Approving Journal...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Check size={14} />
+                                <span>Approve Journal</span>
+                              </>
+                            )}
+                          </button>
+                        ) : (
+                          <span style={{ fontSize: "12px", fontWeight: "600", color: "#166534", display: "flex", alignItems: "center", gap: "4px" }}>
+                            <CheckCircle2 size={14} /> Approved ✓
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {/* Journal Balancing Metrics */}
@@ -3386,6 +3871,100 @@ export default function InvoiceWorkspacePage() {
         </div>
       )}
 
+      {/* Raw Model Extraction JSON Modal (Audit & Comparison) */}
+      {showRawJsonModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: "100%",
+              maxWidth: "800px",
+              maxHeight: "85vh",
+              display: "flex",
+              flexDirection: "column",
+              padding: "24px",
+              borderRadius: "var(--radius-md)",
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.2)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div>
+                <h3 style={{ fontSize: "16px", fontWeight: "700" }}>
+                  Original Model Extraction JSON (Raw VLM Snapshot)
+                </h3>
+                <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                  Immutable OCR &amp; VLM model output preserved for audit, comparison, and provenance verification.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRawJsonModal(false)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-secondary)" }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                background: "#0f172a",
+                color: "#e2e8f0",
+                padding: "16px",
+                borderRadius: "var(--radius-sm)",
+                fontFamily: "monospace",
+                fontSize: "12px",
+                lineHeight: "1.5",
+                whiteSpace: "pre-wrap",
+                marginBottom: "16px",
+              }}
+            >
+              {JSON.stringify(invoice?.raw_vlm_output || {}, null, 2)}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText(JSON.stringify(invoice?.raw_vlm_output || {}, null, 2));
+                  setCopiedJson(true);
+                  setTimeout(() => setCopiedJson(false), 2000);
+                }}
+                className="btn btn-secondary"
+                style={{ padding: "6px 14px", fontSize: "12px" }}
+              >
+                {copiedJson ? <Check size={14} color="var(--success)" /> : <FileSpreadsheet size={14} />}
+                <span>{copiedJson ? "Copied JSON!" : "Copy Raw JSON"}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowRawJsonModal(false)}
+                className="btn btn-primary"
+                style={{ padding: "6px 16px", fontSize: "12px" }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <style jsx global>{`
         .form-label {
           display: block;
@@ -3447,6 +4026,119 @@ export default function InvoiceWorkspacePage() {
         }
       `}</style>
 
+      {/* Warning Acknowledgement Modal */}
+      {warningModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.4)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: "100%",
+              maxWidth: "540px",
+              padding: "24px",
+              boxShadow: "0 20px 40px rgba(0, 0, 0, 0.15)",
+              background: "#ffffff",
+              borderRadius: "var(--radius-md)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+              <div
+                style={{
+                  background: "#fef3c7",
+                  color: "#d97706",
+                  padding: "8px",
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <AlertTriangle size={20} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: "16px", fontWeight: "700", margin: 0, color: "#92400e" }}>
+                  Acknowledge Advisory Notices
+                </h3>
+                <p style={{ fontSize: "12px", color: "var(--text-secondary)", margin: "2px 0 0" }}>
+                  Some non-blocking warnings are present. Please review before approving.
+                </p>
+              </div>
+            </div>
+
+            <div
+              style={{
+                background: "#fffbeb",
+                border: "1px solid #fde68a",
+                borderRadius: "var(--radius-sm)",
+                padding: "12px 14px",
+                maxHeight: "220px",
+                overflowY: "auto",
+                marginBottom: "20px",
+              }}
+            >
+              {activeWarnings.map((warning, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: "8px",
+                    fontSize: "12px",
+                    color: "#92400e",
+                    marginBottom: idx < activeWarnings.length - 1 ? "8px" : "0",
+                  }}
+                >
+                  <span style={{ fontWeight: "700", marginTop: "1px" }}>•</span>
+                  <span>{warning}</span>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => setWarningModalOpen(false)}
+                className="btn btn-secondary"
+                disabled={isApproving}
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setWarningModalOpen(false);
+                  await executeBackendApproval();
+                }}
+                disabled={isApproving}
+                className="btn btn-primary"
+                style={{
+                  padding: "8px 18px",
+                  fontSize: "13px",
+                  background: "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)",
+                  color: "#ffffff",
+                }}
+              >
+                {isApproving ? "Approving..." : "Approve Anyway"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Reject Modal */}
       {rejectModalOpen && (
         <div
@@ -3505,6 +4197,166 @@ export default function InvoiceWorkspacePage() {
                 style={{ background: "var(--danger)", borderColor: "var(--danger)" }}
               >
                 {isRejecting ? "Rejecting..." : "Confirm Rejection"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Vendor Verification Modal */}
+      {vendorModalOpen && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            backdropFilter: "blur(4px)",
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: "100%",
+              maxWidth: "540px",
+              padding: "24px",
+              boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)",
+              background: "#ffffff",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
+              <div
+                style={{
+                  background: "#fef3c7",
+                  color: "#d97706",
+                  padding: "8px",
+                  borderRadius: "50%",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Building2 size={20} />
+              </div>
+              <div>
+                <h3 style={{ fontSize: "16px", fontWeight: "700", margin: 0, color: "#92400e" }}>
+                  Vendor Not Found / Vendor Details Need Verification
+                </h3>
+                <p style={{ fontSize: "12px", color: "var(--text-secondary)", margin: "2px 0 0" }}>
+                  This vendor was not confidently matched in your connected Zoho Books organization.
+                </p>
+              </div>
+            </div>
+
+            <div
+              style={{
+                background: "#f8fafc",
+                border: "1px solid #e2e8f0",
+                borderRadius: "var(--radius-sm)",
+                padding: "14px",
+                marginBottom: "16px",
+                fontSize: "13px",
+              }}
+            >
+              <div style={{ fontWeight: "700", color: "#1e293b", marginBottom: "8px", textTransform: "uppercase", fontSize: "11px", letterSpacing: "0.05em" }}>
+                Invoice Vendor Details (Authoritative Saved Data):
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: "6px", color: "#334155" }}>
+                <span style={{ color: "#64748b" }}>Vendor Name:</span>
+                <span style={{ fontWeight: "600" }}>{formData.vendor_name || "Not provided"}</span>
+
+                <span style={{ color: "#64748b" }}>GSTIN:</span>
+                <span style={{ fontWeight: "600" }}>{formData.vendor_gstin || "Not provided"}</span>
+
+                <span style={{ color: "#64748b" }}>PAN:</span>
+                <span>{formData.vendor_pan || "Not provided"}</span>
+
+                <span style={{ color: "#64748b" }}>Address:</span>
+                <span>{formData.vendor_address || "Not provided"}</span>
+
+                {formData.vendor_email && (
+                  <>
+                    <span style={{ color: "#64748b" }}>Email:</span>
+                    <span>{formData.vendor_email}</span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {vendorStatus?.match_status === "MISMATCH" && vendorStatus?.matched_vendor && (
+              <div
+                style={{
+                  background: "#fff1f2",
+                  border: "1px solid #fecdd3",
+                  borderRadius: "var(--radius-sm)",
+                  padding: "12px 14px",
+                  marginBottom: "16px",
+                  fontSize: "12px",
+                  color: "#9f1239",
+                }}
+              >
+                <div style={{ fontWeight: "700", marginBottom: "4px" }}>Possible Mismatched Zoho Vendor:</div>
+                <div>{vendorStatus.matched_vendor.contact_name} (GSTIN: {vendorStatus.matched_vendor.gst_no || "None"})</div>
+              </div>
+            )}
+
+            {error && (
+              <div
+                style={{
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  borderRadius: "var(--radius-sm)",
+                  padding: "10px 12px",
+                  marginBottom: "16px",
+                  fontSize: "12px",
+                  color: "#dc2626",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: "8px",
+                }}
+              >
+                <AlertCircle size={16} style={{ flexShrink: 0, marginTop: "1px" }} />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <p style={{ fontSize: "12px", color: "#475569", marginBottom: "20px", lineHeight: "1.5" }}>
+              To ensure statutory GST compliance and prevent exporting under an unrelated vendor, please either verify/edit the vendor details or add this vendor directly into Zoho Books.
+            </p>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setVendorModalOpen(false);
+                  const el = document.getElementById("section-vendor-details");
+                  if (el) el.scrollIntoView({ behavior: "smooth" });
+                }}
+                className="btn btn-secondary"
+                disabled={isAddingVendor}
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+              >
+                Check Vendor Details
+              </button>
+              <button
+                type="button"
+                onClick={handleAddVendorToZoho}
+                disabled={isAddingVendor || !formData.vendor_name?.trim()}
+                className="btn btn-primary"
+                style={{
+                  padding: "8px 18px",
+                  fontSize: "13px",
+                  background: "linear-gradient(135deg, #059669 0%, #047857 100%)",
+                  color: "#ffffff",
+                }}
+              >
+                {isAddingVendor ? "Adding to Zoho..." : "Add Vendor to Zoho"}
               </button>
             </div>
           </div>

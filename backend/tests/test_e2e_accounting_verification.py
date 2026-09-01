@@ -131,12 +131,25 @@ async def test_case_1_normal_intra_state_e2e():
     # 5. Zoho Export Payload Alignment Check
     mock_connection = ZohoConnection(id=uuid.uuid4(), tenant_id="tenant-e2e", status="CONNECTED", organization_id="ORG_1")
     mock_db_export = AsyncMock()
-    mock_db_export.execute.side_effect = [
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_inv)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=JournalEntry(id=uuid.uuid4(), invoice_id=inv_id, is_balanced=True, status="APPROVED"))),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_connection)),
-        MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[TaxRate(zoho_tax_id="TAX_18", tax_percentage=18.0)])))),
-    ]
+
+    async def mock_export_exec(stmt):
+        stmt_str = str(stmt)
+        res = MagicMock()
+        if "invoices" in stmt_str:
+            res.scalar_one_or_none.return_value = mock_inv
+        elif "journal_entries" in stmt_str:
+            res.scalar_one_or_none.return_value = JournalEntry(id=uuid.uuid4(), invoice_id=inv_id, is_balanced=True, status="APPROVED")
+        elif "zoho_connections" in stmt_str:
+            res.scalar_one_or_none.return_value = mock_connection
+        elif "tax_rates" in stmt_str:
+            tax = TaxRate(zoho_tax_id="TAX_18", tax_percentage=18.0, tax_name="GST18", tax_type="tax_group", is_active=True)
+            res.scalars.return_value.all.return_value = [tax]
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+
+    mock_db_export.execute = mock_export_exec
 
     with patch("app.services.zoho_client.zoho_client_service.search_vendor", new_callable=AsyncMock) as mock_vend, \
          patch("app.services.zoho_client.zoho_client_service.create_bill", new_callable=AsyncMock) as mock_create_bill, \

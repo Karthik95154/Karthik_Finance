@@ -13,7 +13,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from app.db.models import Invoice, ZohoConnection, JournalEntry, TaxRate
+from app.db.models import Invoice, ZohoConnection, JournalEntry, TaxRate, ChartOfAccount
 from app.services.export_service import export_service
 
 
@@ -79,14 +79,30 @@ async def test_case_1_approved_balanced_is_allowed():
         is_balanced=True,
     )
     mock_conn = ZohoConnection(id=uuid.uuid4(), tenant_id=tenant_id, status="CONNECTED", organization_id="ORG_1")
+    coa = ChartOfAccount(id=uuid.uuid4(), tenant_id=tenant_id, zoho_account_id="4076465000000000558", account_name="Operating expenses", is_active=True)
+    tax_18 = TaxRate(id=uuid.uuid4(), tenant_id=tenant_id, zoho_tax_id="T18", tax_name="GST18", tax_percentage=18.0, tax_type="tax_group", is_active=True)
 
     mock_db = AsyncMock()
-    mock_db.execute.side_effect = [
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_inv)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_conn)),
-        MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[TaxRate(zoho_tax_id="T18", tax_percentage=18.0)])))),
-    ]
+    async def mock_execute(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_inv
+        elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_journal
+        elif "FROM zoho_connections" in stmt_str or "zoho_connections." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_conn
+        elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
+            res.scalars.return_value.all.return_value = [coa]
+        elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
+            res.scalars.return_value.all.return_value = [tax_18]
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_execute
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
 
     with patch("app.services.zoho_client.zoho_client_service.search_vendor", new_callable=AsyncMock) as mock_vend, \
          patch("app.services.zoho_client.zoho_client_service.create_bill", new_callable=AsyncMock) as mock_bill, \
@@ -118,48 +134,80 @@ async def test_case_2_approved_unbalanced_is_blocked():
     )
 
     mock_db = AsyncMock()
-    mock_db.execute.side_effect = [
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_inv)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
-    ]
+    async def mock_execute(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_inv
+        elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_journal
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_execute
 
     with pytest.raises(ValueError, match="approved, balanced General Ledger journal entry"):
         await export_service.export_invoice_to_zoho(invoice_id=inv_id, tenant_id=tenant_id, db=mock_db)
 
 
 @pytest.mark.asyncio
-async def test_case_3_pending_approval_is_blocked():
-    """CASE 3: Invoice.approval_status = PENDING_REVIEW, JournalEntry balanced -> EXPORT BLOCKED."""
+async def test_case_3_pending_review_balanced_is_blocked():
+    """CASE 3: Invoice.approval_status = PENDING_REVIEW, JournalEntry.is_balanced = True -> EXPORT BLOCKED."""
     inv_id = uuid.uuid4()
     tenant_id = "default-tenant-001"
     mock_inv = _create_mock_invoice(inv_id, tenant_id=tenant_id, approval_status="PENDING_REVIEW")
+    mock_journal = JournalEntry(
+        id=uuid.uuid4(),
+        invoice_id=inv_id,
+        tenant_id=tenant_id,
+        status="BALANCED",
+        is_balanced=True,
+    )
 
     mock_db = AsyncMock()
-    mock_db.execute.return_value = MagicMock(scalar_one_or_none=MagicMock(return_value=mock_inv))
+    async def mock_execute(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_inv
+        elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_journal
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_execute
 
-    with pytest.raises(ValueError, match="must be APPROVED by Finance before exporting"):
+    with pytest.raises(ValueError, match="must be APPROVED by Finance"):
         await export_service.export_invoice_to_zoho(invoice_id=inv_id, tenant_id=tenant_id, db=mock_db)
 
 
 @pytest.mark.asyncio
-async def test_case_4_no_journal_entry_is_blocked():
+async def test_case_4_approved_no_journal_is_blocked():
     """CASE 4: Invoice.approval_status = APPROVED, No JournalEntry in DB -> EXPORT BLOCKED."""
     inv_id = uuid.uuid4()
     tenant_id = "default-tenant-001"
     mock_inv = _create_mock_invoice(inv_id, tenant_id=tenant_id, approval_status="APPROVED")
 
     mock_db = AsyncMock()
-    mock_db.execute.side_effect = [
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_inv)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=None)),  # No JournalEntry
-    ]
+    async def mock_execute(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_inv
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_execute
 
     with pytest.raises(ValueError, match="approved, balanced General Ledger journal entry"):
         await export_service.export_invoice_to_zoho(invoice_id=inv_id, tenant_id=tenant_id, db=mock_db)
 
 
 @pytest.mark.asyncio
-async def test_case_5_review_required_journal_is_blocked():
+async def test_case_5_approved_review_required_unbalanced_is_blocked():
     """CASE 5: Invoice.approval_status = APPROVED, JournalEntry.status = REVIEW_REQUIRED, is_balanced = False -> EXPORT BLOCKED."""
     inv_id = uuid.uuid4()
     tenant_id = "default-tenant-001"
@@ -173,10 +221,18 @@ async def test_case_5_review_required_journal_is_blocked():
     )
 
     mock_db = AsyncMock()
-    mock_db.execute.side_effect = [
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_inv)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
-    ]
+    async def mock_execute(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_inv
+        elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_journal
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_execute
 
     with pytest.raises(ValueError, match="approved, balanced General Ledger journal entry"):
         await export_service.export_invoice_to_zoho(invoice_id=inv_id, tenant_id=tenant_id, db=mock_db)
@@ -196,14 +252,30 @@ async def test_case_6_posted_balanced_is_allowed():
         is_balanced=True,
     )
     mock_conn = ZohoConnection(id=uuid.uuid4(), tenant_id=tenant_id, status="CONNECTED", organization_id="ORG_1")
+    coa = ChartOfAccount(id=uuid.uuid4(), tenant_id=tenant_id, zoho_account_id="4076465000000000558", account_name="Operating expenses", is_active=True)
+    tax_18 = TaxRate(id=uuid.uuid4(), tenant_id=tenant_id, zoho_tax_id="T18", tax_name="GST18", tax_percentage=18.0, tax_type="tax_group", is_active=True)
 
     mock_db = AsyncMock()
-    mock_db.execute.side_effect = [
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_inv)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_conn)),
-        MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[TaxRate(zoho_tax_id="T18", tax_percentage=18.0)])))),
-    ]
+    async def mock_execute(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_inv
+        elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_journal
+        elif "FROM zoho_connections" in stmt_str or "zoho_connections." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_conn
+        elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
+            res.scalars.return_value.all.return_value = [coa]
+        elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
+            res.scalars.return_value.all.return_value = [tax_18]
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_execute
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
 
     with patch("app.services.zoho_client.zoho_client_service.search_vendor", new_callable=AsyncMock) as mock_vend, \
          patch("app.services.zoho_client.zoho_client_service.create_bill", new_callable=AsyncMock) as mock_bill, \

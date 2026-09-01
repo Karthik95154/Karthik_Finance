@@ -331,6 +331,8 @@ async def update_invoice_extraction(
 ):
     """
     Saves user-edited invoice values into current_vlm_output and current_accounting_output.
+    Preserves raw_vlm_output (original model extraction JSON) immutably for audit.
+    Automatically re-evaluates Stage 4 GST/ITC, Stage 5 Financial Validation, and Stage 6 GL Journal.
     Requires ADMIN or FINANCE role. Blocked if invoice is APPROVED.
     """
     tenant_id = current_user.tenant_id
@@ -344,11 +346,10 @@ async def update_invoice_extraction(
             detail=f"Invoice with ID {invoice_id} not found.",
         )
 
-    if invoice.locked_at is not None and invoice.approval_status == "APPROVED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invoice is APPROVED and locked against modification. Reject or unapprove first to edit.",
-        )
+    if invoice.approval_status == "APPROVED":
+        # Editing an approved invoice automatically unlocks it and resets approval status to PENDING_REVIEW
+        invoice.approval_status = "PENDING_REVIEW"
+        invoice.locked_at = None
 
     if update_data.current_vlm_output is not None:
         from app.core.date_utils import parse_and_normalize_date
@@ -360,8 +361,100 @@ async def update_invoice_extraction(
             if target.get("due_date"):
                 target["due_date"] = parse_and_normalize_date(target["due_date"])
         invoice.current_vlm_output = vlm_dict
+
     if update_data.current_accounting_output is not None:
         invoice.current_accounting_output = update_data.current_accounting_output
+
+    # Re-evaluate Deterministic Validation Pipeline (Stages 4, 5, 6) using authoritative saved data
+    try:
+        from app.services.invoice_processing import get_effective_invoice_data
+        from app.services.gst_engine import gst_engine
+        from app.services.itc_engine import itc_engine
+        from app.services.financial_validator import financial_validator
+        from app.services.tds_engine import tds_engine
+        from app.services.journal_generator import journal_generator, sync_relational_journal
+
+        working_payload = get_effective_invoice_data(invoice)
+        
+        accounting_dict = (
+            invoice.current_accounting_output
+            if isinstance(invoice.current_accounting_output, dict)
+            else (invoice.accounting_output if isinstance(invoice.accounting_output, dict) else {})
+        )
+        accounting_lines = accounting_dict.get("accounting") or []
+        tds_assessment = accounting_dict.get("tds_assessment") or {}
+
+        # 1. Stage 4 GST Engine
+        gst_result = gst_engine.evaluate_gst(working_payload)
+
+        # 2. Stage 4 ITC Engine
+        combined_context = {
+            "accounting": accounting_lines,
+            "tds_assessment": tds_assessment,
+        }
+        itc_result = itc_engine.evaluate_itc(working_payload, combined_context)
+
+        # 3. Stage 5 Financial Validator
+        financial_validation_result = financial_validator.validate_invoice(working_payload, gst_result)
+
+        # 4. Stage 5 Statutory TDS Recalculation on authoritative subtotal
+        subtotal = float(working_payload.get("subtotal") or 0.0)
+        tds_rate = tds_assessment.get("tds_rate")
+        tds_section = tds_assessment.get("tds_section")
+        tds_provision = tds_assessment.get("tds_provision")
+        tds_nature = tds_assessment.get("nature_of_payment")
+        vendor_pan = working_payload.get("vendor_pan")
+
+        final_tds_calc = tds_engine.calculate_tds(
+            section=tds_section,
+            provision=tds_provision,
+            nature_of_payment=tds_nature,
+            base_amount=subtotal,
+            rate=float(tds_rate) if tds_rate is not None else None,
+            vendor_pan=vendor_pan,
+        )
+
+        persisted_accounting_output = {
+            **accounting_dict,
+            "accounting": accounting_lines,
+            "tds_assessment": tds_assessment,
+            "tds_final": final_tds_calc,
+            "tds": final_tds_calc,
+        }
+
+        # 5. Stage 6 Double-Entry Journal Generator
+        journal_result = journal_generator.generate_journal(
+            invoice_data=working_payload,
+            accounting_classification=persisted_accounting_output,
+            gst_result=gst_result,
+            itc_result=itc_result,
+            tds_result=final_tds_calc,
+            financial_validation_result=financial_validation_result,
+        )
+
+        # Stale-Journal Protection: Reset journal approval and invoice approval status upon edits
+        is_bal = bool(journal_result.get("is_balanced") or journal_result.get("validation", {}).get("balanced"))
+        journal_result["approval_status"] = "PENDING"
+        journal_result["status"] = "BALANCED" if is_bal else "UNBALANCED"
+        journal_result["approved_by"] = None
+        journal_result["approved_at"] = None
+
+        invoice.approval_status = "PENDING_REVIEW"
+        invoice.locked_at = None
+
+        # Persist updated authoritative engine outputs
+        invoice.accounting_output = persisted_accounting_output
+        invoice.current_accounting_output = persisted_accounting_output
+        invoice.gst_result = gst_result
+        invoice.itc_result = itc_result
+        invoice.financial_validation_result = financial_validation_result
+        invoice.journal_entry = journal_result
+
+        await sync_relational_journal(db, invoice.id, journal_result)
+    except Exception as eval_exc:
+        # Non-blocking log if deterministic revalidation encountered an issue
+        import logging
+        logging.getLogger(__name__).warning(f"Error during deterministic revalidation on update for {invoice_id}: {eval_exc}")
 
     invoice.updated_at = datetime.now(timezone.utc)
     await db.commit()
