@@ -14,6 +14,7 @@ import {
   Clock,
   User,
   Inbox,
+  ChevronDown,
   X,
 } from "lucide-react";
 import {
@@ -21,6 +22,7 @@ import {
   processStagedDocument,
   deleteStagedDocument,
   pollEmails,
+  getIMAPSettings,
   getInvoiceFileUrl,
   StagedDocument,
 } from "@/lib/api";
@@ -36,6 +38,10 @@ export default function InboxPage() {
   } | null>(null);
   const [previewDoc, setPreviewDoc] = useState<StagedDocument | null>(null);
 
+  // Email Account Filtering State
+  const [selectedEmail, setSelectedEmail] = useState<string>("ALL");
+  const [connectedEmails, setConnectedEmails] = useState<string[]>([]);
+
   // Pagination State
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
@@ -43,15 +49,34 @@ export default function InboxPage() {
   const loadDocuments = async () => {
     setIsLoading(true);
     try {
-      const docs = await listStagedDocuments();
-      // Sort docs by received date or created date from latest to oldest
+      const [docs, imap] = await Promise.all([
+        listStagedDocuments(),
+        getIMAPSettings().catch(() => null),
+      ]);
+
       const sortedDocs = [...docs].sort((a, b) => {
         const dateA = new Date(a.email_received_at || a.created_at).getTime();
         const dateB = new Date(b.email_received_at || b.created_at).getTime();
         return dateB - dateA;
       });
       setStagedDocs(sortedDocs);
-      setCurrentPage(1); // Reset page on load
+
+      // Dynamically extract connected and sender email accounts
+      const emailSet = new Set<string>();
+      if (imap?.email_address && imap.email_address.trim()) {
+        emailSet.add(imap.email_address.trim());
+      }
+      sortedDocs.forEach((d) => {
+        if (d.email_sender) {
+          const match = d.email_sender.match(/<([^>]+)>/) || [null, d.email_sender];
+          const extracted = (match[1] || d.email_sender).trim();
+          if (extracted && extracted.includes("@")) {
+            emailSet.add(extracted);
+          }
+        }
+      });
+      setConnectedEmails(Array.from(emailSet));
+      setCurrentPage(1);
     } catch (err: any) {
       setNotification({ type: "error", message: err.message || "Failed to load staging queue." });
     } finally {
@@ -125,26 +150,72 @@ export default function InboxPage() {
     } catch { return iso; }
   };
 
-  const checkMailAction = (
-    <button
-      onClick={handlePoll}
-      disabled={isPolling}
-      className="btn btn-primary"
-      style={{ display: "flex", alignItems: "center", gap: "8px", padding: "7px 16px", fontSize: "13px" }}
-    >
-      <RefreshCw size={14} className={isPolling ? "animate-spin" : ""} />
-      {isPolling ? "Checking..." : "Check Mail"}
-    </button>
+  // Filter staged documents based on selected email
+  const filteredDocs = stagedDocs.filter((doc) => {
+    if (selectedEmail === "ALL") return true;
+    if (!doc.email_sender) return false;
+    return doc.email_sender.toLowerCase().includes(selectedEmail.toLowerCase());
+  });
+
+  const headerActions = (
+    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+      {/* Email Account Dropdown Selector */}
+      <div style={{ position: "relative", display: "inline-flex", alignItems: "center" }}>
+        <Mail size={13} style={{ position: "absolute", left: "10px", color: "var(--text-secondary)", pointerEvents: "none" }} />
+        <select
+          value={selectedEmail}
+          onChange={(e) => {
+            setSelectedEmail(e.target.value);
+            setCurrentPage(1);
+          }}
+          style={{
+            paddingLeft: "28px",
+            paddingRight: "26px",
+            height: "32px",
+            fontSize: "12.5px",
+            fontWeight: "500",
+            cursor: "pointer",
+            appearance: "none",
+            WebkitAppearance: "none",
+            background: "#ffffff",
+            border: "1px solid var(--border-subtle)",
+            borderRadius: "var(--radius-sm)",
+            color: "var(--text-primary)",
+            boxShadow: "var(--shadow-sm)",
+          }}
+          title="Filter documents by connected email account"
+        >
+          <option value="ALL">All Emails</option>
+          {connectedEmails.map((email) => (
+            <option key={email} value={email}>
+              {email}
+            </option>
+          ))}
+        </select>
+        <ChevronDown size={13} style={{ position: "absolute", right: "8px", color: "var(--text-secondary)", pointerEvents: "none" }} />
+      </div>
+
+      {/* Check Mail Button */}
+      <button
+        onClick={handlePoll}
+        disabled={isPolling}
+        className="btn btn-primary"
+        style={{ display: "flex", alignItems: "center", gap: "8px", padding: "7px 16px", fontSize: "13px" }}
+      >
+        <RefreshCw size={14} className={isPolling ? "animate-spin" : ""} />
+        {isPolling ? "Checking..." : "Check Mail"}
+      </button>
+    </div>
   );
 
   // Pagination Slice
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
-  const currentItems = stagedDocs.slice(indexOfFirstItem, indexOfLastItem);
-  const totalPages = Math.ceil(stagedDocs.length / itemsPerPage);
+  const currentItems = filteredDocs.slice(indexOfFirstItem, indexOfLastItem);
+  const totalPages = Math.ceil(filteredDocs.length / itemsPerPage);
 
   return (
-    <AppShell title="Inbox" subtitle="Email Staging Queue" actions={checkMailAction}>
+    <AppShell title="Inbox" subtitle="Email Staging Queue" actions={headerActions} hideHealthBadge>
 
       {/* Notification Banner */}
       {notification && (
@@ -184,9 +255,9 @@ export default function InboxPage() {
         }}
       >
         {[
-          { label: "Total Staged", value: stagedDocs.length, color: "var(--accent)" },
-          { label: "PDFs", value: stagedDocs.filter((d) => d.mime_type === "application/pdf").length, color: "#7c3aed" },
-          { label: "Images", value: stagedDocs.filter((d) => d.mime_type?.startsWith("image/")).length, color: "#0891b2" },
+          { label: "Total Staged", value: filteredDocs.length, color: "var(--accent)" },
+          { label: "PDFs", value: filteredDocs.filter((d) => d.mime_type === "application/pdf").length, color: "#7c3aed" },
+          { label: "Images", value: filteredDocs.filter((d) => d.mime_type?.startsWith("image/")).length, color: "#0891b2" },
         ].map((stat) => (
           <div
             key={stat.label}
