@@ -28,6 +28,7 @@ interface AppShellProps {
   title?: string;
   subtitle?: string;
   actions?: React.ReactNode;
+  hideHealthBadge?: boolean;
 }
 
 export default function AppShell({
@@ -35,6 +36,7 @@ export default function AppShell({
   title,
   subtitle,
   actions,
+  hideHealthBadge,
 }: AppShellProps) {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -486,7 +488,7 @@ export default function AppShell({
           {/* Right Header Actions */}
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             {/* Live System Status Header Pill */}
-            {(() => {
+            {!hideHealthBadge && (() => {
               const has404 = health?.colab_vlm?.includes("404") || health?.colab_accounting?.includes("404");
               const isOk = health?.status === "ok" || health?.status === "healthy";
               const badge = getStatusBadge(
