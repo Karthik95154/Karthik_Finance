@@ -57,11 +57,11 @@ const DATA_CENTERS = [
 function SettingsContent() {
   const searchParams = useSearchParams();
 
-  // Core state (Initialized from cache for instant stable display)
-  const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(() => getCachedZohoStatus());
+  // Core state (Hydrated cleanly on mount to avoid SSR mismatch)
+  const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(() => getCachedMasterData());
-  const [isLoading, setIsLoading] = useState<boolean>(() => !getCachedZohoStatus());
+  const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
 
   // Active UI tab for master data tables
   const [activeTab, setActiveTab] = useState<"overview" | "coa" | "taxes" | "vendors">("overview");
@@ -116,6 +116,16 @@ function SettingsContent() {
   };
 
   useEffect(() => {
+    const cachedStatus = getCachedZohoStatus();
+    const cachedMaster = getCachedMasterData();
+    if (cachedStatus) {
+      setZohoStatus(cachedStatus);
+      setIsLoading(false);
+    }
+    if (cachedMaster) {
+      setMasterData(cachedMaster);
+    }
+
     fetchStatusAndProfile(false);
 
     // Listen for cross-page zoho status updates

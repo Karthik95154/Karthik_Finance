@@ -90,11 +90,11 @@ function IntegrationsContent() {
   });
 
   // ==========================================
-  // Zoho State (Initialized from persistent cache for instant stable rendering)
+  // Zoho State (Hydrated cleanly on client mount to prevent SSR mismatch)
   // ==========================================
-  const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(() => getCachedZohoStatus());
-  const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(() => getCachedMasterData());
-  const [isLoading, setIsLoading] = useState<boolean>(() => !getCachedZohoStatus());
+  const [zohoStatus, setZohoStatus] = useState<ZohoStatusResponse | null>(null);
+  const [masterData, setMasterData] = useState<ZohoMasterDataSummary | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isConnectingZoho, setIsConnectingZoho] = useState<boolean>(false);
   const [isSyncingZoho, setIsSyncingZoho] = useState<boolean>(false);
   const [isDisconnectingZoho, setIsDisconnectingZoho] = useState<boolean>(false);
@@ -160,6 +160,16 @@ function IntegrationsContent() {
   };
 
   useEffect(() => {
+    const cachedStatus = getCachedZohoStatus();
+    const cachedMaster = getCachedMasterData();
+    if (cachedStatus) {
+      setZohoStatus(cachedStatus);
+      setIsLoading(false);
+    }
+    if (cachedMaster) {
+      setMasterData(cachedMaster);
+    }
+
     loadAllData(false);
 
     // Listen for cross-page zoho status updates

@@ -115,7 +115,7 @@ class MasterDataService:
 
         all_taxes_to_sync: List[Dict[str, Any]] = []
 
-        # 1. Fetch GST taxes from settings/taxes
+        # 1. Fetch GST taxes and Tax Groups from settings/taxes
         try:
             zoho_taxes = await zoho_client_service.get_taxes(connection, db)
             for t in zoho_taxes:
@@ -123,7 +123,7 @@ class MasterDataService:
                     "tax_id": str(t.get("tax_id")),
                     "tax_name": t.get("tax_name") or "GST Tax",
                     "tax_percentage": float(t.get("tax_percentage", 0.0)),
-                    "tax_type": "GST",
+                    "tax_type": t.get("tax_type") or "GST",
                 })
         except Exception as e:
             logger.warning(f"Failed to fetch settings/taxes: {e}")
@@ -138,6 +138,28 @@ class MasterDataService:
                     "tax_name": t.get("tax_name") or t.get("section") or "TDS Tax",
                     "tax_percentage": float(t.get("tax_percentage", 0.0)),
                     "tax_type": "TDS",
+                })
+            # Also capture any taxes or tax_groups returned in bill editpage
+            for t in editpage.get("taxes", []):
+                all_taxes_to_sync.append({
+                    "tax_id": str(t.get("tax_id")),
+                    "tax_name": t.get("tax_name") or "GST Tax",
+                    "tax_percentage": float(t.get("tax_percentage", 0.0)),
+                    "tax_type": "GST",
+                })
+            for tg in editpage.get("tax_groups", []):
+                tg_id = str(tg.get("tax_group_id") or tg.get("tax_id"))
+                tg_name = tg.get("tax_group_name") or tg.get("tax_name")
+                tg_pct = float(
+                    tg.get("tax_group_percentage")
+                    if tg.get("tax_group_percentage") is not None
+                    else tg.get("tax_percentage", 0.0)
+                )
+                all_taxes_to_sync.append({
+                    "tax_id": tg_id,
+                    "tax_name": tg_name,
+                    "tax_percentage": tg_pct,
+                    "tax_type": "tax_group",
                 })
         except Exception as e:
             logger.warning(f"Failed to fetch bills/editpage tds_taxes: {e}")
@@ -211,48 +233,66 @@ class MasterDataService:
         """
         Dynamically finds the matching Zoho Tax ID for an invoice line item
         based on supply_type (INTRA_STATE vs INTER_STATE) and tax percentage.
+        Supports both individual taxes and intra-state Tax Groups (e.g. GST18).
         """
-        if tax_percentage is None or tax_percentage <= 0 or not db:
+        if tax_percentage is None or not db:
             return None
 
         try:
             query = select(TaxRate).where(
                 TaxRate.tenant_id == tenant_id,
                 TaxRate.is_active == True,
-                TaxRate.tax_type.in_(["GST", "tax", "Tax", "gst"]),
             )
             res = await db.execute(query)
-            taxes = res.scalars().all() if res else []
+            all_taxes = res.scalars().all() if res else []
+            taxes = [t for t in all_taxes if (t.tax_type or "").lower() not in ["tds", "withholding"]]
         except Exception:
-            return None
+            taxes = []
+
+        if not taxes:
+            # Auto-sync taxes if cache is empty
+            try:
+                await self.sync_taxes(tenant_id, db)
+                res = await db.execute(query)
+                all_taxes = res.scalars().all() if res else []
+                taxes = [t for t in all_taxes if (t.tax_type or "").lower() not in ["tds", "withholding"]]
+            except Exception as sync_err:
+                logger.warning(f"On-demand tax sync failed: {sync_err}")
 
         if not taxes:
             return None
 
-        # Filter by percentage match (within 0.1 tolerance)
-        matching_rate = [t for t in taxes if abs(float(t.tax_percentage) - float(tax_percentage)) < 0.1]
+        target_pct = float(tax_percentage)
+
+        # 1. Filter by percentage match (within 0.1 tolerance)
+        matching_rate = [t for t in taxes if abs(float(t.tax_percentage) - target_pct) < 0.1]
+        
+        # If looking for 0% and no exact 0% tax, try looking for zero/nil/exempt by name
+        if target_pct == 0.0 and not matching_rate:
+            matching_rate = [
+                t for t in taxes
+                if any(w in (t.tax_name or "").upper() for w in ["0%", "GST0", "IGST0", "NIL", "EXEMPT", "ZERO"])
+            ]
+
         if not matching_rate:
             return None
 
         if len(matching_rate) == 1:
             return matching_rate[0].zoho_tax_id
 
-        # Differentiate INTRA_STATE (GST18 / CGST+SGST) vs INTER_STATE (IGST18)
+        # Differentiate INTRA_STATE (GST18 / tax_group) vs INTER_STATE (IGST18)
         is_interstate = (supply_type == "INTER_STATE")
         if is_interstate:
-            # 1. Exact start with IGST (e.g. IGST18)
+            # Prefer IGST named taxes
             for t in matching_rate:
                 t_name = (t.tax_name or "").upper()
-                if t_name.startswith("IGST"):
-                    return t.zoho_tax_id
-            for t in matching_rate:
-                if "IGST" in (t.tax_name or "").upper():
+                if t_name.startswith("IGST") or "IGST" in t_name:
                     return t.zoho_tax_id
         else:
-            # 1. Exact start with GST (e.g. GST18) and not IGST
+            # Prefer GST / tax_group named taxes (e.g. GST18, [GST18])
             for t in matching_rate:
                 t_name = (t.tax_name or "").upper()
-                if t_name.startswith("GST") and "IGST" not in t_name:
+                if (t_name.startswith("GST") or t.tax_type == "tax_group") and "IGST" not in t_name:
                     return t.zoho_tax_id
             for t in matching_rate:
                 if "IGST" not in (t.tax_name or "").upper():

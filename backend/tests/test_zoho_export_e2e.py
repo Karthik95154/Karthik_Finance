@@ -109,28 +109,28 @@ async def test_full_zoho_export_success_flow():
         status="APPROVED",
     )
 
+    coa = ChartOfAccount(id=uuid.uuid4(), tenant_id=tenant_id, zoho_account_id="4076465000000000558", account_name="Cloud Hosting & Infrastructure", is_active=True)
+    tax_18 = TaxRate(zoho_tax_id="TAX_18", tax_name="GST 18%", tax_percentage=18.0, is_active=True)
+
     mock_db = AsyncMock()
-    
-    mock_inv_result = MagicMock()
-    mock_inv_result.scalar_one_or_none.return_value = mock_invoice
-
-    mock_journal_result = MagicMock()
-    mock_journal_result.scalar_one_or_none.return_value = mock_journal
-
-    mock_conn_result = MagicMock()
-    mock_conn_result.scalar_one_or_none.return_value = mock_connection
-
-    mock_tax_result = MagicMock()
-    mock_tax_result.scalars.return_value.all.return_value = [
-        TaxRate(zoho_tax_id="TAX_18", tax_name="GST 18%", tax_percentage=18.0)
-    ]
-
-    mock_db.execute.side_effect = [
-        mock_inv_result,
-        mock_journal_result,
-        mock_conn_result,
-        mock_tax_result,
-    ]
+    async def mock_execute(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_invoice
+        elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_journal
+        elif "FROM zoho_connections" in stmt_str or "zoho_connections." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_connection
+        elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
+            res.scalars.return_value.all.return_value = [coa]
+        elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
+            res.scalars.return_value.all.return_value = [tax_18]
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_execute
     mock_db.commit = AsyncMock()
     mock_db.refresh = AsyncMock()
 

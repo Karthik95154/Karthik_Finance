@@ -2,7 +2,9 @@ export interface LineItem {
   description?: string | null;
   hsn_code?: string | null;
   quantity?: number | null;
+  unit?: string | null;
   unit_price?: number | null;
+  rate?: number | null;
   discount?: number | null;
   taxable_amount?: number | null;
   cgst_rate?: number | null;
@@ -11,6 +13,8 @@ export interface LineItem {
   sgst_amount?: number | null;
   igst_rate?: number | null;
   igst_amount?: number | null;
+  cess_rate?: number | null;
+  cess_amount?: number | null;
   total?: number | null;
 }
 
@@ -43,6 +47,10 @@ export interface ExtractedInvoiceData {
   customer_gstin?: string | null;
   customer_pan?: string | null;
 
+  shipping_name?: string | null;
+  shipping_address?: string | null;
+  shipping_gstin?: string | null;
+
   payment_terms?: string | null;
   bank_details?: BankDetails | null;
 
@@ -57,11 +65,15 @@ export interface ExtractedInvoiceData {
   sgst_amount?: number | null;
   igst?: number | null;
   igst_amount?: number | null;
+  cess?: number | null;
+  cess_amount?: number | null;
   shipping_charges?: number | null;
   other_charges?: number | null;
   round_off?: number | null;
   total_amount?: number | null;
   currency?: string | null;
+  notes?: string | null;
+  terms_and_conditions?: string | null;
 
   additional_fields?: Record<string, any>;
 }
@@ -124,9 +136,12 @@ export interface TdsResult {
   calculation?: string | null;
   confidence?: number | null;
   needs_review?: boolean | null;
-  tds_needs_review?: boolean | null;
   reason?: string | null;
   tds_reasoning?: string | null;
+  is_approved?: boolean | null;
+  approval_status?: "PENDING" | "APPROVED" | string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
 }
 
 export interface AccountingOutput {
@@ -306,13 +321,17 @@ export interface JournalValidation {
 }
 
 export interface JournalEntry {
-  status: "BALANCED" | "REVIEW_REQUIRED" | "UNBALANCED" | string;
+  status: "BALANCED" | "APPROVED" | "REVIEW_REQUIRED" | "UNBALANCED" | string;
+  approval_status?: "PENDING" | "APPROVED" | string;
+  approved_by?: string | null;
+  approved_at?: string | null;
   total_debit: number;
   total_credit: number;
   difference: number;
   currency: string;
   lines: JournalLine[];
   validation: JournalValidation;
+  is_balanced?: boolean;
 }
 
 export interface Invoice {
@@ -919,6 +938,48 @@ export async function approveInvoice(id: string): Promise<Invoice> {
   return res.json();
 }
 
+export async function approveJournal(id: string): Promise<{
+  status: string;
+  message: string;
+  journal_status: string;
+  approval_status: string;
+  is_balanced: boolean;
+  total_debit: number;
+  total_credit: number;
+  approved_by: string;
+  approved_at: string;
+  journal_entry: JournalEntry;
+}> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices/${id}/journal/approve`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to approve General Ledger journal");
+  }
+  return res.json();
+}
+
+export async function approveTds(id: string): Promise<{
+  status: string;
+  message: string;
+  tds: TdsResult;
+  journal_entry?: JournalEntry;
+}> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices/${id}/tds/approve`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to approve TDS assessment");
+  }
+  return res.json();
+}
+
 export async function rejectInvoice(id: string, reason: string): Promise<Invoice> {
   const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/review/invoices/${id}/reject`, {
@@ -1106,5 +1167,60 @@ export async function disconnectIMAP(): Promise<any> {
   }
   return res.json();
 }
+
+export interface InvoiceVendorStatusResponse {
+  invoice_id: string;
+  is_zoho_connected: boolean;
+  match_status: "MATCHED" | "NOT_FOUND" | "MISMATCH" | "NOT_CONNECTED";
+  invoice_vendor: {
+    vendor_name?: string | null;
+    vendor_gstin?: string | null;
+    vendor_pan?: string | null;
+    vendor_address?: string | null;
+    vendor_phone?: string | null;
+    vendor_email?: string | null;
+  };
+  matched_vendor?: {
+    contact_id?: string | null;
+    contact_name?: string | null;
+    gst_no?: string | null;
+    pan_no?: string | null;
+    email?: string | null;
+    phone?: string | null;
+  } | null;
+  requires_action: boolean;
+}
+
+export async function getInvoiceVendorStatus(invoiceId: string): Promise<InvoiceVendorStatusResponse> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/vendor/status`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to check vendor status");
+  }
+  return res.json();
+}
+
+export async function addVendorToZoho(invoiceId: string): Promise<{
+  status: string;
+  message: string;
+  contact_id: string;
+  vendor: any;
+}> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/vendor/add-to-zoho`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to add vendor to Zoho Books");
+  }
+  return res.json();
+}
+
 
 
