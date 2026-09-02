@@ -440,6 +440,36 @@ function IntegrationsContent() {
     (v.contact_name || "").toLowerCase().includes(masterDataSearch.toLowerCase())
   );
 
+  // Pagination for Master Data (15 items per page)
+  const [masterDataPage, setMasterDataPage] = useState(1);
+  const masterDataItemsPerPage = 15;
+
+  useEffect(() => {
+    setMasterDataPage(1);
+  }, [masterDataTab, masterDataSearch]);
+
+  const currentMasterDataList =
+    masterDataTab === "coa"
+      ? filteredAccounts
+      : masterDataTab === "taxes"
+      ? filteredTaxes
+      : filteredVendors;
+
+  const masterDataTotalPages = Math.ceil(currentMasterDataList.length / masterDataItemsPerPage);
+
+  const paginatedAccounts = filteredAccounts.slice(
+    (masterDataPage - 1) * masterDataItemsPerPage,
+    masterDataPage * masterDataItemsPerPage
+  );
+  const paginatedTaxes = filteredTaxes.slice(
+    (masterDataPage - 1) * masterDataItemsPerPage,
+    masterDataPage * masterDataItemsPerPage
+  );
+  const paginatedVendors = filteredVendors.slice(
+    (masterDataPage - 1) * masterDataItemsPerPage,
+    masterDataPage * masterDataItemsPerPage
+  );
+
   return (
     <AppShell
       title="Integrations Hub"
@@ -1190,7 +1220,7 @@ function IntegrationsContent() {
                 </div>
 
                 {/* Table Content */}
-                <div style={{ maxHeight: "400px", overflowY: "auto" }}>
+                <div style={{ overflowX: "auto" }}>
                   {masterDataTab === "coa" && (
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
                       <thead>
@@ -1203,14 +1233,14 @@ function IntegrationsContent() {
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredAccounts.length === 0 ? (
+                        {paginatedAccounts.length === 0 ? (
                           <tr>
                             <td colSpan={5} style={{ padding: "32px", textAlign: "center", color: "var(--text-secondary)" }}>
                               No Chart of Accounts found matching search.
                             </td>
                           </tr>
                         ) : (
-                          filteredAccounts.map((acc, idx) => (
+                          paginatedAccounts.map((acc, idx) => (
                             <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
                               <td style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-primary)" }}>{acc.account_name}</td>
                               <td style={{ padding: "10px 16px", color: "var(--text-secondary)" }}>{acc.account_code || "—"}</td>
@@ -1243,14 +1273,14 @@ function IntegrationsContent() {
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredTaxes.length === 0 ? (
+                        {paginatedTaxes.length === 0 ? (
                           <tr>
                             <td colSpan={4} style={{ padding: "32px", textAlign: "center", color: "var(--text-secondary)" }}>
                               No Tax Rates found.
                             </td>
                           </tr>
                         ) : (
-                          filteredTaxes.map((tax, idx) => (
+                          paginatedTaxes.map((tax, idx) => (
                             <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
                               <td style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-primary)" }}>{tax.tax_name}</td>
                               <td style={{ padding: "10px 16px", fontWeight: "700" }}>{tax.tax_percentage}%</td>
@@ -1276,14 +1306,14 @@ function IntegrationsContent() {
                         </tr>
                       </thead>
                       <tbody>
-                        {filteredVendors.length === 0 ? (
+                        {paginatedVendors.length === 0 ? (
                           <tr>
                             <td colSpan={4} style={{ padding: "32px", textAlign: "center", color: "var(--text-secondary)" }}>
                               No Vendors found.
                             </td>
                           </tr>
                         ) : (
-                          filteredVendors.map((v, idx) => (
+                          paginatedVendors.map((v, idx) => (
                             <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
                               <td style={{ padding: "10px 16px", fontWeight: "600", color: "var(--text-primary)" }}>
                                 {v.vendor_name || v.contact_name}
@@ -1302,6 +1332,54 @@ function IntegrationsContent() {
                     </table>
                   )}
                 </div>
+
+                {/* Master Data Pagination Controls (15 items per page) */}
+                {masterDataTotalPages > 1 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: "16px 24px",
+                      borderTop: "1px solid var(--border-subtle)",
+                      background: "#fafafa",
+                      gap: "8px",
+                    }}
+                  >
+                    <button
+                      onClick={() => setMasterDataPage((p) => Math.max(1, p - 1))}
+                      disabled={masterDataPage === 1}
+                      className="btn btn-secondary"
+                      style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                    >
+                      Previous
+                    </button>
+                    {Array.from({ length: masterDataTotalPages }, (_, i) => i + 1).map((pageNumber) => (
+                      <button
+                        key={pageNumber}
+                        onClick={() => setMasterDataPage(pageNumber)}
+                        className={`btn ${masterDataPage === pageNumber ? "btn-primary" : "btn-secondary"}`}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: "12.5px",
+                          background: masterDataPage === pageNumber ? "var(--accent)" : "#ffffff",
+                          color: masterDataPage === pageNumber ? "#ffffff" : "var(--text-primary)",
+                          minWidth: "36px",
+                        }}
+                      >
+                        {pageNumber}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => setMasterDataPage((p) => Math.min(masterDataTotalPages, p + 1))}
+                      disabled={masterDataPage === masterDataTotalPages}
+                      className="btn btn-secondary"
+                      style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -441,17 +441,62 @@ export async function getInvoiceStatus(id: string): Promise<InvoiceStatus> {
   return res.json();
 }
 
-export async function listInvoices(): Promise<InvoiceListItem[]> {
-  const res = await fetch(`${API_BASE}/invoices`, {
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => ({}));
-    throw new Error(errorData.detail || "Failed to fetch invoices list");
+export async function listInvoices(forceRefresh = false): Promise<InvoiceListItem[]> {
+  const now = Date.now();
+  if (!forceRefresh && inMemoryInvoices && now - inMemoryInvoicesTime < 15000) {
+    return inMemoryInvoices;
   }
 
-  return res.json();
+  if (!forceRefresh && !inMemoryInvoices && typeof window !== "undefined") {
+    const cached = getCachedInvoices();
+    if (cached) {
+      fetchFreshInvoices().catch(() => {});
+      return cached;
+    }
+  }
+
+  return await fetchFreshInvoices();
+}
+
+const inFlightPromises = new Map<string, Promise<any>>();
+
+function fetchWithInFlightDeduplication<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  if (inFlightPromises.has(key)) {
+    return inFlightPromises.get(key) as Promise<T>;
+  }
+
+  const promise = fetcher().finally(() => {
+    inFlightPromises.delete(key);
+  });
+
+  inFlightPromises.set(key, promise);
+  return promise;
+}
+
+async function fetchFreshInvoices(): Promise<InvoiceListItem[]> {
+  return fetchWithInFlightDeduplication("invoices", async () => {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/invoices`, {
+      headers: authHeaders,
+      cache: "no-store",
+    });
+
+    if (!res.ok) {
+      if (inMemoryInvoices) return inMemoryInvoices;
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.detail || "Failed to fetch invoices list");
+    }
+
+    const data: InvoiceListItem[] = await res.json();
+    inMemoryInvoices = data;
+    inMemoryInvoicesTime = Date.now();
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem(INVOICES_CACHE_KEY, JSON.stringify(data));
+      } catch (_) {}
+    }
+    return data;
+  });
 }
 
 export async function getInvoice(id: string): Promise<Invoice> {
@@ -696,6 +741,62 @@ export function invalidateIMAPCache() {
   if (typeof window !== "undefined") {
     try {
       sessionStorage.removeItem(IMAP_SETTINGS_CACHE_KEY);
+    } catch (_) {}
+  }
+}
+
+const INVOICES_CACHE_KEY = "sakshi_invoices_cache";
+const STAGED_DOCS_CACHE_KEY = "sakshi_staged_docs_cache";
+
+let inMemoryInvoices: InvoiceListItem[] | null = null;
+let inMemoryInvoicesTime = 0;
+let inMemoryStagedDocs: StagedDocument[] | null = null;
+let inMemoryStagedDocsTime = 0;
+
+export function getCachedInvoices(): InvoiceListItem[] | null {
+  if (inMemoryInvoices) return inMemoryInvoices;
+  if (typeof window !== "undefined") {
+    try {
+      const raw = sessionStorage.getItem(INVOICES_CACHE_KEY);
+      if (raw) {
+        inMemoryInvoices = JSON.parse(raw);
+        return inMemoryInvoices;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+export function invalidateInvoicesCache() {
+  inMemoryInvoices = null;
+  inMemoryInvoicesTime = 0;
+  if (typeof window !== "undefined") {
+    try {
+      sessionStorage.removeItem(INVOICES_CACHE_KEY);
+    } catch (_) {}
+  }
+}
+
+export function getCachedStagedDocuments(): StagedDocument[] | null {
+  if (inMemoryStagedDocs) return inMemoryStagedDocs;
+  if (typeof window !== "undefined") {
+    try {
+      const raw = sessionStorage.getItem(STAGED_DOCS_CACHE_KEY);
+      if (raw) {
+        inMemoryStagedDocs = JSON.parse(raw);
+        return inMemoryStagedDocs;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+export function invalidateStagedDocumentsCache() {
+  inMemoryStagedDocs = null;
+  inMemoryStagedDocsTime = 0;
+  if (typeof window !== "undefined") {
+    try {
+      sessionStorage.removeItem(STAGED_DOCS_CACHE_KEY);
     } catch (_) {}
   }
 }
@@ -1087,17 +1188,45 @@ export interface IMAPSettings {
   email_address?: string;
 }
 
-export async function listStagedDocuments(): Promise<StagedDocument[]> {
-  const authHeaders = await getAuthHeaders();
-  const res = await fetch(`${API_BASE}/inbox/staged`, {
-    headers: authHeaders,
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Failed to list staged documents");
+export async function listStagedDocuments(forceRefresh = false): Promise<StagedDocument[]> {
+  const now = Date.now();
+  if (!forceRefresh && inMemoryStagedDocs && now - inMemoryStagedDocsTime < 15000) {
+    return inMemoryStagedDocs;
   }
-  return res.json();
+
+  if (!forceRefresh && !inMemoryStagedDocs && typeof window !== "undefined") {
+    const cached = getCachedStagedDocuments();
+    if (cached) {
+      fetchFreshStagedDocuments().catch(() => {});
+      return cached;
+    }
+  }
+
+  return await fetchFreshStagedDocuments();
+}
+
+async function fetchFreshStagedDocuments(): Promise<StagedDocument[]> {
+  return fetchWithInFlightDeduplication("staged_docs", async () => {
+    const authHeaders = await getAuthHeaders();
+    const res = await fetch(`${API_BASE}/inbox/staged`, {
+      headers: authHeaders,
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      if (inMemoryStagedDocs) return inMemoryStagedDocs;
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to list staged documents");
+    }
+    const data: StagedDocument[] = await res.json();
+    inMemoryStagedDocs = data;
+    inMemoryStagedDocsTime = Date.now();
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem(STAGED_DOCS_CACHE_KEY, JSON.stringify(data));
+      } catch (_) {}
+    }
+    return data;
+  });
 }
 
 export async function processStagedDocument(id: string): Promise<any> {
@@ -1110,7 +1239,10 @@ export async function processStagedDocument(id: string): Promise<any> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to process staged document");
   }
-  return res.json();
+  const result = await res.json();
+  invalidateStagedDocumentsCache();
+  invalidateInvoicesCache();
+  return result;
 }
 
 export async function deleteStagedDocument(id: string): Promise<any> {
@@ -1123,7 +1255,9 @@ export async function deleteStagedDocument(id: string): Promise<any> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to delete staged document");
   }
-  return res.json();
+  const result = await res.json();
+  invalidateStagedDocumentsCache();
+  return result;
 }
 
 export async function pollEmails(): Promise<{
@@ -1145,7 +1279,10 @@ export async function pollEmails(): Promise<{
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to poll emails");
   }
-  return res.json();
+  const result = await res.json();
+  invalidateStagedDocumentsCache();
+  await listStagedDocuments(true);
+  return result;
 }
 
 export async function getIMAPSettings(forceRefresh = false): Promise<IMAPSettings> {
