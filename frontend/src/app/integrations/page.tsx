@@ -38,6 +38,7 @@ import {
   pollEmails,
   getZohoStatus,
   getCachedZohoStatus,
+  getCachedIMAPSettings,
   getCachedMasterData,
   getZohoConnectUrl,
   getZohoOrganizations,
@@ -162,6 +163,22 @@ function IntegrationsContent() {
   useEffect(() => {
     const cachedStatus = getCachedZohoStatus();
     const cachedMaster = getCachedMasterData();
+    const cachedImap = getCachedIMAPSettings();
+
+    if (cachedImap) {
+      setImapSettings(cachedImap);
+      if (cachedImap.status === "connected" || cachedImap.is_connected) {
+        setIsEmailConnected(true);
+        const cfg = cachedImap.config || cachedImap;
+        setEmailForm({
+          host: cfg.imap_server || "imap.gmail.com",
+          port: String(cfg.imap_port || "993"),
+          email: cfg.email_address || "",
+          password: "",
+        });
+      }
+    }
+
     if (cachedStatus) {
       setZohoStatus(cachedStatus);
       setIsLoading(false);

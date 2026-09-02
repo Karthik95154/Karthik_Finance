@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
@@ -37,6 +37,14 @@ class JournalPreviewResponse(BaseModel):
     lines: List[Dict[str, Any]]
 
 
+def get_user_filter(current_user: AuthenticatedUser):
+    try:
+        user_uuid = UUID(current_user.id)
+        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        return (Invoice.user_id.is_(None))
+
+
 @router.get("/invoices/{invoice_id}/journal")
 @router.get("/invoices/{invoice_id}/journal-preview")
 @router.get("/review/invoices/{invoice_id}/journal")
@@ -55,7 +63,8 @@ async def get_journal_preview(
     Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -115,7 +124,8 @@ async def approve_journal_entry(
     tenant_id = current_user.tenant_id
     user_email = current_user.email
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -232,7 +242,8 @@ async def approve_tds_assessment(
     tenant_id = current_user.tenant_id
     user_email = current_user.email
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -320,7 +331,8 @@ async def approve_invoice(
     tenant_id = current_user.tenant_id
     user_email = current_user.email
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -531,7 +543,8 @@ async def reject_invoice(
     tenant_id = current_user.tenant_id
     user_email = current_user.email
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -604,7 +617,8 @@ async def get_invoice_vendor_status(
     Returns MATCHED, NOT_FOUND, or MISMATCH without performing arbitrary fallback.
     """
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -681,7 +695,8 @@ async def add_vendor_to_zoho(
     Associates the newly created contact_id with the invoice.
     """
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 

@@ -17,11 +17,31 @@ class MasterDataService:
         self,
         tenant_id: str,
         db: AsyncSession,
+        user_id: Optional[Any] = None,
     ) -> ZohoConnection:
-        """Retrieves active ZohoConnection for tenant or returns a placeholder record."""
-        query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id)
+        """Retrieves active ZohoConnection for user or returns a placeholder record."""
+        import uuid
+        user_uuid = None
+        if user_id:
+            try:
+                user_uuid = uuid.UUID(str(user_id))
+            except (ValueError, TypeError):
+                user_uuid = None
+
+        if user_uuid:
+            query = select(ZohoConnection).where(ZohoConnection.user_id == user_uuid).order_by(ZohoConnection.created_at.desc())
+            result = await db.execute(query)
+            connection = result.scalars().first()
+            if not connection:
+                connection = ZohoConnection(tenant_id=tenant_id, user_id=user_uuid, status="DISCONNECTED")
+                db.add(connection)
+                await db.commit()
+                await db.refresh(connection)
+            return connection
+
+        query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id).order_by(ZohoConnection.created_at.desc())
         result = await db.execute(query)
-        connection = result.scalar_one_or_none()
+        connection = result.scalars().first()
         if not connection:
             connection = ZohoConnection(tenant_id=tenant_id, status="DISCONNECTED")
             db.add(connection)

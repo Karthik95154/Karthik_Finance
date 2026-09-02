@@ -117,6 +117,36 @@ async def login_for_access_token(
             full_name=full_name,
         )
 
+        # Save user to PostgreSQL users table if not already existing
+        if not user:
+            try:
+                tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+                tenant = tenant_res.scalar_one_or_none()
+                if not tenant:
+                    tenant = Tenant(id=tenant_id, name="Default Tenant", slug=f"tenant-{tenant_id}")
+                    db.add(tenant)
+                    await db.flush()
+
+                try:
+                    parsed_user_id = uuid.UUID(user_id)
+                except ValueError:
+                    parsed_user_id = uuid.uuid4()
+
+                new_user = User(
+                    id=parsed_user_id,
+                    tenant_id=tenant_id,
+                    email=clean_email,
+                    full_name=full_name,
+                    role=role,
+                    is_active=True,
+                )
+                db.add(new_user)
+                await db.commit()
+                logger.info(f"User {clean_email} successfully stored in PostgreSQL users table.")
+            except Exception as db_save_err:
+                logger.warning(f"Failed to persist user in PostgreSQL: {db_save_err}")
+                await db.rollback()
+
     return TokenResponse(
         access_token=token,
         token_type="bearer",

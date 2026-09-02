@@ -4,7 +4,10 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 from httpx import AsyncClient, ASGITransport
 from app.main import app
+from app.core.security import create_access_token
 from app.core.security_util import encrypt_data, decrypt_data
+
+test_auth_headers = {"Authorization": f"Bearer {create_access_token(user_id='test-user-id', email='test@example.com', tenant_id='default-tenant-001', role='ADMIN')}"}
 from app.storage.supabase_storage import storage_service
 from app.services.imap_service import imap_service
 from app.db.database import get_db
@@ -47,7 +50,7 @@ async def test_settings_api_flow():
                     "email_address": "finance@company.com",
                     "password": "my_google_app_password"
                 }
-                res = await client.post("/api/v1/settings/integrations/imap_email/configure", json=payload)
+                res = await client.post("/api/v1/settings/integrations/imap_email/configure", json=payload, headers=test_auth_headers)
                 assert res.status_code == 200
                 assert res.json()["success"] is True
                 assert res.json()["status"] == "connected"
@@ -64,17 +67,17 @@ async def test_settings_api_flow():
                         "password": encrypt_data("my_google_app_password")
                     }
                 )
-                mock_result.scalar_one_or_none.return_value = mock_integration
+                mock_result.scalars.return_value.first.return_value = mock_integration
 
                 # 2. Get settings (verify masked password)
-                res = await client.get("/api/v1/settings/integrations/imap_email")
+                res = await client.get("/api/v1/settings/integrations/imap_email", headers=test_auth_headers)
                 assert res.status_code == 200
                 assert res.json()["status"] == "connected"
                 assert res.json()["config"]["email_address"] == "finance@company.com"
                 assert res.json()["config"]["password"] == "••••••••••••••••"
 
                 # 3. Disconnect settings
-                res = await client.post("/api/v1/settings/integrations/imap_email/disconnect")
+                res = await client.post("/api/v1/settings/integrations/imap_email/disconnect", headers=test_auth_headers)
                 assert res.status_code == 200
                 assert res.json()["status"] == "disconnected"
     finally:
@@ -138,12 +141,9 @@ async def test_email_polling_and_inbox_lifecycle():
                  patch.object(storage_service, "upload_file", return_value="uploads/test_path.pdf"), \
                  patch("app.api.v1.inbox.classify_document", return_value=mock_class_result):
                 
-                # Mock Integration select
-                mock_result.scalar_one_or_none.return_value = mock_integration
-                # Mock Invoice duplicate check (returns None for new file)
-                mock_result.scalars.return_value.first.return_value = None
+                mock_result.scalars.return_value.first.side_effect = [mock_integration, None]
 
-                res = await client.post("/api/v1/email/poll")
+                res = await client.post("/api/v1/email/poll", headers=test_auth_headers)
                 assert res.status_code == 200
                 data = res.json()
                 assert data["success"] is True
@@ -175,10 +175,9 @@ async def test_email_polling_and_inbox_lifecycle():
 
             # 3. Trigger email poll again (verify SHA-256 duplicate handling)
             with patch.object(imap_service, "poll_mailbox", return_value=poll_return_val):
-                # Mock duplicate check to return mock_invoice
-                mock_result.scalars.return_value.first.return_value = mock_invoice
+                mock_result.scalars.return_value.first.side_effect = [mock_integration, mock_invoice]
 
-                res = await client.post("/api/v1/email/poll")
+                res = await client.post("/api/v1/email/poll", headers=test_auth_headers)
                 assert res.status_code == 200
                 data_dup = res.json()
                 assert data_dup["new_documents"] == 0
@@ -308,10 +307,9 @@ async def test_non_financial_documents_discarded():
                  patch.object(storage_service, "upload_file", mock_upload), \
                  patch("app.api.v1.inbox.classify_document", return_value=non_financial_result):
 
-                mock_result.scalar_one_or_none.return_value = mock_integration
-                mock_result.scalars.return_value.first.return_value = None
+                mock_result.scalars.return_value.first.side_effect = [mock_integration, None]
 
-                res = await client.post("/api/v1/email/poll")
+                res = await client.post("/api/v1/email/poll", headers=test_auth_headers)
                 assert res.status_code == 200
                 data = res.json()
                 assert data["success"] is True

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Invoice, Integration
 from app.core.config import settings
+from app.core.security import AuthenticatedUser, get_current_user
 from app.storage.supabase_storage import storage_service
 from app.services.imap_service import imap_service
 from app.services.invoice_processing import process_invoice_background
@@ -20,12 +21,22 @@ router = APIRouter(prefix="", tags=["Inbox / Ingestion"])
 
 
 @router.get("/inbox/staged")
-async def get_staged_documents(db: AsyncSession = Depends(get_db)):
-    """Retrieves all staged invoices waiting for review, excluding NOT_FINANCIAL records while preserving FINANCIAL, UNKNOWN, and legacy NULL records."""
+async def get_staged_documents(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieves staged invoices waiting for review belonging to the authenticated user (or legacy unassigned records)."""
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
     query = (
         select(Invoice)
         .where(
             Invoice.status == "STAGED",
+            user_filter,
             or_(
                 Invoice.financial_relevance != "NOT_FINANCIAL",
                 Invoice.financial_relevance.is_(None),
@@ -43,10 +54,17 @@ async def get_staged_documents(db: AsyncSession = Depends(get_db)):
 async def process_staged_document(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Triggers invoice extraction and Stage 3 accounting pipeline for a staged document."""
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -82,10 +100,17 @@ async def process_staged_document(
 async def delete_staged_document(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Deletes a staged invoice from the database instantly, cleaning up Supabase Storage in the background."""
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -114,20 +139,35 @@ async def delete_staged_document(
 
 @router.post("/email/poll")
 @router.post("/inbox/poll")
-async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(get_db)):
+async def poll_email_inbox(
+    window_hours: int = 24,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
     """Triggers live polling of the configured IMAP mailbox to ingest new attachments."""
     import time
     start_total = time.perf_counter()
     
-    # Find email config
-    query = select(Integration).where(Integration.id == "imap_email")
+    try:
+        current_user_uuid = uuid.UUID(current_user.id)
+        user_integration_filter = or_(
+            Integration.user_id == current_user_uuid,
+            Integration.id == f"imap_email_{current_user.id}",
+            Integration.id == "imap_email",
+        )
+    except (ValueError, TypeError):
+        current_user_uuid = None
+        user_integration_filter = (Integration.id == "imap_email")
+
+    # Find email config for this specific user
+    query = select(Integration).where(user_integration_filter).order_by(Integration.created_at.desc())
     result = await db.execute(query)
-    integration = result.scalar_one_or_none()
+    integration = result.scalars().first()
 
     if not integration or integration.status != "connected" or not integration.config:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Corporate email integration is not configured. Please connect your inbox in Settings.",
+            detail="Corporate email integration is not configured for your account. Please connect your inbox in Settings.",
         )
 
     try:
@@ -139,11 +179,11 @@ async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(ge
         if "AUTHENTICATIONFAILED" in err_msg or "Invalid credentials" in err_msg:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="IMAP authentication failed. For Gmail accounts, please generate a 16-character Google App Password (https://myaccount.google.com/apppasswords) and update your credentials in the Integrations hub.",
+                detail=f"IMAP Authentication failed: {err_msg}",
             )
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to poll mailbox: {err_msg}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"IMAP Polling error: {err_msg}",
         )
 
     attachments = poll_res.get("attachments", [])
@@ -239,6 +279,8 @@ async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(ge
             start_insert = time.perf_counter()
             new_invoice = Invoice(
                 id=invoice_id,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user_uuid,
                 file_path=storage_path,
                 file_name=attachment["filename"],
                 file_size=len(attachment["file_bytes"]),

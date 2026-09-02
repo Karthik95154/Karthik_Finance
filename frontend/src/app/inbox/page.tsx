@@ -526,7 +526,7 @@ export default function InboxPage() {
                 <X size={20} />
               </button>
             </div>
-            <div style={{ flex: 1, backgroundColor: "#f1f3f4", position: "relative" }}>
+            <div style={{ flex: 1, minHeight: 0, backgroundColor: "#f1f3f4", position: "relative", display: "flex", flexDirection: "column" }}>
               {previewDoc.file_name.toLowerCase().endsWith(".pdf") ? (
                 <iframe
                   src={getInvoiceFileUrl(previewDoc.id)}
@@ -534,11 +534,29 @@ export default function InboxPage() {
                   style={{ width: "100%", height: "100%", border: "none" }}
                 />
               ) : (
-                <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+                <div
+                  style={{
+                    flex: 1,
+                    width: "100%",
+                    height: "100%",
+                    overflowY: "auto",
+                    overflowX: "auto",
+                    padding: "24px",
+                    boxSizing: "border-box",
+                    backgroundColor: "#f1f3f4",
+                  }}
+                >
                   <img
                     src={getInvoiceFileUrl(previewDoc.id)}
                     alt="Invoice Attachment"
-                    style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "4px" }}
+                    style={{
+                      width: "100%",
+                      height: "auto",
+                      display: "block",
+                      margin: "0 auto",
+                      borderRadius: "4px",
+                      boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+                    }}
                   />
                 </div>
               )}

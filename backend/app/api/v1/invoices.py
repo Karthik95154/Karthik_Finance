@@ -12,7 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import (
@@ -134,9 +134,15 @@ async def upload_invoice(
         )
 
     now_dt = datetime.now(timezone.utc)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+    except (ValueError, TypeError):
+        user_uuid = None
+
     invoice = Invoice(
         id=invoice_id,
         tenant_id=tenant_id,
+        user_id=user_uuid,
         file_path=storage_path,
         file_name=original_name,
         file_size=file_size,
@@ -181,9 +187,13 @@ async def categorize_invoice_accounting(
     Triggers Stage 3 (Qwen3-4B Accounting & TDS reasoning) on an existing invoice.
     Requires ADMIN or FINANCE role.
     """
-    tenant_id = current_user.tenant_id
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -226,11 +236,16 @@ async def list_invoices(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Lists all invoices for the authenticated user's tenant.
+    Lists all invoices belonging to the authenticated user (or legacy unassigned records).
     Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
-    tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.tenant_id == tenant_id).order_by(Invoice.created_at.desc())
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(user_filter).order_by(Invoice.created_at.desc())
     result = await db.execute(query)
     invoices = result.scalars().all()
 
@@ -274,8 +289,13 @@ async def get_invoice_status(
     Polling endpoint for tracking invoice processing, approval, and export status.
     Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
-    tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -308,8 +328,13 @@ async def get_invoice(
     Retrieves full stored invoice metadata.
     Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
-    tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -335,8 +360,13 @@ async def update_invoice_extraction(
     Automatically re-evaluates Stage 4 GST/ITC, Stage 5 Financial Validation, and Stage 6 GL Journal.
     Requires ADMIN or FINANCE role. Blocked if invoice is APPROVED.
     """
-    tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -481,12 +511,19 @@ async def update_invoice_extraction(
 @router.get("/{invoice_id}/file")
 async def get_invoice_file(
     invoice_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Streams original unmodified invoice binary from Supabase Storage.
     """
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -542,13 +579,20 @@ async def get_invoice_file(
 @router.get("/{invoice_id}/pages")
 async def get_invoice_pages(
     invoice_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Renders multi-page PDF invoices into a list of base64 PNG images, or returns
     the direct image base64 if it's already an image format.
     """
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
