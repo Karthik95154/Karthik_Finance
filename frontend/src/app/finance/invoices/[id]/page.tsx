@@ -438,6 +438,23 @@ export default function InvoiceWorkspacePage() {
         },
       ],
     }));
+    setAccountingData((prev: any) => {
+      const list = [...(prev.accounting || [])];
+      const newIdx = list.length + 1;
+      const defaultId = zohoAccounts?.[0]?.zoho_account_id || `ACC_${newIdx}`;
+      const defaultName = zohoAccounts?.[0]?.account_name || "General Expenses";
+      list.push({
+        line_index: newIdx,
+        source_description: "",
+        account_id: defaultId,
+        account_name: defaultName,
+        approved_account_id: defaultId,
+        approved_account_name: defaultName,
+        final_account_id: defaultId,
+        final_account_name: defaultName,
+      });
+      return { ...prev, accounting: list };
+    });
   };
 
   const removeLineItem = (index: number) => {
@@ -445,6 +462,13 @@ export default function InvoiceWorkspacePage() {
       const items = [...(prev.line_items || [])];
       items.splice(index, 1);
       return { ...prev, line_items: items };
+    });
+    setAccountingData((prev: any) => {
+      const list = [...(prev.accounting || [])];
+      list.splice(index, 1);
+      // Re-index line_index
+      const reindexed = list.map((item, idx) => ({ ...item, line_index: idx + 1 }));
+      return { ...prev, accounting: reindexed };
     });
   };
 
@@ -1653,200 +1677,259 @@ export default function InvoiceWorkspacePage() {
                       background: "#ffffff",
                     }}
                   >
-                    <table style={{ width: "100%", minWidth: "950px", borderCollapse: "collapse", fontSize: "12px" }}>
+                    <table style={{ width: "100%", minWidth: "1100px", borderCollapse: "collapse", fontSize: "12px" }}>
                       <thead>
                         <tr style={{ background: "#f9f9fb", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", textAlign: "left" }}>
                           <th style={{ padding: "8px 6px", width: "26px" }}>#</th>
-                          <th style={{ padding: "8px 6px", minWidth: "150px" }}>Description</th>
-                          <th style={{ padding: "8px 6px", width: "75px" }}>HSN/SAC</th>
-                          <th style={{ padding: "8px 6px", width: "50px" }}>Qty</th>
-                          <th style={{ padding: "8px 6px", width: "50px" }}>Unit</th>
-                          <th style={{ padding: "8px 6px", width: "75px" }}>Unit Price</th>
-                          <th style={{ padding: "8px 6px", width: "65px" }}>Discount</th>
-                          <th style={{ padding: "8px 6px", width: "75px" }}>Taxable</th>
-                          <th style={{ padding: "8px 6px", width: "55px" }}>CGST %</th>
-                          <th style={{ padding: "8px 6px", width: "65px" }}>CGST Amt</th>
-                          <th style={{ padding: "8px 6px", width: "55px" }}>SGST %</th>
-                          <th style={{ padding: "8px 6px", width: "65px" }}>SGST Amt</th>
-                          <th style={{ padding: "8px 6px", width: "55px" }}>IGST %</th>
-                          <th style={{ padding: "8px 6px", width: "65px" }}>IGST Amt</th>
-                          <th style={{ padding: "8px 6px", width: "55px" }}>Cess %</th>
-                          <th style={{ padding: "8px 6px", width: "65px" }}>Cess Amt</th>
-                          <th style={{ padding: "8px 6px", width: "85px" }}>Total</th>
+                          <th style={{ padding: "8px 6px", minWidth: "140px" }}>Description</th>
+                          <th style={{ padding: "8px 6px", minWidth: "180px" }}>Expense Account (COA)</th>
+                          <th style={{ padding: "8px 6px", width: "70px" }}>HSN/SAC</th>
+                          <th style={{ padding: "8px 6px", width: "45px" }}>Qty</th>
+                          <th style={{ padding: "8px 6px", width: "45px" }}>Unit</th>
+                          <th style={{ padding: "8px 6px", width: "70px" }}>Unit Price</th>
+                          <th style={{ padding: "8px 6px", width: "60px" }}>Discount</th>
+                          <th style={{ padding: "8px 6px", width: "70px" }}>Taxable</th>
+                          <th style={{ padding: "8px 6px", width: "50px" }}>CGST %</th>
+                          <th style={{ padding: "8px 6px", width: "60px" }}>CGST Amt</th>
+                          <th style={{ padding: "8px 6px", width: "50px" }}>SGST %</th>
+                          <th style={{ padding: "8px 6px", width: "60px" }}>SGST Amt</th>
+                          <th style={{ padding: "8px 6px", width: "50px" }}>IGST %</th>
+                          <th style={{ padding: "8px 6px", width: "60px" }}>IGST Amt</th>
+                          <th style={{ padding: "8px 6px", width: "50px" }}>Cess %</th>
+                          <th style={{ padding: "8px 6px", width: "60px" }}>Cess Amt</th>
+                          <th style={{ padding: "8px 6px", width: "80px" }}>Total</th>
                           <th style={{ padding: "8px 6px", width: "32px" }}></th>
                         </tr>
                       </thead>
                       <tbody>
                         {formData.line_items && formData.line_items.length > 0 ? (
-                          formData.line_items.map((item, idx) => (
-                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                              <td style={{ padding: "6px", color: "var(--text-tertiary)", textAlign: "center" }}>
-                                {idx + 1}
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="text"
-                                  className="table-input"
-                                  value={item.description ?? ""}
-                                  placeholder="Description"
-                                  onChange={(e) => handleLineItemChange(idx, "description", e.target.value)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="text"
-                                  className="table-input"
-                                  value={item.hsn_code ?? ""}
-                                  placeholder="HSN"
-                                  onChange={(e) => handleLineItemChange(idx, "hsn_code", e.target.value)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.quantity ?? ""}
-                                  placeholder="1"
-                                  onChange={(e) => handleLineItemChange(idx, "quantity", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="text"
-                                  className="table-input"
-                                  value={item.unit ?? ""}
-                                  placeholder="Nos/Kg"
-                                  onChange={(e) => handleLineItemChange(idx, "unit", e.target.value)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.unit_price ?? item.rate ?? ""}
-                                  placeholder="0.00"
-                                  onChange={(e) => {
-                                    const val = parseFloat(e.target.value) || 0;
-                                    handleLineItemChange(idx, "unit_price", val);
-                                    handleLineItemChange(idx, "rate", val);
-                                  }}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.discount ?? ""}
-                                  placeholder="0"
-                                  onChange={(e) => handleLineItemChange(idx, "discount", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.taxable_amount ?? ""}
-                                  placeholder="0.00"
-                                  onChange={(e) => handleLineItemChange(idx, "taxable_amount", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.cgst_rate ?? ""}
-                                  placeholder="0%"
-                                  onChange={(e) => handleLineItemChange(idx, "cgst_rate", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.cgst_amount ?? ""}
-                                  placeholder="0.00"
-                                  onChange={(e) => handleLineItemChange(idx, "cgst_amount", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.sgst_rate ?? ""}
-                                  placeholder="0%"
-                                  onChange={(e) => handleLineItemChange(idx, "sgst_rate", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.sgst_amount ?? ""}
-                                  placeholder="0.00"
-                                  onChange={(e) => handleLineItemChange(idx, "sgst_amount", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.igst_rate ?? ""}
-                                  placeholder="0%"
-                                  onChange={(e) => handleLineItemChange(idx, "igst_rate", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.igst_amount ?? ""}
-                                  placeholder="0.00"
-                                  onChange={(e) => handleLineItemChange(idx, "igst_amount", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.cess_rate ?? ""}
-                                  placeholder="0%"
-                                  onChange={(e) => handleLineItemChange(idx, "cess_rate", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  value={item.cess_amount ?? ""}
-                                  placeholder="0.00"
-                                  onChange={(e) => handleLineItemChange(idx, "cess_amount", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px" }}>
-                                <input
-                                  type="number"
-                                  className="table-input"
-                                  style={{ fontWeight: "600" }}
-                                  value={item.total ?? ""}
-                                  placeholder="0.00"
-                                  onChange={(e) => handleLineItemChange(idx, "total", parseFloat(e.target.value) || 0)}
-                                />
-                              </td>
-                              <td style={{ padding: "6px", textAlign: "center" }}>
-                                <button
-                                  type="button"
-                                  onClick={() => removeLineItem(idx)}
-                                  style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", padding: "4px" }}
-                                  title="Remove item"
-                                >
-                                  <Trash2 size={13} />
-                                </button>
-                              </td>
-                            </tr>
-                          ))
+                          formData.line_items.map((item, idx) => {
+                            const acc = accountingLines[idx] || {};
+                            return (
+                              <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                                <td style={{ padding: "6px", color: "var(--text-tertiary)", textAlign: "center" }}>
+                                  {idx + 1}
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="text"
+                                    className="table-input"
+                                    value={item.description ?? ""}
+                                    placeholder="Description"
+                                    onChange={(e) => handleLineItemChange(idx, "description", e.target.value)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  {zohoAccounts && zohoAccounts.length > 0 ? (
+                                    <select
+                                      className="table-input"
+                                      style={{
+                                        background: "#ffffff",
+                                        border: "1px solid var(--border-subtle)",
+                                        borderRadius: "var(--radius-sm)",
+                                        padding: "4px 6px",
+                                        width: "100%",
+                                        fontSize: "11px",
+                                        fontWeight: "500",
+                                        color: "var(--text-primary)",
+                                      }}
+                                      value={
+                                        zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(acc.approved_account_id || acc.final_account_id || acc.account_id))
+                                          ? String(acc.approved_account_id || acc.final_account_id || acc.account_id)
+                                          : (zohoAccounts.find((za: any) => za.account_name.toLowerCase().trim() === String(acc.approved_account_name || acc.final_account_name || acc.account_name || "").toLowerCase().trim())?.zoho_account_id || "")
+                                      }
+                                      onChange={(e) => {
+                                        const selId = e.target.value;
+                                        const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(selId));
+                                        const selName = match ? match.account_name : selId;
+                                        handleAccountingItemChange(idx, "approved_account_id", selId);
+                                        handleAccountingItemChange(idx, "approved_account_name", selName);
+                                        handleAccountingItemChange(idx, "final_account_id", selId);
+                                        handleAccountingItemChange(idx, "final_account_name", selName);
+                                        handleAccountingItemChange(idx, "account_id", selId);
+                                        handleAccountingItemChange(idx, "account_name", selName);
+                                        handleAccountingItemChange(idx, "line_index", idx + 1);
+                                      }}
+                                    >
+                                      <option value="">-- Select COA Account --</option>
+                                      {zohoAccounts.map((za: any) => (
+                                        <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
+                                          {za.account_name} ({za.account_type || "expense"})
+                                        </option>
+                                      ))}
+                                    </select>
+                                  ) : (
+                                    <input
+                                      type="text"
+                                      className="table-input"
+                                      style={{ fontSize: "11px" }}
+                                      value={acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || ""}
+                                      placeholder="Approved Account"
+                                      onChange={(e) => {
+                                        handleAccountingItemChange(idx, "final_account_name", e.target.value);
+                                        handleAccountingItemChange(idx, "approved_account_name", e.target.value);
+                                        handleAccountingItemChange(idx, "account_name", e.target.value);
+                                        handleAccountingItemChange(idx, "line_index", idx + 1);
+                                      }}
+                                    />
+                                  )}
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="text"
+                                    className="table-input"
+                                    value={item.hsn_code ?? ""}
+                                    placeholder="HSN"
+                                    onChange={(e) => handleLineItemChange(idx, "hsn_code", e.target.value)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.quantity ?? ""}
+                                    placeholder="1"
+                                    onChange={(e) => handleLineItemChange(idx, "quantity", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="text"
+                                    className="table-input"
+                                    value={item.unit ?? ""}
+                                    placeholder="Nos/Kg"
+                                    onChange={(e) => handleLineItemChange(idx, "unit", e.target.value)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.unit_price ?? item.rate ?? ""}
+                                    placeholder="0.00"
+                                    onChange={(e) => {
+                                      const val = parseFloat(e.target.value) || 0;
+                                      handleLineItemChange(idx, "unit_price", val);
+                                      handleLineItemChange(idx, "rate", val);
+                                    }}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.discount ?? ""}
+                                    placeholder="0"
+                                    onChange={(e) => handleLineItemChange(idx, "discount", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.taxable_amount ?? ""}
+                                    placeholder="0.00"
+                                    onChange={(e) => handleLineItemChange(idx, "taxable_amount", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.cgst_rate ?? ""}
+                                    placeholder="0%"
+                                    onChange={(e) => handleLineItemChange(idx, "cgst_rate", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.cgst_amount ?? ""}
+                                    placeholder="0.00"
+                                    onChange={(e) => handleLineItemChange(idx, "cgst_amount", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.sgst_rate ?? ""}
+                                    placeholder="0%"
+                                    onChange={(e) => handleLineItemChange(idx, "sgst_rate", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.sgst_amount ?? ""}
+                                    placeholder="0.00"
+                                    onChange={(e) => handleLineItemChange(idx, "sgst_amount", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.igst_rate ?? ""}
+                                    placeholder="0%"
+                                    onChange={(e) => handleLineItemChange(idx, "igst_rate", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.igst_amount ?? ""}
+                                    placeholder="0.00"
+                                    onChange={(e) => handleLineItemChange(idx, "igst_amount", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.cess_rate ?? ""}
+                                    placeholder="0%"
+                                    onChange={(e) => handleLineItemChange(idx, "cess_rate", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    value={item.cess_amount ?? ""}
+                                    placeholder="0.00"
+                                    onChange={(e) => handleLineItemChange(idx, "cess_amount", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px" }}>
+                                  <input
+                                    type="number"
+                                    className="table-input"
+                                    style={{ fontWeight: "600" }}
+                                    value={item.total ?? ""}
+                                    placeholder="0.00"
+                                    onChange={(e) => handleLineItemChange(idx, "total", parseFloat(e.target.value) || 0)}
+                                  />
+                                </td>
+                                <td style={{ padding: "6px", textAlign: "center" }}>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeLineItem(idx)}
+                                    style={{ background: "none", border: "none", color: "var(--text-tertiary)", cursor: "pointer", padding: "4px" }}
+                                    title="Remove item"
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })
                         ) : (
                           <tr>
-                            <td colSpan={18} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
+                            <td colSpan={19} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
                               No line items extracted. Click "+ Add Item Row" to add.
                             </td>
                           </tr>
@@ -2079,212 +2162,14 @@ export default function InvoiceWorkspacePage() {
                   </div>
                 </section>
 
-                {/* 8. ACCOUNTING CLASSIFICATION (STAGE 3 QWEN3-4B RESULT) */}
-                <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <BookOpen size={16} color="var(--accent)" />
-                      <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                        8. Accounting Classification &amp; COA Review
-                      </h3>
-                      {accountingLines.length > 0 && (
-                        <span className="badge badge-success" style={{ fontSize: "11px" }}>
-                          {accountingLines.length} classified
-                        </span>
-                      )}
-                    </div>
-
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      {accountingLines.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleAcceptAllAccounts}
-                          className="btn btn-secondary"
-                          style={{
-                            padding: "4px 10px",
-                            fontSize: "12px",
-                            color: "var(--accent)",
-                            borderColor: "var(--accent)",
-                          }}
-                          title="Accept all AI suggestions as approved accounts"
-                        >
-                          <Check size={12} />
-                          <span>Accept All Accounts</span>
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={handleRunAccounting}
-                        disabled={isCategorizing}
-                        className="btn btn-secondary"
-                        style={{ padding: "4px 10px", fontSize: "12px" }}
-                        title="Send current invoice JSON to Qwen3-4B without re-running VLM"
-                      >
-                        <RefreshCw size={12} className={isCategorizing ? "animate-spin" : ""} />
-                        <span>{isCategorizing ? "Running..." : "Re-run Accounting"}</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <div
-                    style={{
-                      overflowX: "auto",
-                      border: "1px solid var(--border-subtle)",
-                      borderRadius: "var(--radius-sm)",
-                      background: "#ffffff",
-                    }}
-                  >
-                    <table style={{ width: "100%", minWidth: "800px", borderCollapse: "collapse", fontSize: "12px" }}>
-                      <thead>
-                        <tr style={{ background: "#f9f9fb", borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", textAlign: "left" }}>
-                          <th style={{ padding: "8px 8px", width: "30px" }}>#</th>
-                          <th style={{ padding: "8px 8px", minWidth: "160px" }}>Item Description</th>
-                          <th style={{ padding: "8px 8px", minWidth: "200px" }}>Suggested Account (COA)</th>
-                          <th style={{ padding: "8px 8px", width: "90px" }}>Account Code</th>
-                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Confidence</th>
-                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Action</th>
-                          <th style={{ padding: "8px 8px", width: "80px", textAlign: "center" }}>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {accountingLines && accountingLines.length > 0 ? (
-                          accountingLines.map((acc, idx) => (
-                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                              <td style={{ padding: "8px", color: "var(--text-tertiary)", textAlign: "center" }}>
-                                {acc.line_index || idx + 1}
-                              </td>
-                              <td style={{ padding: "8px" }}>
-                                <div style={{ fontWeight: "500" }}>
-                                  {acc.source_description || formData.line_items?.[idx]?.description || "-"}
-                                </div>
-                                {acc.accounting_reason && (
-                                  <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "4px" }}>
-                                    Reason: {acc.accounting_reason}
-                                  </div>
-                                )}
-                              </td>
-                              <td style={{ padding: "8px" }}>
-                                {zohoAccounts && zohoAccounts.length > 0 ? (
-                                  <select
-                                    className="table-input"
-                                    style={{
-                                      background: "#ffffff",
-                                      border: "1px solid var(--border-subtle)",
-                                      borderRadius: "var(--radius-sm)",
-                                      padding: "6px 8px",
-                                      width: "100%",
-                                      fontSize: "12px",
-                                      fontWeight: "500",
-                                      color: "var(--text-primary)",
-                                    }}
-                                    value={
-                                      zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(acc.approved_account_id || acc.final_account_id || acc.account_id))
-                                        ? String(acc.approved_account_id || acc.final_account_id || acc.account_id)
-                                        : (zohoAccounts.find((za: any) => za.account_name.toLowerCase().trim() === String(acc.approved_account_name || acc.final_account_name || acc.account_name || "").toLowerCase().trim())?.zoho_account_id || "")
-                                    }
-                                    onChange={(e) => {
-                                      const selId = e.target.value;
-                                      const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(selId));
-                                      const selName = match ? match.account_name : selId;
-                                      handleAccountingItemChange(idx, "approved_account_id", selId);
-                                      handleAccountingItemChange(idx, "approved_account_name", selName);
-                                      handleAccountingItemChange(idx, "final_account_id", selId);
-                                      handleAccountingItemChange(idx, "final_account_name", selName);
-                                    }}
-                                  >
-                                    <option value="">-- Select Zoho Account --</option>
-                                    {zohoAccounts.map((za: any) => (
-                                      <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
-                                        {za.account_name} ({za.account_type || "expense"})
-                                      </option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <input
-                                    type="text"
-                                    className="table-input"
-                                    value={acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || ""}
-                                    placeholder="Approved Account"
-                                    onChange={(e) => {
-                                      handleAccountingItemChange(idx, "final_account_name", e.target.value);
-                                      handleAccountingItemChange(idx, "approved_account_name", e.target.value);
-                                    }}
-                                  />
-                                )}
-                              </td>
-                              <td style={{ padding: "8px" }}>
-                                <code>{acc.approved_account_id || acc.final_account_id || acc.account_id || acc.ai_account_id || "-"}</code>
-                              </td>
-                              <td style={{ padding: "8px", textAlign: "center" }}>
-                                {(() => {
-                                  const conf = acc.confidence_score ?? acc.ai_confidence;
-                                  return conf !== undefined && conf !== null ? (
-                                    <span
-                                      className={`badge ${conf >= 0.85
-                                          ? "badge-success"
-                                          : conf >= 0.6
-                                            ? "badge-uploaded"
-                                            : "badge-danger"
-                                        }`}
-                                      style={{ fontSize: "11px" }}
-                                    >
-                                      {Math.round(conf * 100)}%
-                                    </span>
-                                  ) : (
-                                    "-"
-                                  );
-                                })()}
-                              </td>
-                              <td style={{ padding: "8px", textAlign: "center" }}>
-                                {acc.approved_account_id ? (
-                                  <span style={{ fontSize: "11px", color: "#34c759", fontWeight: "600" }}>
-                                    Approved ✓
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleAcceptAccount(idx)}
-                                    className="btn btn-secondary"
-                                    style={{ padding: "2px 8px", fontSize: "11px" }}
-                                  >
-                                    Accept
-                                  </button>
-                                )}
-                              </td>
-                              <td style={{ padding: "8px", textAlign: "center" }}>
-                                {acc.ai_needs_review && !acc.approved_account_id ? (
-                                  <span className="badge badge-danger" style={{ fontSize: "10px" }}>
-                                    Review
-                                  </span>
-                                ) : (
-                                  <span className="badge badge-success" style={{ fontSize: "10px" }}>
-                                    Matched
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td colSpan={7} style={{ padding: "20px", textAlign: "center", color: "var(--text-secondary)" }}>
-                              No accounting classification generated yet. Click &quot;Re-run Accounting&quot; to classify with Qwen3-4B.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-
-                {/* 9. TDS MODEL RESULT (ONLY IF RETURNED / AVAILABLE) */}
+                {/* 8. STATUTORY TDS ASSESSMENT */}
                 {tdsResult && (
                   <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                         <Scale size={16} color="var(--accent)" />
                         <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                          9. Statutory TDS Assessment
+                          8. Statutory TDS Assessment
                         </h3>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -2606,52 +2491,48 @@ export default function InvoiceWorkspacePage() {
                   </section>
                 )}
 
-                {/* 9. GST VALIDATION (STAGE 4 DETERMINISTIC ENGINE) */}
-                {gstResult && (
-                  <section
+                {/* 9. GST & TAX SUMMARY */}
+                <section
+                  style={{
+                    borderTop: "1px solid var(--border-subtle)",
+                    paddingTop: "18px",
+                  }}
+                >
+                  <div
                     style={{
-                      borderTop: "1px solid var(--border-subtle)",
-                      paddingTop: "18px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: "12px",
                     }}
                   >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        marginBottom: "12px",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <ShieldCheck size={16} color="var(--accent)" />
-                        <h3
-                          style={{
-                            fontSize: "14px",
-                            fontWeight: "700",
-                            letterSpacing: "0.02em",
-                            textTransform: "uppercase",
-                          }}
-                        >
-                          9. GST Structure Validation
-                        </h3>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <span
-                          className={`badge ${
-                            gstResult.supply_type === "INTRA_STATE"
-                              ? "badge-success"
-                              : gstResult.supply_type === "INTER_STATE"
-                              ? "badge-uploaded"
-                              : "badge-warning"
-                          }`}
-                          style={{ fontSize: "11px", fontWeight: "600" }}
-                        >
-                          {gstResult.supply_type === "INTRA_STATE"
-                            ? "Intra-State (CGST+SGST)"
-                            : gstResult.supply_type === "INTER_STATE"
-                            ? "Inter-State (IGST)"
-                            : "Review Required"}
-                        </span>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <ShieldCheck size={16} color="var(--accent)" />
+                      <h3
+                        style={{
+                          fontSize: "14px",
+                          fontWeight: "700",
+                          letterSpacing: "0.02em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        9. GST & Tax Summary
+                      </h3>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <span
+                        className={`badge ${
+                          (gstResult?.supply_type === "INTRA_STATE" || (!gstResult && (formData.cgst_amount || formData.cgst || formData.sgst_amount || formData.sgst)))
+                            ? "badge-success"
+                            : "badge-uploaded"
+                        }`}
+                        style={{ fontSize: "11px", fontWeight: "600" }}
+                      >
+                        {(gstResult?.supply_type === "INTRA_STATE" || (!gstResult && (formData.cgst_amount || formData.cgst || formData.sgst_amount || formData.sgst)))
+                          ? "Intra-State (CGST + SGST)"
+                          : "Inter-State (IGST)"}
+                      </span>
+                      {gstResult && (
                         <span
                           className={`badge ${
                             gstResult.validation_status === "PASSED"
@@ -2662,238 +2543,121 @@ export default function InvoiceWorkspacePage() {
                           }`}
                           style={{ fontSize: "11px", fontWeight: "700" }}
                         >
-                          {gstResult.validation_status || "PENDING"}
+                          {gstResult.validation_status === "PASSED" ? "GST Validated ✓" : (gstResult.validation_status || "PENDING")}
                         </span>
-                      </div>
+                      )}
                     </div>
+                  </div>
 
-                    {/* GST Identification Grid */}
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(4, 1fr)",
-                        gap: "12px",
-                        background: "var(--bg-main)",
-                        padding: "12px",
-                        borderRadius: "var(--radius-sm)",
-                        border: "1px solid var(--border-subtle)",
-                        marginBottom: "14px",
-                      }}
-                    >
-                      <div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          Supplier GSTIN & State
-                        </div>
-                        <div style={{ fontWeight: "600", fontSize: "12px", fontFamily: "monospace" }}>
-                          {formData.vendor_gstin || "-"}
-                        </div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                          {gstResult.supplier_state_code
-                            ? `${gstResult.supplier_state_code} - ${gstResult.supplier_state_name}`
-                            : "Unresolved"}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          Buyer GSTIN & State
-                        </div>
-                        <div style={{ fontWeight: "600", fontSize: "12px", fontFamily: "monospace" }}>
-                          {formData.customer_gstin || "-"}
-                        </div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                          {gstResult.buyer_state_code
-                            ? `${gstResult.buyer_state_code} - ${gstResult.buyer_state_name}`
-                            : "Unresolved"}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          Place of Supply (POS)
-                        </div>
-                        <div style={{ fontWeight: "600", fontSize: "12px" }}>
-                          {gstResult.place_of_supply_state_name
-                            ? `${gstResult.place_of_supply_state_code} - ${gstResult.place_of_supply_state_name}`
-                            : "Unresolved"}
-                        </div>
-                        <div style={{ fontSize: "10px", color: "var(--accent)", marginTop: "2px" }}>
-                          Source: {gstResult.place_of_supply_source === "explicit_invoice" ? "Explicit Invoice" : gstResult.place_of_supply_source === "buyer_gstin_fallback" ? "Buyer GSTIN Fallback" : "Unresolved"}
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          Reverse Charge (RCM)
-                        </div>
-                        <div style={{ fontWeight: "600", fontSize: "12px" }}>
-                          {gstResult.is_reverse_charge ? "Yes (RCM Applicable)" : "No"}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Extracted vs Calculated Tax Comparison Table */}
-                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
-                      <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", textAlign: "left" }}>
-                        <thead>
-                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
-                            <th style={{ padding: "8px" }}>Tax Component</th>
-                            <th style={{ padding: "8px", textAlign: "right" }}>Extracted (Source)</th>
-                            <th style={{ padding: "8px", textAlign: "right" }}>Calculated (Engine)</th>
-                            <th style={{ padding: "8px", textAlign: "center" }}>Validation</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                            <td style={{ padding: "8px", fontWeight: "600" }}>CGST (Central Tax)</td>
-                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
-                              {gstResult.extracted?.cgst_amount !== null && gstResult.extracted?.cgst_amount !== undefined
-                                ? `₹${gstResult.extracted.cgst_amount.toLocaleString()}`
-                                : "-"}
-                            </td>
-                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
-                              {gstResult.calculated?.cgst_amount !== null && gstResult.calculated?.cgst_amount !== undefined
-                                ? `₹${gstResult.calculated.cgst_amount.toLocaleString()}`
-                                : "₹0.00"}
-                            </td>
-                            <td style={{ padding: "8px", textAlign: "center" }}>
-                              {gstResult.supply_type === "INTRA_STATE" ? (
-                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
-                              ) : gstResult.extracted?.cgst_amount ? (
-                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
-                              ) : (
-                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
-                              )}
-                            </td>
-                          </tr>
-                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                            <td style={{ padding: "8px", fontWeight: "600" }}>SGST / UTGST (State Tax)</td>
-                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
-                              {gstResult.extracted?.sgst_amount !== null && gstResult.extracted?.sgst_amount !== undefined
-                                ? `₹${gstResult.extracted.sgst_amount.toLocaleString()}`
-                                : "-"}
-                            </td>
-                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
-                              {gstResult.calculated?.sgst_amount !== null && gstResult.calculated?.sgst_amount !== undefined
-                                ? `₹${gstResult.calculated.sgst_amount.toLocaleString()}`
-                                : "₹0.00"}
-                            </td>
-                            <td style={{ padding: "8px", textAlign: "center" }}>
-                              {gstResult.supply_type === "INTRA_STATE" ? (
-                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
-                              ) : gstResult.extracted?.sgst_amount ? (
-                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
-                              ) : (
-                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
-                              )}
-                            </td>
-                          </tr>
-                          <tr style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                            <td style={{ padding: "8px", fontWeight: "600" }}>IGST (Integrated Tax)</td>
-                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
-                              {gstResult.extracted?.igst_amount !== null && gstResult.extracted?.igst_amount !== undefined
-                                ? `₹${gstResult.extracted.igst_amount.toLocaleString()}`
-                                : "-"}
-                            </td>
-                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
-                              {gstResult.calculated?.igst_amount !== null && gstResult.calculated?.igst_amount !== undefined
-                                ? `₹${gstResult.calculated.igst_amount.toLocaleString()}`
-                                : "₹0.00"}
-                            </td>
-                            <td style={{ padding: "8px", textAlign: "center" }}>
-                              {gstResult.supply_type === "INTER_STATE" ? (
-                                <Check size={14} color="var(--success)" style={{ margin: "0 auto" }} />
-                              ) : gstResult.extracted?.igst_amount ? (
-                                <X size={14} color="var(--danger)" style={{ margin: "0 auto" }} />
-                              ) : (
-                                <span style={{ color: "var(--text-tertiary)" }}>-</span>
-                              )}
-                            </td>
-                          </tr>
-                          <tr style={{ background: "var(--bg-main)", fontWeight: "700" }}>
-                            <td style={{ padding: "8px" }}>Total GST</td>
-                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "var(--accent)" }}>
-                              {gstResult.extracted?.tax_total !== null && gstResult.extracted?.tax_total !== undefined
-                                ? `₹${gstResult.extracted.tax_total.toLocaleString()}`
-                                : "-"}
-                            </td>
-                            <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "var(--accent)" }}>
-                              {gstResult.calculated?.gst_total !== null && gstResult.calculated?.gst_total !== undefined
-                                ? `₹${gstResult.calculated.gst_total.toLocaleString()}`
-                                : "₹0.00"}
-                            </td>
-                            <td style={{ padding: "8px", textAlign: "center" }}>
-                              {gstResult.validation_status === "PASSED" ? (
-                                <span style={{ color: "var(--success)", fontSize: "11px" }}>MATCH</span>
-                              ) : (
-                                <span style={{ color: "var(--danger)", fontSize: "11px" }}>CHECK</span>
-                              )}
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Errors & Warnings */}
-                    {gstResult.errors && gstResult.errors.length > 0 && (
-                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginBottom: "8px", fontSize: "12px", color: "#991b1b" }}>
-                        {gstResult.errors.map((err, i) => (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < gstResult.errors!.length - 1 ? "4px" : "0" }}>
-                            <AlertCircle size={14} /> <span>{err}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {gstResult.warnings && gstResult.warnings.length > 0 && (
-                      <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontSize: "12px", color: "#854d0e" }}>
-                        {gstResult.warnings.map((w, i) => (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < gstResult.warnings!.length - 1 ? "4px" : "0" }}>
-                            <AlertCircle size={14} /> <span>{w}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                )}
-
-                {/* 10. INPUT TAX CREDIT (ITC) (STAGE 4 DETERMINISTIC ENGINE) */}
-                {itcResult && (
-                  <section
+                  {/* Concise GST Card */}
+                  <div
                     style={{
-                      borderTop: "1px solid var(--border-subtle)",
-                      paddingTop: "18px",
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                      gap: "12px",
+                      background: "#fafafa",
+                      padding: "14px 16px",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid var(--border-subtle)",
+                      fontSize: "12px",
                     }}
                   >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        marginBottom: "12px",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <Landmark size={16} color="var(--accent)" />
-                        <h3
-                          style={{
-                            fontSize: "14px",
-                            fontWeight: "700",
-                            letterSpacing: "0.02em",
-                            textTransform: "uppercase",
-                          }}
-                        >
-                          10. Input Tax Credit (ITC) Eligibility
-                        </h3>
+                    {(gstResult?.supply_type === "INTER_STATE" || (formData.igst_amount || formData.igst)) ? (
+                      <div>
+                        <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>IGST</div>
+                        <div style={{ fontWeight: "700", fontSize: "14px" }}>
+                          ₹{(gstResult?.extracted?.igst_amount ?? formData.igst_amount ?? formData.igst ?? 0).toLocaleString()}
+                        </div>
                       </div>
+                    ) : (
+                      <>
+                        <div>
+                          <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>CGST</div>
+                          <div style={{ fontWeight: "700", fontSize: "14px" }}>
+                            ₹{(gstResult?.extracted?.cgst_amount ?? formData.cgst_amount ?? formData.cgst ?? 0).toLocaleString()}
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>SGST</div>
+                          <div style={{ fontWeight: "700", fontSize: "14px" }}>
+                            ₹{(gstResult?.extracted?.sgst_amount ?? formData.sgst_amount ?? formData.sgst ?? 0).toLocaleString()}
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    <div>
+                      <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>Total Tax</div>
+                      <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--accent)" }}>
+                        ₹{(gstResult?.extracted?.tax_total ?? formData.tax_total ?? 0).toLocaleString()}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>Reverse Charge (RCM)</div>
+                      <div style={{ fontWeight: "600", fontSize: "13px" }}>
+                        {gstResult?.is_reverse_charge ? "Yes" : "No"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* GST Mismatch / Error Warning */}
+                  {gstResult?.errors && gstResult.errors.length > 0 && (
+                    <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginTop: "10px", fontSize: "12px", color: "#991b1b" }}>
+                      {gstResult.errors.map((err, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < gstResult.errors!.length - 1 ? "4px" : "0" }}>
+                          <AlertCircle size={14} /> <span>{err}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {gstResult?.warnings && gstResult.warnings.length > 0 && (
+                    <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginTop: "10px", fontSize: "12px", color: "#854d0e" }}>
+                      {gstResult.warnings.map((w, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < gstResult.warnings!.length - 1 ? "4px" : "0" }}>
+                          <AlertCircle size={14} /> <span>{w}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                {/* 10. INPUT TAX CREDIT (ITC) */}
+                <section
+                  style={{
+                    borderTop: "1px solid var(--border-subtle)",
+                    paddingTop: "18px",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: "12px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <Landmark size={16} color="var(--accent)" />
+                      <h3
+                        style={{
+                          fontSize: "14px",
+                          fontWeight: "700",
+                          letterSpacing: "0.02em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        10. Input Tax Credit (ITC)
+                      </h3>
+                    </div>
+                    {itcResult && (
                       <span
                         className={`badge ${
                           itcResult.status === "ELIGIBLE"
                             ? "badge-success"
                             : itcResult.status === "INELIGIBLE"
                             ? "badge-danger"
-                            : itcResult.status === "PARTIALLY_ELIGIBLE"
-                            ? "badge-warning"
-                            : "badge-uploaded"
+                            : "badge-warning"
                         }`}
                         style={{ fontSize: "11px", fontWeight: "700" }}
                       >
@@ -2901,470 +2665,133 @@ export default function InvoiceWorkspacePage() {
                           ? "✓ ELIGIBLE"
                           : itcResult.status === "INELIGIBLE"
                           ? "✗ INELIGIBLE"
-                          : itcResult.status === "PARTIALLY_ELIGIBLE"
-                          ? "⚠ PARTIALLY ELIGIBLE"
-                          : "🔍 REVIEW REQUIRED"}
+                          : (itcResult.status || "REVIEW REQUIRED")}
                       </span>
-                    </div>
-
-                    {/* ITC Summary Cards (Full 6-Metric Breakdown) */}
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
-                        gap: "10px",
-                        marginBottom: "14px",
-                      }}
-                    >
-                      <div
-                        style={{
-                          background: "var(--bg-main)",
-                          padding: "10px 12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: "1px solid var(--border-subtle)",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          Total Input Tax
-                        </div>
-                        <div style={{ fontWeight: "700", fontSize: "14px" }}>
-                          ₹{itcResult.total_tax_amount?.toLocaleString() || "0.00"}
-                        </div>
-                      </div>
-
-                      <div
-                        style={{
-                          background: "#f0fdf4",
-                          padding: "10px 12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: "1px solid #bbf7d0",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px" }}>
-                          Eligible ITC (Sec 16)
-                        </div>
-                        <div style={{ fontWeight: "700", fontSize: "14px", color: "#15803d" }}>
-                          ₹{itcResult.eligible_itc?.toLocaleString() || itcResult.eligible_amount?.toLocaleString() || "0.00"}
-                        </div>
-                      </div>
-
-                      <div
-                        style={{
-                          background: (itcResult.blocked_itc || itcResult.ineligible_amount) > 0 ? "#fef2f2" : "var(--bg-main)",
-                          padding: "10px 12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: (itcResult.blocked_itc || itcResult.ineligible_amount) > 0 ? "1px solid #fecaca" : "1px solid var(--border-subtle)",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: (itcResult.blocked_itc || itcResult.ineligible_amount) > 0 ? "#991b1b" : "var(--text-secondary)", marginBottom: "3px" }}>
-                          Blocked (Sec 17(5))
-                        </div>
-                        <div style={{ fontWeight: "700", fontSize: "14px", color: (itcResult.blocked_itc || itcResult.ineligible_amount) > 0 ? "#b91c1c" : "var(--text-primary)" }}>
-                          ₹{itcResult.blocked_itc?.toLocaleString() || itcResult.ineligible_amount?.toLocaleString() || "0.00"}
-                        </div>
-                      </div>
-
-                      <div
-                        style={{
-                          background: (itcResult.reversal_itc || 0) > 0 ? "#fffbeb" : "var(--bg-main)",
-                          padding: "10px 12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: (itcResult.reversal_itc || 0) > 0 ? "1px solid #fde68a" : "1px solid var(--border-subtle)",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: (itcResult.reversal_itc || 0) > 0 ? "#92400e" : "var(--text-secondary)", marginBottom: "3px" }}>
-                          Reversal (R37/42/43)
-                        </div>
-                        <div style={{ fontWeight: "700", fontSize: "14px", color: (itcResult.reversal_itc || 0) > 0 ? "#b45309" : "var(--text-primary)" }}>
-                          ₹{itcResult.reversal_itc?.toLocaleString() || "0.00"}
-                        </div>
-                      </div>
-
-                      <div
-                        style={{
-                          background: (itcResult.review_amount || 0) > 0 ? "#eff6ff" : "var(--bg-main)",
-                          padding: "10px 12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: (itcResult.review_amount || 0) > 0 ? "1px solid #bfdbfe" : "1px solid var(--border-subtle)",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: (itcResult.review_amount || 0) > 0 ? "#1e40af" : "var(--text-secondary)", marginBottom: "3px" }}>
-                          Review Required
-                        </div>
-                        <div style={{ fontWeight: "700", fontSize: "14px", color: (itcResult.review_amount || 0) > 0 ? "#2563eb" : "var(--text-primary)" }}>
-                          ₹{itcResult.review_amount?.toLocaleString() || "0.00"}
-                        </div>
-                      </div>
-
-                      <div
-                        style={{
-                          background: (itcResult.net_itc_available || 0) > 0 ? "#f0fdf4" : "var(--bg-main)",
-                          padding: "10px 12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: (itcResult.net_itc_available || 0) > 0 ? "1px solid #86efac" : "1px solid var(--border-subtle)",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: "#166534", marginBottom: "3px", fontWeight: "600" }}>
-                          Net Claimable ITC
-                        </div>
-                        <div style={{ fontWeight: "800", fontSize: "15px", color: "#15803d" }}>
-                          ₹{itcResult.net_itc_available?.toLocaleString() || "0.00"}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Statutory Reason & Rule Reference */}
-                    <div
-                      style={{
-                        background: "var(--bg-main)",
-                        padding: "12px 14px",
-                        borderRadius: "var(--radius-sm)",
-                        border: "1px solid var(--border-subtle)",
-                        fontSize: "12px",
-                        marginBottom: "12px",
-                      }}
-                    >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                        <span style={{ fontWeight: "600", color: "var(--text-primary)" }}>
-                          Statutory Assessment & Rule Reference
-                        </span>
-                        <span
-                          style={{
-                            fontFamily: "monospace",
-                            fontWeight: "600",
-                            fontSize: "11px",
-                            color: "var(--accent)",
-                            background: "#eff6ff",
-                            padding: "2px 6px",
-                            borderRadius: "4px",
-                          }}
-                        >
-                          {itcResult.rule_reference}
-                        </span>
-                      </div>
-                      <div style={{ color: "var(--text-secondary)" }}>
-                        {itcResult.reason}
-                      </div>
-                    </div>
-
-                    {itcResult.status === "REVIEW_REQUIRED" && (
-                      <div
-                        style={{
-                          background: "#eff6ff",
-                          border: "1px solid #bfdbfe",
-                          borderRadius: "var(--radius-sm)",
-                          padding: "8px 12px",
-                          marginBottom: "12px",
-                          fontSize: "12px",
-                          color: "#1e40af",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "8px",
-                        }}
-                      >
-                        <AlertCircle size={14} />
-                        <span>
-                          <strong>Statutory Notice:</strong> Input tax credit requires verification under CGST Rules, but does not block Invoice Approval or Zoho Export.
-                        </span>
-                      </div>
                     )}
+                  </div>
 
-                    {/* Line-item ITC Breakdown Table */}
-                    {itcResult.line_item_breakdown && itcResult.line_item_breakdown.length > 1 && (
-                      <div style={{ overflowX: "auto" }}>
-                        <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
-                          <thead>
-                            <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
-                              <th style={{ padding: "6px" }}>#</th>
-                              <th style={{ padding: "6px" }}>Item Description</th>
-                              <th style={{ padding: "6px" }}>Account</th>
-                              <th style={{ padding: "6px", textAlign: "right" }}>Tax (₹)</th>
-                              <th style={{ padding: "6px", textAlign: "center" }}>Status</th>
-                              <th style={{ padding: "6px" }}>Rule & Reason</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {itcResult.line_item_breakdown.map((line) => (
-                              <tr key={line.line_index} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                                <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{line.line_index}</td>
-                                <td style={{ padding: "6px", fontWeight: "600" }}>{line.description}</td>
-                                <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{line.account_name || "-"}</td>
-                                <td style={{ padding: "6px", textAlign: "right", fontFamily: "monospace" }}>
-                                  ₹{line.tax_amount?.toLocaleString() || "0.00"}
-                                </td>
-                                <td style={{ padding: "6px", textAlign: "center" }}>
-                                  <span
-                                    className={`badge ${
-                                      line.itc_status === "ELIGIBLE"
-                                        ? "badge-success"
-                                        : line.itc_status === "INELIGIBLE"
-                                        ? "badge-warning"
-                                        : "badge-uploaded"
-                                    }`}
-                                    style={{ fontSize: "10px" }}
-                                  >
-                                    {line.itc_status}
-                                  </span>
-                                </td>
-                                <td style={{ padding: "6px", fontSize: "10px", color: "var(--text-secondary)" }}>
-                                  <strong style={{ color: "var(--text-primary)" }}>{line.rule_reference}:</strong> {line.reason}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
-                  </section>
-                )}
-
-                {/* 11. FINANCIAL VALIDATION & RECONCILIATION (STAGE 5 DETERMINISTIC ENGINE) */}
-                {financialValidationResult && (
-                  <section
+                  {/* Concise ITC Card */}
+                  <div
                     style={{
-                      borderTop: "1px solid var(--border-subtle)",
-                      paddingTop: "18px",
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                      gap: "12px",
+                      background: "#fafafa",
+                      padding: "14px 16px",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid var(--border-subtle)",
+                      fontSize: "12px",
                     }}
                   >
+                    <div>
+                      <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>ITC Status</div>
+                      <div style={{ fontWeight: "700", fontSize: "13px" }}>
+                        {itcResult?.status === "ELIGIBLE"
+                          ? "Eligible (Full ITC)"
+                          : itcResult?.status === "INELIGIBLE"
+                          ? "Ineligible / Blocked"
+                          : (itcResult?.status || "Standard ITC Available")}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>Applicable ITC Amount</div>
+                      <div style={{ fontWeight: "700", fontSize: "14px", color: "#15803d" }}>
+                        ₹{(itcResult?.net_itc_available ?? itcResult?.eligible_itc ?? itcResult?.eligible_amount ?? formData.tax_total ?? 0).toLocaleString()}
+                      </div>
+                    </div>
+
+                    {itcResult?.rule_reference && (
+                      <div>
+                        <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>Statutory Provision</div>
+                        <div style={{ fontWeight: "600", fontSize: "12px", color: "var(--text-primary)" }}>
+                          {itcResult.rule_reference}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                {/* 11. FINANCIAL VALIDATION */}
+                <section
+                  style={{
+                    borderTop: "1px solid var(--border-subtle)",
+                    paddingTop: "18px",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      marginBottom: "12px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <Calculator size={16} color="var(--accent)" />
+                      <h3
+                        style={{
+                          fontSize: "14px",
+                          fontWeight: "700",
+                          letterSpacing: "0.02em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        11. Financial Validation
+                      </h3>
+                    </div>
+                  </div>
+
+                  {/* Concise Status Banner */}
+                  {(!financialValidationResult || financialValidationResult.overall_status === "PASSED" || (financialValidationResult.errors?.length === 0 && !financialValidationResult.differences?.total_amount)) ? (
                     <div
                       style={{
                         display: "flex",
                         alignItems: "center",
-                        justifyContent: "space-between",
-                        marginBottom: "12px",
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        <Calculator size={16} color="var(--accent)" />
-                        <h3
-                          style={{
-                            fontSize: "14px",
-                            fontWeight: "700",
-                            letterSpacing: "0.02em",
-                            textTransform: "uppercase",
-                          }}
-                        >
-                          11. Financial Validation & Reconciliation
-                        </h3>
-                      </div>
-                      <span
-                        className={`badge ${
-                          financialValidationResult.overall_status === "PASSED"
-                            ? "badge-success"
-                            : financialValidationResult.overall_status === "MISMATCH"
-                            ? "badge-danger"
-                            : "badge-warning"
-                        }`}
-                        style={{ fontSize: "11px", fontWeight: "700" }}
-                      >
-                        {financialValidationResult.overall_status === "PASSED"
-                          ? "✓ RECONCILED (PASSED)"
-                          : financialValidationResult.overall_status === "MISMATCH"
-                          ? "⚠ DISCREPANCY DETECTED"
-                          : "REVIEW REQUIRED"}
-                      </span>
-                    </div>
-
-                    {/* Financial Summary Cards */}
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(3, 1fr)",
-                        gap: "12px",
-                        marginBottom: "14px",
-                      }}
-                    >
-                      {/* Subtotal Card */}
-                      <div
-                        style={{
-                          background: "var(--bg-main)",
-                          padding: "12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: "1px solid var(--border-subtle)",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          Subtotal (Taxable)
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                          <span style={{ fontWeight: "700", fontSize: "15px" }}>
-                            ₹{financialValidationResult.source.subtotal?.toLocaleString() ?? "-"}
-                          </span>
-                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                            Calc: ₹{financialValidationResult.calculated.subtotal?.toLocaleString() ?? "-"}
-                          </span>
-                        </div>
-                        {financialValidationResult.differences?.subtotal !== undefined && financialValidationResult.differences?.subtotal !== null && financialValidationResult.differences?.subtotal !== 0 && (
-                          <div style={{ fontSize: "10px", color: "var(--danger)", fontWeight: "600", marginTop: "2px" }}>
-                            Diff: ₹{financialValidationResult.differences.subtotal.toLocaleString()}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* GST / Tax Total Card */}
-                      <div
-                        style={{
-                          background: "var(--bg-main)",
-                          padding: "12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: "1px solid var(--border-subtle)",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          GST Tax Total
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                          <span style={{ fontWeight: "700", fontSize: "15px" }}>
-                            ₹{financialValidationResult.source.tax_total?.toLocaleString() ?? "-"}
-                          </span>
-                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                            Calc: ₹{financialValidationResult.calculated.gst_total?.toLocaleString() ?? "-"}
-                          </span>
-                        </div>
-                        {financialValidationResult.differences?.tax_total !== undefined && financialValidationResult.differences?.tax_total !== null && financialValidationResult.differences?.tax_total !== 0 && (
-                          <div style={{ fontSize: "10px", color: "var(--danger)", fontWeight: "600", marginTop: "2px" }}>
-                            Diff: ₹{financialValidationResult.differences.tax_total.toLocaleString()}
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Grand Total Card */}
-                      <div
-                        style={{
-                          background: financialValidationResult.differences?.total_amount ? "#fef2f2" : "#f0fdf4",
-                          padding: "12px",
-                          borderRadius: "var(--radius-sm)",
-                          border: financialValidationResult.differences?.total_amount ? "1px solid #fecaca" : "1px solid #bbf7d0",
-                        }}
-                      >
-                        <div style={{ fontSize: "11px", color: financialValidationResult.differences?.total_amount ? "#991b1b" : "#166534", marginBottom: "3px" }}>
-                          Grand Total Equation
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                          <span style={{ fontWeight: "700", fontSize: "15px", color: financialValidationResult.differences?.total_amount ? "#b91c1c" : "#15803d" }}>
-                            ₹{financialValidationResult.source.total_amount?.toLocaleString() ?? "-"}
-                          </span>
-                          <span style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
-                            Expected: ₹{financialValidationResult.calculated.grand_total?.toLocaleString() ?? "-"}
-                          </span>
-                        </div>
-                        {financialValidationResult.differences?.total_amount !== undefined && financialValidationResult.differences?.total_amount !== null && financialValidationResult.differences?.total_amount !== 0 && (
-                          <div style={{ fontSize: "10px", color: "#b91c1c", fontWeight: "700", marginTop: "2px" }}>
-                            Diff: ₹{financialValidationResult.differences.total_amount.toLocaleString()}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Secondary Charges Strip */}
-                    <div
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "repeat(4, 1fr)",
-                        gap: "8px",
-                        background: "var(--bg-main)",
-                        padding: "10px 12px",
+                        gap: "10px",
+                        background: "#f0fdf4",
+                        border: "1px solid #bbf7d0",
                         borderRadius: "var(--radius-sm)",
-                        border: "1px solid var(--border-subtle)",
-                        fontSize: "11px",
-                        marginBottom: "14px",
+                        padding: "12px 16px",
+                        fontSize: "13px",
+                        color: "#166534",
+                        fontWeight: "600",
                       }}
                     >
-                      <div>
-                        <span style={{ color: "var(--text-secondary)" }}>Discount: </span>
-                        <strong>-₹{financialValidationResult.source.discount_total?.toLocaleString() || "0.00"}</strong>
-                      </div>
-                      <div>
-                        <span style={{ color: "var(--text-secondary)" }}>Shipping: </span>
-                        <strong>+₹{financialValidationResult.source.shipping_charges?.toLocaleString() || "0.00"}</strong>
-                      </div>
-                      <div>
-                        <span style={{ color: "var(--text-secondary)" }}>Other Charges: </span>
-                        <strong>+₹{financialValidationResult.source.other_charges?.toLocaleString() || "0.00"}</strong>
-                      </div>
-                      <div>
-                        <span style={{ color: "var(--text-secondary)" }}>Round Off: </span>
-                        <strong>{financialValidationResult.source.round_off !== null && financialValidationResult.source.round_off !== undefined ? (financialValidationResult.source.round_off >= 0 ? `+₹${financialValidationResult.source.round_off}` : `-₹${Math.abs(financialValidationResult.source.round_off)}`) : "₹0.00"}</strong>
-                      </div>
+                      <Check size={18} color="#16a34a" />
+                      <span>✓ Ready for Approval — All mathematical calculations, tax subtotals, and invoice totals reconciled.</span>
                     </div>
-
-                    {/* Mathematical Checks Table */}
-                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
-                      <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
-                        <thead>
-                          <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
-                            <th style={{ padding: "8px" }}>Mathematical Check</th>
-                            <th style={{ padding: "8px", textAlign: "right" }}>Extracted (Source)</th>
-                            <th style={{ padding: "8px", textAlign: "right" }}>Calculated (Engine)</th>
-                            <th style={{ padding: "8px", textAlign: "right" }}>Difference</th>
-                            <th style={{ padding: "8px", textAlign: "center" }}>Status</th>
-                            <th style={{ padding: "8px" }}>Notes / Discrepancies</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {financialValidationResult.checks?.map((chk, idx) => (
-                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                              <td style={{ padding: "8px", fontWeight: "600" }}>{chk.description || chk.name}</td>
-                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
-                                {chk.source_value !== null && chk.source_value !== undefined ? `₹${chk.source_value.toLocaleString()}` : "-"}
-                              </td>
-                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace" }}>
-                                {chk.calculated_value !== null && chk.calculated_value !== undefined ? `₹${chk.calculated_value.toLocaleString()}` : "-"}
-                              </td>
-                              <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: chk.difference && chk.difference > 0 ? "var(--danger)" : "var(--text-primary)" }}>
-                                {chk.difference !== null && chk.difference !== undefined ? `₹${chk.difference.toLocaleString()}` : "₹0.00"}
-                              </td>
-                              <td style={{ padding: "8px", textAlign: "center" }}>
-                                <span
-                                  className={`badge ${
-                                    chk.status === "PASSED"
-                                      ? "badge-success"
-                                      : chk.status === "MISMATCH"
-                                      ? "badge-danger"
-                                      : chk.status === "NOT_APPLICABLE"
-                                      ? "badge-uploaded"
-                                      : "badge-warning"
-                                  }`}
-                                  style={{ fontSize: "10px" }}
-                                >
-                                  {chk.status}
-                                </span>
-                              </td>
-                              <td style={{ padding: "8px", color: "var(--text-secondary)", fontSize: "10px" }}>
-                                {chk.note || (chk.status === "PASSED" ? "Verified consistent" : "")}
-                              </td>
-                            </tr>
+                  ) : (
+                    <div
+                      style={{
+                        background: "#fef2f2",
+                        border: "1px solid #fca5a5",
+                        borderRadius: "var(--radius-sm)",
+                        padding: "12px 16px",
+                        fontSize: "12px",
+                        color: "#991b1b",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "700", fontSize: "13px", marginBottom: "6px" }}>
+                        <AlertCircle size={16} color="#dc2626" />
+                        <span>⚠ Review Required — Mathematical Discrepancy Detected</span>
+                      </div>
+                      {financialValidationResult.errors && financialValidationResult.errors.length > 0 ? (
+                        <div style={{ marginLeft: "24px" }}>
+                          {financialValidationResult.errors.map((err, i) => (
+                            <div key={i} style={{ marginBottom: "3px" }}>• {err}</div>
                           ))}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Discrepancy Errors & Warnings Callout */}
-                    {financialValidationResult.errors && financialValidationResult.errors.length > 0 && (
-                      <div style={{ background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "var(--radius-sm)", padding: "10px 14px", marginBottom: "8px", fontSize: "12px", color: "#991b1b" }}>
-                        <div style={{ fontWeight: "700", marginBottom: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
-                          <AlertCircle size={15} /> <span>Mathematical Discrepancies Detected:</span>
                         </div>
-                        {financialValidationResult.errors.map((err, i) => (
-                          <div key={i} style={{ marginLeft: "21px", marginBottom: i < financialValidationResult.errors.length - 1 ? "4px" : "0" }}>
-                            • {err}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {financialValidationResult.warnings && financialValidationResult.warnings.length > 0 && (
-                      <div style={{ background: "#fefce8", border: "1px solid #fef08a", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontSize: "12px", color: "#854d0e" }}>
-                        {financialValidationResult.warnings.map((w, i) => (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: i < financialValidationResult.warnings!.length - 1 ? "4px" : "0" }}>
-                            <AlertCircle size={14} /> <span>{w}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                )}
+                      ) : (
+                        <div style={{ marginLeft: "24px" }}>
+                          Subtotal + Taxes does not match Grand Total. Please adjust line items or charges before approving.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </section>
 
-                {/* 12. ACCOUNTING JOURNAL ENTRY PREVIEW (STAGE 6 DETERMINISTIC ENGINE) */}
+                {/* 12. GENERAL LEDGER JOURNAL PREVIEW */}
                 {journalEntry && (
                   <section
                     style={{
@@ -3392,7 +2819,7 @@ export default function InvoiceWorkspacePage() {
                             textTransform: "uppercase",
                           }}
                         >
-                          12. General Ledger Journal
+                          12. General Ledger Journal Preview
                         </h3>
                       </div>
 

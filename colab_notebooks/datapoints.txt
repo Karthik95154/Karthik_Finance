@@ -1,0 +1,61 @@
+### Project testing datapoints
+
+* Invoice number
+* Invoice date
+* Due date
+* Vendor name
+* Vendor GSTIN
+* Vendor PAN
+* Customer name
+* Customer GSTIN
+* Customer PAN
+* Place of Supply
+* Subtotal / Taxable Amount
+* Discount
+* Shipping / Freight
+* Other Charges
+* Round Off
+* CGST Rate
+* CGST Amount
+* SGST Rate
+* SGST Amount
+* IGST Rate
+* IGST Amount
+* Total Tax
+* Invoice Total / Grand Total
+* Line Item Description
+* HSN / SAC
+* Quantity
+* Unit Price / Rate
+* Line Taxable Amount
+* Line Total
+* COA Account ID
+* COA Account Name
+* TDS Applicable
+* TDS Nature / Category
+* TDS Section
+* TDS Rate
+* TDS Base Amount
+* AI Proposed TDS Amount
+* Final TDS Amount
+* ITC Status
+* ITC Amount
+* Net Payable
+* Journal Debit
+* Journal Credit
+* Vendor / Customer Type
+* Payment Terms
+* Bank Account Details
+* IFSC
+* UPI ID
+* Zoho Vendor ID
+* Zoho Account ID
+* Zoho Tax ID
+* Zoho TDS Tax ID
+* Accounting Period
+* Approval Status
+* Validation Status
+* Duplicate Status
+* Vendor Validation Status
+* Audit Trail / Before Value / After Value
+* Original Invoice File / Attachment
