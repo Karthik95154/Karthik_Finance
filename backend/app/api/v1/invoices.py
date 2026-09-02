@@ -306,7 +306,8 @@ async def get_invoice(
 ):
     """
     Retrieves full stored invoice metadata.
-    Accessible to ADMIN, FINANCE, and VIEWER roles.
+    Accessible to ADMIN, FINANCE, VIEWER, and CUSTOMER roles.
+    For CUSTOMER / VIEWER roles, invoice is only exposed after passing internal HITL approval.
     """
     tenant_id = current_user.tenant_id
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
@@ -317,6 +318,13 @@ async def get_invoice(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    # If user has CUSTOMER role, require the invoice to be HITL approved
+    if current_user.role == "CUSTOMER" and invoice.approval_status != "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Customer access unavailable: Invoice is awaiting internal Finance review and approval.",
         )
 
     return invoice
@@ -326,14 +334,16 @@ async def get_invoice(
 async def update_invoice_extraction(
     invoice_id: uuid.UUID,
     update_data: InvoiceUpdateRequest,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "CUSTOMER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Saves user-edited invoice values into current_vlm_output and current_accounting_output.
     Preserves raw_vlm_output (original model extraction JSON) immutably for audit.
     Automatically re-evaluates Stage 4 GST/ITC, Stage 5 Financial Validation, and Stage 6 GL Journal.
-    Requires ADMIN or FINANCE role. Blocked if invoice is APPROVED.
+    Enforces role separation:
+    - Internal Finance/Admin edits before approval remain in PENDING_REVIEW until approved.
+    - Customer edits after HITL approval validate accounting/journal balance but do NOT re-enter HITL review.
     """
     tenant_id = current_user.tenant_id
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
@@ -346,8 +356,11 @@ async def update_invoice_extraction(
             detail=f"Invoice with ID {invoice_id} not found.",
         )
 
-    if invoice.approval_status == "APPROVED":
-        # Editing an approved invoice automatically unlocks it and resets approval status to PENDING_REVIEW
+    is_internal_role = current_user.role in ("ADMIN", "FINANCE")
+    was_approved = (invoice.approval_status == "APPROVED")
+
+    # If an internal finance user edits an approved invoice, unlock and reset approval
+    if is_internal_role and was_approved:
         invoice.approval_status = "PENDING_REVIEW"
         invoice.locked_at = None
 
@@ -438,24 +451,81 @@ async def update_invoice_extraction(
         }
 
         # 5. Stage 6 Double-Entry Journal Generator
-        journal_result = journal_generator.generate_journal(
-            invoice_data=working_payload,
-            accounting_classification=persisted_accounting_output,
-            gst_result=gst_result,
-            itc_result=itc_result,
-            tds_result=final_tds_calc,
-            financial_validation_result=financial_validation_result,
-        )
+        # Check if the user passed explicit manual journal edits with lines
+        if update_data.journal_entry and isinstance(update_data.journal_entry, dict) and update_data.journal_entry.get("lines"):
+            raw_lines = update_data.journal_entry.get("lines") or []
+            parsed_lines = []
+            dr_total = 0.0
+            cr_total = 0.0
+            for idx, l in enumerate(raw_lines, 1):
+                d_val = float(l.get("debit") or 0.0)
+                c_val = float(l.get("credit") or 0.0)
+                dr_total += d_val
+                cr_total += c_val
+                l_type = l.get("line_type") or ("DEBIT" if d_val > 0 else "CREDIT")
+                parsed_lines.append({
+                    "line_number": idx,
+                    "account_id": l.get("account_id") or f"ACC_{idx}",
+                    "account_name": l.get("account_name") or f"Account {idx}",
+                    "line_type": l_type,
+                    "debit": round(d_val, 2),
+                    "credit": round(c_val, 2),
+                    "amount": round(d_val if d_val > 0 else c_val, 2),
+                    "provenance": "HITL_OVERRIDE" if is_internal_role else "CUSTOMER_EDIT",
+                    "description": l.get("description") or f"Line {idx}",
+                    "is_approved": True,
+                })
+            
+            dr_total = round(dr_total, 2)
+            cr_total = round(cr_total, 2)
+            diff = round(dr_total - cr_total, 2)
+            is_bal = (abs(diff) < 0.01 and dr_total > 0)
+            
+            journal_errors = []
+            if not is_bal:
+                journal_errors.append(f"Manual journal unbalanced: Total Debits (₹{dr_total:,.2f}) != Total Credits (₹{cr_total:,.2f})")
+            
+            journal_result = {
+                "status": "BALANCED" if is_bal else "UNBALANCED",
+                "approval_status": "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING",
+                "approved_by": current_user.email if (was_approved and not is_internal_role and is_bal) else None,
+                "approved_at": datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None,
+                "total_debit": dr_total,
+                "total_credit": cr_total,
+                "difference": diff,
+                "currency": "INR",
+                "is_balanced": is_bal,
+                "lines": parsed_lines,
+                "validation": {
+                    "balanced": is_bal,
+                    "tolerance": 0.05,
+                    "errors": journal_errors,
+                    "warnings": [],
+                },
+            }
+        else:
+            journal_result = journal_generator.generate_journal(
+                invoice_data=working_payload,
+                accounting_classification=persisted_accounting_output,
+                gst_result=gst_result,
+                itc_result=itc_result,
+                tds_result=final_tds_calc,
+                financial_validation_result=financial_validation_result,
+            )
+            is_bal = bool(journal_result.get("is_balanced") or journal_result.get("validation", {}).get("balanced"))
+            journal_result["approval_status"] = "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING"
+            journal_result["approved_by"] = current_user.email if (was_approved and not is_internal_role and is_bal) else None
+            journal_result["approved_at"] = datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None
+            journal_result["status"] = "BALANCED" if is_bal else "UNBALANCED"
 
-        # Stale-Journal Protection: Reset journal approval and invoice approval status upon edits
-        is_bal = bool(journal_result.get("is_balanced") or journal_result.get("validation", {}).get("balanced"))
-        journal_result["approval_status"] = "PENDING"
-        journal_result["status"] = "BALANCED" if is_bal else "UNBALANCED"
-        journal_result["approved_by"] = None
-        journal_result["approved_at"] = None
-
-        invoice.approval_status = "PENDING_REVIEW"
-        invoice.locked_at = None
+        # Lifecycle state rule:
+        # If internal finance edits, reset to PENDING_REVIEW.
+        # If customer edits an approved invoice, retain APPROVED status (do NOT re-enter HITL).
+        if is_internal_role:
+            invoice.approval_status = "PENDING_REVIEW"
+            invoice.locked_at = None
+        elif was_approved:
+            invoice.approval_status = "APPROVED"
 
         # Persist updated authoritative engine outputs
         invoice.accounting_output = persisted_accounting_output

@@ -65,17 +65,11 @@ export default function AppShell({
 
   const navItems = [
     {
-      label: "Dashboard",
-      href: "/dashboard",
-      icon: LayoutDashboard,
-      active: pathname === "/dashboard",
-    },
-    {
-      label: "Inbox",
-      href: "/inbox",
-      icon: Inbox,
-      active: pathname === "/inbox",
-      badge: "Stage 7",
+      label: "Review Queue",
+      href: "/finance/review",
+      icon: FileCheck,
+      active: pathname.startsWith("/finance/review") || pathname === "/",
+      badge: "HITL",
     },
     {
       label: "Invoices",
@@ -85,6 +79,12 @@ export default function AppShell({
         pathname.startsWith("/finance/invoices") &&
         !pathname.includes("/processing") &&
         pathname !== "/finance/settings",
+    },
+    {
+      label: "Upload Invoice",
+      href: "/finance/upload",
+      icon: UploadCloud,
+      active: pathname === "/finance/upload",
     },
     {
       label: "Integrations",

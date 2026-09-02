@@ -95,10 +95,10 @@ async def login_for_access_token(
         full_name = payload.dev_name or "Development User"
         user_id = str(user.id) if user else str(uuid.uuid4())
 
-        if role not in ("ADMIN", "FINANCE", "VIEWER"):
+        if role not in ("ADMIN", "FINANCE", "VIEWER", "CUSTOMER"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid dev_role '{role}'. Must be ADMIN, FINANCE, or VIEWER.",
+                detail=f"Invalid dev_role '{role}'. Must be ADMIN, FINANCE, VIEWER, or CUSTOMER.",
             )
 
         token = create_access_token(
@@ -137,17 +137,17 @@ async def get_current_user_profile(
 async def dev_switch_role(role: str = "FINANCE"):
     """Switches the active development user role between ADMIN, FINANCE, and VIEWER."""
     clean_role = role.strip().upper()
-    if clean_role not in ("ADMIN", "FINANCE", "VIEWER"):
+    if clean_role not in ("ADMIN", "FINANCE", "VIEWER", "CUSTOMER"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid role '{role}'. Must be ADMIN, FINANCE, or VIEWER.",
+            detail=f"Invalid role '{role}'. Must be ADMIN, FINANCE, VIEWER, or CUSTOMER.",
         )
     from app.core.security import set_dev_role
     set_dev_role(clean_role)
     return AuthenticatedUser(
         id="dev-user-001",
-        email="finance@sakshi.ai",
+        email="customer@sakshi.ai" if clean_role == "CUSTOMER" else "finance@sakshi.ai",
         tenant_id=settings.DEFAULT_TENANT_ID,
         role=clean_role,
-        full_name="Dev Admin" if clean_role == "ADMIN" else "Dev Finance",
+        full_name="Dev Customer" if clean_role == "CUSTOMER" else ("Dev Admin" if clean_role == "ADMIN" else "Dev Finance"),
     )

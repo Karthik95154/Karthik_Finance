@@ -18,6 +18,8 @@ lib/
 lib64/
 !frontend/src/lib/
 !frontend/src/lib/**
+!frontend-hitl/src/lib/
+!frontend-hitl/src/lib/**
 parts/
 sdist/
 var/
