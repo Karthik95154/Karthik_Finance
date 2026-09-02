@@ -71,8 +71,9 @@ class ZohoConnection(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(
-        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     organization_id = Column(String(100), nullable=True)
     organization_name = Column(String(255), nullable=True)
     encrypted_access_token = Column(Text, nullable=True)
@@ -188,6 +189,7 @@ class Invoice(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(String(64), nullable=False, default="default-tenant-001", index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     file_path = Column(String(512), nullable=False)
     file_name = Column(String(255), nullable=False)
     file_size = Column(Integer, nullable=False)
@@ -259,6 +261,7 @@ class Integration(Base):
     __tablename__ = "integrations"
 
     id = Column(String(50), primary_key=True, default="imap_email")
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     status = Column(String(50), nullable=False, default="disconnected")
     config = Column(JSONB, nullable=True)
     last_synced_at = Column(DateTime(timezone=True), nullable=True)

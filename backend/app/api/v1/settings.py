@@ -1,11 +1,13 @@
+import uuid
 import logging
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Integration
+from app.core.security import AuthenticatedUser, get_current_user
 from app.core.security_util import encrypt_data
 from app.services.imap_service import imap_service
 
@@ -31,13 +33,22 @@ def mask_password(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.get("/imap_email")
-async def get_imap_settings(db: AsyncSession = Depends(get_db)):
-    """Retrieves current email integration status and configuration (password masked)."""
-    query = select(Integration).where(Integration.id == "imap_email")
-    result = await db.execute(query)
-    integration = result.scalar_one_or_none()
+async def get_imap_settings(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieves current user's email integration status and configuration (password masked)."""
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = (Integration.user_id == user_uuid)
+    except (ValueError, TypeError):
+        user_filter = (Integration.id == f"imap_email_{current_user.id}")
 
-    if not integration:
+    query = select(Integration).where(user_filter).order_by(Integration.created_at.desc())
+    result = await db.execute(query)
+    integration = result.scalars().first()
+
+    if not integration or integration.status != "connected" or not integration.config:
         return {
             "id": "imap_email",
             "status": "disconnected",
@@ -56,13 +67,26 @@ async def get_imap_settings(db: AsyncSession = Depends(get_db)):
 @router.post("/imap_email/configure")
 async def configure_imap_settings(
     payload: IMAPConfigureRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Validates connection and saves IMAP configuration securely."""
-    # Find existing config
-    query = select(Integration).where(Integration.id == "imap_email")
+    """Validates connection and saves user's IMAP configuration securely."""
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+    except (ValueError, TypeError):
+        user_uuid = None
+
+    integration_key = f"imap_email_{current_user.id}"
+
+    # Find existing config for this user
+    query = select(Integration).where(
+        or_(
+            Integration.id == integration_key,
+            Integration.user_id == user_uuid,
+        )
+    )
     result = await db.execute(query)
-    integration = result.scalar_one_or_none()
+    integration = result.scalars().first()
 
     existing_config = (integration.config or {}) if integration else {}
     password = payload.password
@@ -102,21 +126,23 @@ async def configure_imap_settings(
         decrypted_dict["password"] = decrypt_data(encrypted_pwd)
         await imap_service.validate_connection(decrypted_dict)
     except Exception as e:
-        logger.error(f"IMAP Connection validation failed: {e}")
+        logger.error(f"IMAP Connection validation failed for {current_user.email}: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unable to authenticate with the email server. Please verify the IMAP server, port, email address, and App Password.",
         )
 
-    # Save to database
+    # Save to database bound to user_id
     if not integration:
         integration = Integration(
-            id="imap_email",
+            id=integration_key,
+            user_id=user_uuid,
             status="connected",
             config=config_data,
         )
         db.add(integration)
     else:
+        integration.user_id = user_uuid
         integration.config = config_data
         integration.status = "connected"
 
@@ -131,15 +157,24 @@ async def configure_imap_settings(
 
 
 @router.post("/imap_email/disconnect")
-async def disconnect_imap_settings(db: AsyncSession = Depends(get_db)):
-    """Clears configuration and disconnects IMAP integration."""
-    query = select(Integration).where(Integration.id == "imap_email")
-    result = await db.execute(query)
-    integration = result.scalar_one_or_none()
+async def disconnect_imap_settings(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clears configuration and disconnects user's IMAP integration."""
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Integration.user_id == user_uuid, Integration.id == f"imap_email_{current_user.id}")
+    except (ValueError, TypeError):
+        user_filter = (Integration.user_id.is_(None))
 
-    if integration:
+    query = select(Integration).where(user_filter)
+    result = await db.execute(query)
+    integrations = result.scalars().all()
+
+    for integration in integrations:
         integration.config = None
         integration.status = "disconnected"
-        await db.commit()
 
+    await db.commit()
     return {"success": True, "status": "disconnected"}
