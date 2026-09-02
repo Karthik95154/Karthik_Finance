@@ -2359,77 +2359,232 @@ export default function InvoiceWorkspacePage() {
                     <div
                       style={{
                         display: "grid",
-                        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                        gap: "12px",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+                        gap: "14px",
                         background: "#fafafa",
-                        padding: "14px",
+                        padding: "16px",
                         borderRadius: "var(--radius-sm)",
                         border: "1px solid var(--border-subtle)",
                       }}
                     >
+                      {/* TDS Applicable Toggle */}
                       <div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
+                        <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
+                          TDS Applicable
+                        </label>
+                        <select
+                          value={tdsResult.tds_applicable === false || tdsResult.applicable === false ? "false" : (tdsResult.tds_applicable || tdsResult.applicable ? "true" : "false")}
+                          onChange={(e) => {
+                            const isApp = e.target.value === "true";
+                            setAccountingData((prev: any) => {
+                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                              currTds.tds_applicable = isApp;
+                              currTds.applicable = isApp;
+                              if (!isApp) {
+                                currTds.tds_rate = null;
+                                currTds.proposed_tds_amount = 0.0;
+                              }
+                              return {
+                                ...prev,
+                                tds_assessment: currTds,
+                                tds: currTds,
+                                tds_final: currTds,
+                              };
+                            });
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            fontWeight: "600",
+                            borderRadius: "var(--radius-sm)",
+                            border: "1px solid var(--border-subtle)",
+                            background: "#ffffff",
+                          }}
+                        >
+                          <option value="false">No (TDS Not Applicable)</option>
+                          <option value="true">Yes (TDS Applicable)</option>
+                        </select>
+                      </div>
+
+                      {/* TDS Section */}
+                      <div>
+                        <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Section / Provision
-                        </div>
-                        <div style={{ fontWeight: "600", fontSize: "13px" }}>
-                          {tdsResult.tds_section || tdsResult.tds_provision ? `Sec ${tdsResult.tds_section || tdsResult.tds_provision}` : "Not specified"}
-                        </div>
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. 194C, 194J, 194Q, 194I"
+                          value={tdsResult.tds_section || tdsResult.tds_provision || ""}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setAccountingData((prev: any) => {
+                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                              currTds.tds_section = val;
+                              currTds.section = val;
+                              return {
+                                ...prev,
+                                tds_assessment: currTds,
+                                tds: currTds,
+                                tds_final: currTds,
+                              };
+                            });
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "var(--radius-sm)",
+                            border: "1px solid var(--border-subtle)",
+                            background: "#ffffff",
+                          }}
+                        />
                       </div>
 
-                      {tdsResult.nature_of_payment && (
-                        <div>
-                          <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                            Nature of Payment
-                          </div>
-                          <div style={{ fontWeight: "600", fontSize: "13px" }}>
-                            {tdsResult.nature_of_payment}
-                          </div>
-                        </div>
-                      )}
-
+                      {/* Nature of Payment */}
                       <div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          TDS Rate
-                        </div>
-                        <div style={{ fontWeight: "600", fontSize: "13px" }}>
-                          {tdsResult.tds_rate !== null && tdsResult.tds_rate !== undefined
-                            ? `${tdsResult.tds_rate}%`
-                            : "Not specified"}
-                        </div>
+                        <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
+                          Nature of Payment
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="e.g. Professional services, Purchase of goods"
+                          value={tdsResult.nature_of_payment || ""}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setAccountingData((prev: any) => {
+                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                              currTds.nature_of_payment = val;
+                              currTds.nature = val;
+                              return {
+                                ...prev,
+                                tds_assessment: currTds,
+                                tds: currTds,
+                                tds_final: currTds,
+                              };
+                            });
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "var(--radius-sm)",
+                            border: "1px solid var(--border-subtle)",
+                            background: "#ffffff",
+                          }}
+                        />
                       </div>
 
+                      {/* TDS Rate (%) */}
                       <div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          TDS Base Amount
-                        </div>
-                        <div style={{ fontWeight: "600", fontSize: "13px" }}>
-                          {tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined
-                            ? `₹${tdsResult.tds_base_amount.toLocaleString()}`
-                            : "-"}
-                        </div>
+                        <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
+                          TDS Rate (%)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="e.g. 0.1, 1, 2, 10"
+                          value={tdsResult.tds_rate !== null && tdsResult.tds_rate !== undefined ? tdsResult.tds_rate : ""}
+                          onChange={(e) => {
+                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                            setAccountingData((prev: any) => {
+                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                              currTds.tds_rate = val;
+                              currTds.rate = val;
+                              const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
+                              if (val !== null && subtotal > 0) {
+                                currTds.proposed_tds_amount = Math.round((subtotal * val) / 100 * 100) / 100;
+                              }
+                              return {
+                                ...prev,
+                                tds_assessment: currTds,
+                                tds: currTds,
+                                tds_final: currTds,
+                              };
+                            });
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "var(--radius-sm)",
+                            border: "1px solid var(--border-subtle)",
+                            background: "#ffffff",
+                          }}
+                        />
                       </div>
 
+                      {/* TDS Base Amount */}
                       <div>
-                        <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                          AI Proposed TDS
-                        </div>
-                        <div style={{ fontWeight: "700", fontSize: "13px", color: "var(--accent)" }}>
-                          {tdsResult.proposed_tds_amount !== null && tdsResult.proposed_tds_amount !== undefined
-                            ? `₹${tdsResult.proposed_tds_amount.toLocaleString()}`
-                            : "-"}
-                        </div>
+                        <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
+                          TDS Base Amount (₹)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="Subtotal"
+                          value={tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined ? tdsResult.tds_base_amount : (formData.subtotal || "")}
+                          onChange={(e) => {
+                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                            setAccountingData((prev: any) => {
+                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                              currTds.tds_base_amount = val;
+                              currTds.base_amount = val;
+                              return {
+                                ...prev,
+                                tds_assessment: currTds,
+                                tds: currTds,
+                                tds_final: currTds,
+                              };
+                            });
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            borderRadius: "var(--radius-sm)",
+                            border: "1px solid var(--border-subtle)",
+                            background: "#ffffff",
+                          }}
+                        />
                       </div>
 
-                      {(tdsResult.calculated_tds_amount !== null && tdsResult.calculated_tds_amount !== undefined) && (
-                        <div>
-                          <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "3px" }}>
-                            Final TDS
-                          </div>
-                          <div style={{ fontWeight: "700", fontSize: "13px", color: "var(--success)" }}>
-                            ₹{tdsResult.calculated_tds_amount.toLocaleString()}
-                          </div>
-                        </div>
-                      )}
+                      {/* Proposed TDS Amount */}
+                      <div>
+                        <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
+                          TDS Withholding Amount (₹)
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={tdsResult.proposed_tds_amount !== null && tdsResult.proposed_tds_amount !== undefined ? tdsResult.proposed_tds_amount : ""}
+                          onChange={(e) => {
+                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                            setAccountingData((prev: any) => {
+                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                              currTds.proposed_tds_amount = val;
+                              currTds.tds_amount = val;
+                              return {
+                                ...prev,
+                                tds_assessment: currTds,
+                                tds: currTds,
+                                tds_final: currTds,
+                              };
+                            });
+                          }}
+                          style={{
+                            width: "100%",
+                            padding: "6px 10px",
+                            fontSize: "12px",
+                            fontWeight: "700",
+                            color: "var(--accent)",
+                            borderRadius: "var(--radius-sm)",
+                            border: "1px solid var(--border-subtle)",
+                            background: "#ffffff",
+                          }}
+                        />
+                      </div>
 
                       {(() => {
                         const reason = tdsResult.tds_reasoning ?? tdsResult.reason;
@@ -2437,9 +2592,9 @@ export default function InvoiceWorkspacePage() {
                           return (
                             <div style={{ gridColumn: "1 / -1", marginTop: "4px" }}>
                               <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginBottom: "2px" }}>
-                                Model Reasoning
+                                Model Reasoning & Statutory Basis
                               </div>
-                              <div style={{ fontSize: "12px", color: "var(--text-primary)" }}>
+                              <div style={{ fontSize: "12px", color: "var(--text-primary)", background: "#f1f5f9", padding: "8px 12px", borderRadius: "var(--radius-sm)" }}>
                                 {reason}
                               </div>
                             </div>

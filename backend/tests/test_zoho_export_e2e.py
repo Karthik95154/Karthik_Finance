@@ -111,6 +111,7 @@ async def test_full_zoho_export_success_flow():
 
     coa = ChartOfAccount(id=uuid.uuid4(), tenant_id=tenant_id, zoho_account_id="4076465000000000558", account_name="Cloud Hosting & Infrastructure", is_active=True)
     tax_18 = TaxRate(zoho_tax_id="TAX_18", tax_name="GST 18%", tax_percentage=18.0, is_active=True)
+    tds_tax = TaxRate(zoho_tax_id="TDS_194J", tax_name="Section 194J Technical Services (2%)", tax_percentage=2.0, tax_type="TDS", is_active=True)
 
     mock_db = AsyncMock()
     async def mock_execute(stmt, *args, **kwargs):
@@ -125,7 +126,7 @@ async def test_full_zoho_export_success_flow():
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
-            res.scalars.return_value.all.return_value = [tax_18]
+            res.scalars.return_value.all.return_value = [tax_18, tds_tax]
         else:
             res.scalar_one_or_none.return_value = None
             res.scalars.return_value.all.return_value = []

@@ -244,16 +244,19 @@ async def approve_tds_assessment(
         if isinstance(invoice.current_accounting_output, dict)
         else (invoice.accounting_output if isinstance(invoice.accounting_output, dict) else {})
     )
-    tds_data = accounting_data.get("tds") or accounting_data.get("tds_assessment") or {}
+    from app.services.tds_engine import get_effective_tds_data
+    effective_tds = get_effective_tds_data(accounting_data)
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    tds_data = dict(accounting_data.get("tds_assessment") or effective_tds)
     tds_data["is_approved"] = True
     tds_data["approval_status"] = "APPROVED"
     tds_data["approved_by"] = user_email
     tds_data["approved_at"] = now_iso
 
-    accounting_data["tds"] = tds_data
     accounting_data["tds_assessment"] = tds_data
+    accounting_data["tds"] = tds_data
+    accounting_data["tds_final"] = tds_data
     invoice.accounting_output = accounting_data
     invoice.current_accounting_output = accounting_data
 

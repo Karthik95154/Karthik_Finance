@@ -131,14 +131,19 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
             # 5. Deterministic Final TDS (Authoritative statutory calculation on subtotal)
+            from app.services.tds_engine import get_effective_tds_data
+            effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
+            tds_applicable = bool(effective_tds.get("applicable"))
+
             subtotal = float(invoice_payload.get("subtotal") or 0.0)
-            tds_rate = tds_assessment.get("tds_rate")
-            tds_section = tds_assessment.get("tds_section")
-            tds_provision = tds_assessment.get("tds_provision")
-            tds_nature = tds_assessment.get("nature_of_payment")
+            tds_rate = effective_tds.get("rate")
+            tds_section = effective_tds.get("section")
+            tds_provision = effective_tds.get("provision")
+            tds_nature = effective_tds.get("nature_of_payment")
             vendor_pan = invoice_payload.get("vendor_pan")
 
             final_tds_calc = tds_engine.calculate_tds(
+                applicable=tds_applicable,
                 section=tds_section,
                 provision=tds_provision,
                 nature_of_payment=tds_nature,
@@ -150,9 +155,19 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             # Build unified accounting output maintaining clear proposal vs final separation
             persisted_accounting_output = {
                 "accounting": accounting_lines,
-                "tds_assessment": tds_assessment,
+                "tds_assessment": {
+                    **tds_assessment,
+                    "tds_applicable": tds_applicable,
+                    "tds_section": tds_section,
+                    "tds_provision": tds_provision,
+                    "nature_of_payment": tds_nature,
+                    "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+                    "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+                    "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+                    "tds_reasoning": final_tds_calc.get("reason"),
+                },
                 "tds_final": final_tds_calc,
-                "tds": final_tds_calc,  # Backward compatibility
+                "tds": final_tds_calc,
             }
 
             # 6. Call Deterministic Stage 6 Journal Generator (Double-Entry General Ledger Preview)
@@ -353,14 +368,19 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
             # 11. Deterministic Final TDS (Authoritative calculation)
+            from app.services.tds_engine import get_effective_tds_data
+            effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
+            tds_applicable = bool(effective_tds.get("applicable"))
+
             subtotal = float(invoice_payload.get("subtotal") or 0.0)
-            tds_rate = tds_assessment.get("tds_rate")
-            tds_section = tds_assessment.get("tds_section")
-            tds_provision = tds_assessment.get("tds_provision")
-            tds_nature = tds_assessment.get("nature_of_payment")
+            tds_rate = effective_tds.get("rate")
+            tds_section = effective_tds.get("section")
+            tds_provision = effective_tds.get("provision")
+            tds_nature = effective_tds.get("nature_of_payment")
             vendor_pan = invoice_payload.get("vendor_pan")
 
             final_tds_calc = tds_engine.calculate_tds(
+                applicable=tds_applicable,
                 section=tds_section,
                 provision=tds_provision,
                 nature_of_payment=tds_nature,
@@ -371,7 +391,17 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
 
             persisted_accounting_output = {
                 "accounting": accounting_lines,
-                "tds_assessment": tds_assessment,
+                "tds_assessment": {
+                    **tds_assessment,
+                    "tds_applicable": tds_applicable,
+                    "tds_section": tds_section,
+                    "tds_provision": tds_provision,
+                    "nature_of_payment": tds_nature,
+                    "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+                    "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+                    "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+                    "tds_reasoning": final_tds_calc.get("reason"),
+                },
                 "tds_final": final_tds_calc,
                 "tds": final_tds_calc,
             }

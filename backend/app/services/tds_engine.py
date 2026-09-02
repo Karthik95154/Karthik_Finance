@@ -7,6 +7,153 @@ logger = logging.getLogger(__name__)
 PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$")
 
 
+def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Single source of truth for statutory TDS assessment across display, validation, journal, and export.
+    Prioritizes tds_assessment (authoritative current assessment) over legacy keys.
+    If tds_assessment is present, its tds_applicable flag strictly governs.
+    """
+    if not accounting or not isinstance(accounting, dict):
+        return {
+            "applicable": False,
+            "section": None,
+            "provision": None,
+            "nature_of_payment": None,
+            "rate": None,
+            "base_amount": None,
+            "tds_amount": None,
+            "reasoning": None,
+            "is_approved": False,
+            "approval_status": "PENDING",
+        }
+
+    # 1. Authoritative assessment source (tds_assessment)
+    tds_assessment = accounting.get("tds_assessment")
+    if isinstance(tds_assessment, dict):
+        raw_app = tds_assessment.get("tds_applicable")
+        if raw_app is None and "applicable" in tds_assessment:
+            raw_app = tds_assessment.get("applicable")
+        is_app = bool(raw_app) if raw_app is not None else False
+
+        rate_val = (
+            tds_assessment.get("approved_tds_rate")
+            or tds_assessment.get("tds_rate")
+            or tds_assessment.get("rate")
+        )
+        try:
+            rate_float = float(rate_val) if rate_val is not None else None
+        except (ValueError, TypeError):
+            rate_float = None
+
+        base_val = (
+            tds_assessment.get("tds_base_amount")
+            or tds_assessment.get("base_amount")
+        )
+        try:
+            base_float = float(base_val) if base_val is not None else None
+        except (ValueError, TypeError):
+            base_float = None
+
+        tds_amt_val = (
+            tds_assessment.get("final_tds_amount")
+            or tds_assessment.get("calculated_tds_amount")
+            or tds_assessment.get("proposed_tds_amount")
+            or tds_assessment.get("tds_amount")
+            or tds_assessment.get("amount")
+        )
+        try:
+            tds_amt_float = float(tds_amt_val) if tds_amt_val is not None else None
+        except (ValueError, TypeError):
+            tds_amt_float = None
+
+        is_appr = bool(
+            tds_assessment.get("is_approved")
+            or tds_assessment.get("approved")
+            or tds_assessment.get("approval_status") == "APPROVED"
+        )
+
+        return {
+            "applicable": is_app,
+            "section": tds_assessment.get("approved_tds_section") or tds_assessment.get("tds_section") or tds_assessment.get("section"),
+            "provision": tds_assessment.get("approved_tds_provision") or tds_assessment.get("tds_provision") or tds_assessment.get("provision"),
+            "nature_of_payment": tds_assessment.get("approved_nature_of_payment") or tds_assessment.get("nature_of_payment") or tds_assessment.get("nature"),
+            "rate": rate_float if is_app else None,
+            "base_amount": base_float if is_app else None,
+            "tds_amount": tds_amt_float if is_app else None,
+            "reasoning": tds_assessment.get("tds_reasoning") or tds_assessment.get("reason"),
+            "is_approved": is_appr,
+            "approval_status": "APPROVED" if is_appr else "PENDING",
+        }
+
+    # 2. Fallback to legacy tds only if tds_assessment is completely absent
+    legacy_tds = accounting.get("tds")
+    if isinstance(legacy_tds, dict):
+        raw_app = legacy_tds.get("applicable") if "applicable" in legacy_tds else legacy_tds.get("tds_applicable")
+        is_app = bool(raw_app) if raw_app is not None else False
+        rate_val = (
+            legacy_tds.get("approved_tds_rate")
+            or legacy_tds.get("tds_rate")
+            or legacy_tds.get("rate")
+        )
+        try:
+            rate_float = float(rate_val) if rate_val is not None else None
+        except (ValueError, TypeError):
+            rate_float = None
+
+        base_val = (
+            legacy_tds.get("tds_base_amount")
+            or legacy_tds.get("base_amount")
+        )
+        try:
+            base_float = float(base_val) if base_val is not None else None
+        except (ValueError, TypeError):
+            base_float = None
+
+        tds_amt_val = (
+            legacy_tds.get("final_tds_amount")
+            or legacy_tds.get("calculated_tds_amount")
+            or legacy_tds.get("proposed_tds_amount")
+            or legacy_tds.get("tds_amount")
+            or legacy_tds.get("amount")
+        )
+        try:
+            tds_amt_float = float(tds_amt_val) if tds_amt_val is not None else None
+        except (ValueError, TypeError):
+            tds_amt_float = None
+
+        is_appr = bool(
+            legacy_tds.get("is_approved")
+            or legacy_tds.get("approved")
+            or legacy_tds.get("approval_status") == "APPROVED"
+        )
+
+        return {
+            "applicable": is_app,
+            "section": legacy_tds.get("approved_tds_section") or legacy_tds.get("tds_section") or legacy_tds.get("section"),
+            "provision": legacy_tds.get("approved_tds_provision") or legacy_tds.get("tds_provision") or legacy_tds.get("provision"),
+            "nature_of_payment": legacy_tds.get("approved_nature_of_payment") or legacy_tds.get("nature_of_payment") or legacy_tds.get("nature"),
+            "rate": rate_float if is_app else None,
+            "base_amount": base_float if is_app else None,
+            "tds_amount": tds_amt_float if is_app else None,
+            "reasoning": legacy_tds.get("tds_reasoning") or legacy_tds.get("reason"),
+            "is_approved": is_appr,
+            "approval_status": "APPROVED" if is_appr else "PENDING",
+        }
+
+    return {
+        "applicable": False,
+        "section": None,
+        "provision": None,
+        "nature_of_payment": None,
+        "rate": None,
+        "base_amount": None,
+        "tds_amount": None,
+        "reasoning": None,
+        "is_approved": False,
+        "approval_status": "PENDING",
+    }
+
+
 class TDSEngine:
     """
     Deterministic Indian Income Tax TDS (Tax Deducted at Source) calculation engine.
@@ -37,6 +184,7 @@ class TDSEngine:
     @classmethod
     def calculate_tds(
         cls,
+        applicable: Optional[bool] = None,
         section: Optional[str] = None,
         base_amount: float = 0.0,
         rate: Optional[float] = None,
@@ -48,11 +196,10 @@ class TDSEngine:
     ) -> Dict[str, Any]:
         """
         Computes statutory TDS amount according to Indian Income Tax rules.
-        Uses first-rupee calculation against invoice subtotal (no YTD or minimum threshold logic).
-        If an explicit approved rate is passed, it is respected as the authoritative rate.
-        Preserves AI assessment metadata (provision, section, nature of payment).
+        If applicable is False, strictly returns TDS not applicable with 0.0 amounts.
+        If applicable is None and no section/rate is specified, defaults to not applicable.
         """
-        if base_amount <= 0 or (rate is None and not section and not provision and not nature_of_payment):
+        if applicable is False or base_amount <= 0 or (rate is None and not section and not provision and not nature_of_payment):
             return {
                 "applicable": False,
                 "provision": provision,
@@ -62,6 +209,19 @@ class TDSEngine:
                 "base_amount": 0.0,
                 "tds_amount": 0.0,
                 "reason": "TDS not applicable or zero base amount",
+            }
+
+        # If applicable is unspecified (None) and rate is 0 or None with no section/provision, not applicable
+        if applicable is None and (rate is None or rate == 0.0) and not section and not provision:
+            return {
+                "applicable": False,
+                "provision": provision,
+                "section": section,
+                "nature_of_payment": nature_of_payment,
+                "rate": 0.0,
+                "base_amount": 0.0,
+                "tds_amount": 0.0,
+                "reason": "TDS not applicable",
             }
 
         pan_valid = cls.is_valid_pan(vendor_pan) if vendor_pan else True

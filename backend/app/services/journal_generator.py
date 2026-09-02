@@ -696,8 +696,16 @@ class JournalGenerator:
         # ----------------------------------------------------
         # 6. TDS TREATMENT (WITHHOLDING TAX CREDIT)
         # ----------------------------------------------------
-        tds_data = tds_result or (accounting_classification.get("tds") if accounting_classification else {}) or {}
-        tds_applicable = bool(tds_data.get("applicable") or tds_data.get("tds_applicable") or tds_data.get("is_applicable"))
+        from app.services.tds_engine import get_effective_tds_data, tds_engine
+
+        if isinstance(tds_result, dict) and bool(tds_result):
+            raw_app = tds_result.get("tds_applicable") if "tds_applicable" in tds_result else tds_result.get("applicable")
+            tds_applicable = bool(raw_app) if raw_app is not None else False
+            tds_data = tds_result
+        else:
+            tds_data = get_effective_tds_data(accounting_classification)
+            tds_applicable = bool(tds_data.get("applicable"))
+
         tds_provision = tds_data.get("approved_tds_provision") or tds_data.get("tds_provision") or tds_data.get("provision")
         tds_section = tds_data.get("approved_tds_section") or tds_data.get("tds_section") or tds_data.get("section")
         tds_nature = tds_data.get("approved_nature_of_payment") or tds_data.get("nature_of_payment") or tds_data.get("nature")
@@ -716,13 +724,15 @@ class JournalGenerator:
         if is_approved is None:
             is_approved = tds_data.get("approved")
 
-        # First-rupee subtotal calculation: TDS amount = approved taxable subtotal * approved TDS rate
-        # NEVER on subtotal + GST
-        if tds_applicable and subtotal is not None and subtotal > 0:
+        if not tds_applicable:
+            tds_amount = 0.0
+            tds_rate = 0.0
+        elif subtotal is not None and subtotal > 0:
             if tds_rate is not None and tds_rate > 0:
                 tds_amount = round((subtotal * float(tds_rate)) / 100.0, 2)
             elif tds_amount <= 0:
                 calc = tds_engine.calculate_tds(
+                    applicable=True,
                     section=tds_section,
                     provision=tds_provision,
                     nature_of_payment=tds_nature,

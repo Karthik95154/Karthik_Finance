@@ -192,28 +192,55 @@ class InvoiceExportService:
                         )
                 acct_map[idx] = str(approved_acc_id)
 
-            # 8. Resolve Supply Type & TDS Configuration
+            # 8. Resolve Supply Type & TDS Configuration (Single Authoritative Source of Truth)
             from app.services.gst_engine import gst_engine
             gst_eval = gst_engine.evaluate_gst(vlm_data)
             supply_type = gst_eval.get("supply_type") or "INTRA_STATE"
+            inv_subtotal = float(vlm_data.get("subtotal") or 0.0)
 
-            tds_info = accounting.get("tds") or {}
-            tds_applicable = bool(tds_info.get("applicable") or tds_info.get("tds_applicable") or tds_info.get("is_applicable"))
-            tds_provision = tds_info.get("approved_tds_provision") or tds_info.get("tds_provision") or tds_info.get("provision")
-            tds_section = tds_info.get("approved_tds_section") or tds_info.get("tds_section") or tds_info.get("section")
-            tds_nature = tds_info.get("approved_nature_of_payment") or tds_info.get("nature_of_payment") or tds_info.get("nature")
-            tds_rate = tds_info.get("approved_tds_rate") or tds_info.get("tds_rate") or tds_info.get("rate")
+            # Single Source of Truth for TDS: tds_assessment strictly governs
+            from app.services.tds_engine import get_effective_tds_data, tds_engine
+            effective_tds = get_effective_tds_data(accounting)
+            tds_applicable = bool(effective_tds.get("applicable"))
+            tds_provision = effective_tds.get("provision")
+            tds_section = effective_tds.get("section")
+            tds_nature = effective_tds.get("nature_of_payment")
+            tds_rate = effective_tds.get("rate")
 
             zoho_tds_tax_id = None
             if tds_applicable:
+                if tds_rate is None or float(tds_rate) <= 0:
+                    calc = tds_engine.calculate_tds(
+                        applicable=True,
+                        section=tds_section,
+                        provision=tds_provision,
+                        nature_of_payment=tds_nature,
+                        base_amount=inv_subtotal if inv_subtotal > 0 else 1.0,
+                    )
+                    if calc.get("rate") and calc.get("rate") > 0:
+                        tds_rate = calc.get("rate")
+
+                if tds_rate is None or float(tds_rate) <= 0:
+                    raise ValueError(
+                        "Cannot export to Zoho: TDS is marked as applicable, but no valid TDS rate or section was specified. "
+                        "Please verify TDS details on the review workspace before exporting."
+                    )
                 zoho_tds_tax_id = await master_data_service.get_zoho_tds_tax(
                     tenant_id=tenant_id,
                     section=tds_section,
                     provision=tds_provision,
                     nature_of_payment=tds_nature,
-                    rate=float(tds_rate) if tds_rate is not None else None,
+                    rate=float(tds_rate),
                     db=db,
                 )
+                if not zoho_tds_tax_id:
+                    sec_label = f"Section {tds_section}" if tds_section else (tds_nature or "Statutory TDS")
+                    raise ValueError(
+                        f"Cannot export to Zoho: TDS is applicable ({sec_label} at {tds_rate}%), "
+                        f"but no matching active TDS tax was found in Zoho Books. Please configure this TDS tax in Zoho Books or update TDS details."
+                    )
+            else:
+                zoho_tds_tax_id = None
 
             # 9. Resolve Vendor Contact in Zoho (Strict matching, zero arbitrary fallback)
             explicit_vendor_id = vlm_data.get("zoho_vendor_id")
@@ -442,7 +469,13 @@ class InvoiceExportService:
 
                 if zoho_tds_tax_id:
                     line_dict["tds_tax_id"] = zoho_tds_tax_id
-                bill_line_items.append(line_dict)
+            # Zoho Payload TDS Safety Verification:
+            # If TDS is not applicable, strictly strip tds_tax_id from all bill lines
+            for line in bill_line_items:
+                if not tds_applicable:
+                    line.pop("tds_tax_id", None)
+                elif zoho_tds_tax_id:
+                    line["tds_tax_id"] = zoho_tds_tax_id
 
             bill_payload: Dict[str, Any] = {
                 "vendor_id": vendor_id,

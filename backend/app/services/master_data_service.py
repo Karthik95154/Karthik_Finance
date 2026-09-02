@@ -355,28 +355,35 @@ class MasterDataService:
             if any(kw in combined_text for kw in kws):
                 matched_category_keywords.extend(kws)
 
-        # 1. Best match: Category keyword match AND rate match
-        if matched_category_keywords and rate is not None and rate > 0:
-            for t in tds_taxes:
-                t_name_upper = (t.tax_name or "").upper()
-                if any(kw in t_name_upper for kw in matched_category_keywords):
-                    if abs(float(t.tax_percentage) - float(rate)) < 0.1:
-                        return t.zoho_tax_id
+        # Strict matching rules - zero arbitrary fallback
+        if rate is None or float(rate) <= 0:
+            return None
 
-        # 2. Category keyword match alone
+        clean_rate = float(rate)
+
+        # 1. Best match: Category keyword match AND exact rate match
         if matched_category_keywords:
             for t in tds_taxes:
                 t_name_upper = (t.tax_name or "").upper()
                 if any(kw in t_name_upper for kw in matched_category_keywords):
+                    if abs(float(t.tax_percentage) - clean_rate) < 0.05:
+                        return t.zoho_tax_id
+
+        # 2. Strict exact rate match if unique or matching category
+        exact_rate_matches = [
+            t for t in tds_taxes
+            if abs(float(t.tax_percentage) - clean_rate) < 0.05
+        ]
+        if len(exact_rate_matches) == 1:
+            return exact_rate_matches[0].zoho_tax_id
+        elif len(exact_rate_matches) > 1 and matched_category_keywords:
+            for t in exact_rate_matches:
+                t_name_upper = (t.tax_name or "").upper()
+                if any(kw in t_name_upper for kw in matched_category_keywords):
                     return t.zoho_tax_id
 
-        # 3. Exact rate match if category wasn't found in Zoho tax names
-        if rate is not None and rate > 0:
-            for t in tds_taxes:
-                if abs(float(t.tax_percentage) - float(rate)) < 0.1:
-                    return t.zoho_tax_id
-
-        return tds_taxes[0].zoho_tax_id if tds_taxes else None
+        # Zero fallback: Return None if no exact rate-compatible TDS tax exists in Zoho Books
+        return None
 
 
 
