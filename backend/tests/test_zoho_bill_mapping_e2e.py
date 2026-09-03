@@ -6,7 +6,7 @@ from app.services.gst_engine import gst_engine
 from app.services.tds_engine import tds_engine
 from app.services.journal_generator import journal_generator
 from app.services.export_service import export_service
-from app.db.models import Invoice, ZohoConnection, ChartOfAccount, TaxRate, JournalEntry
+from app.db.models import Invoice, ZohoConnection, ChartOfAccount, TaxRate, JournalEntry, Tenant
 
 
 @pytest.mark.asyncio
@@ -393,6 +393,7 @@ async def test_case_5_zero_tax_and_intra_state_tax_group_zoho_mapping():
     tax_gst18 = TaxRate(id=uuid4(), tenant_id="test-tenant", zoho_tax_id="460000000099018", tax_name="GST18", tax_percentage=18.0, tax_type="tax_group", is_active=True)
     tax_gst0 = TaxRate(id=uuid4(), tenant_id="test-tenant", zoho_tax_id="460000000099000", tax_name="GST0", tax_percentage=0.0, tax_type="GST", is_active=True)
 
+    mock_tenant = Tenant(id="test-tenant", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -402,6 +403,8 @@ async def test_case_5_zero_tax_and_intra_state_tax_group_zoho_mapping():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa_1, coa_2]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
@@ -511,6 +514,7 @@ async def test_case_6_missing_tax_mapping_raises_error_and_never_marks_exempt():
 
     coa_1 = ChartOfAccount(id=uuid4(), tenant_id="test-tenant", zoho_account_id="460000000028001", account_name="Consulting Expense", is_active=True)
 
+    mock_tenant = Tenant(id="test-tenant", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -520,6 +524,8 @@ async def test_case_6_missing_tax_mapping_raises_error_and_never_marks_exempt():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa_1]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
@@ -618,6 +624,7 @@ async def test_case_7_rcm_reverse_charge_mapping():
     coa_1 = ChartOfAccount(id=uuid4(), tenant_id="test-tenant", zoho_account_id="460000000028001", account_name="Freight Expense", is_active=True)
     tax_gst5 = TaxRate(id=uuid4(), tenant_id="test-tenant", zoho_tax_id="460000000099005", tax_name="GST5", tax_percentage=5.0, tax_type="tax_group", is_active=True)
 
+    mock_tenant = Tenant(id="test-tenant", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -627,6 +634,8 @@ async def test_case_7_rcm_reverse_charge_mapping():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa_1]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:

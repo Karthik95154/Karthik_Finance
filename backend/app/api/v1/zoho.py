@@ -43,6 +43,77 @@ class ZohoStatusResponse(BaseModel):
     error_message: Optional[str] = None
 
 
+import base64
+import hashlib
+import hmac
+import json
+import time
+import uuid
+
+ZOHO_STATE_MAX_AGE_SECONDS = 900  # 15 minutes
+
+
+def generate_signed_zoho_state(tenant_id: str, frontend_url: str) -> str:
+    """Generates an HMAC-SHA256 signed OAuth state token containing tenant_id, frontend_url, timestamp, and nonce."""
+    secret = settings.AUTH_SECRET_KEY or "fallback-zoho-state-signing-key-production"
+    state_payload = {
+        "tenant_id": tenant_id,
+        "frontend_url": frontend_url,
+        "ts": int(time.time()),
+        "nonce": uuid.uuid4().hex[:12],
+    }
+    payload_json = json.dumps(state_payload, separators=(",", ":"))
+    payload_b64 = base64.urlsafe_b64encode(payload_json.encode("utf-8")).decode("utf-8")
+    sig = hmac.new(
+        secret.encode("utf-8"),
+        payload_b64.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload_b64}.{sig}"
+
+
+def verify_signed_zoho_state(signed_state: Optional[str]) -> Dict[str, Any]:
+    """
+    Verifies the HMAC-SHA256 signature, structure, and expiration of the Zoho OAuth state parameter.
+    Raises ValueError on any integrity, expiration, or format failure.
+    """
+    if not signed_state or "." not in signed_state:
+        raise ValueError("Missing or malformed OAuth state parameter.")
+
+    parts = signed_state.split(".")
+    if len(parts) != 2:
+        raise ValueError("Malformed OAuth state structure.")
+
+    payload_b64, signature = parts[0], parts[1]
+    secret = settings.AUTH_SECRET_KEY or "fallback-zoho-state-signing-key-production"
+    expected_sig = hmac.new(
+        secret.encode("utf-8"),
+        payload_b64.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(signature, expected_sig):
+        raise ValueError("Invalid OAuth state cryptographic signature.")
+
+    try:
+        payload_json = base64.urlsafe_b64decode(payload_b64.encode("utf-8")).decode("utf-8")
+        payload = json.loads(payload_json)
+    except Exception:
+        raise ValueError("Could not decode OAuth state payload.")
+
+    tenant_id = payload.get("tenant_id")
+    ts = payload.get("ts")
+
+    if not tenant_id or not ts:
+        raise ValueError("OAuth state is missing required fields.")
+
+    now = int(time.time())
+    if now - int(ts) > ZOHO_STATE_MAX_AGE_SECONDS or int(ts) > now + 60:
+        raise ValueError("OAuth state has expired. Please initiate connection again.")
+
+    return payload
+
+
 @router.get("/connect")
 async def get_zoho_connect_url(
     request: Request,
@@ -51,7 +122,7 @@ async def get_zoho_connect_url(
     current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
 ):
     """
-    Returns the Zoho OAuth2 authorization URL for user login.
+    Returns the Zoho OAuth2 authorization URL for user login with cryptographically signed state.
     Requires ADMIN or FINANCE role.
     """
     tenant_id = current_user.tenant_id
@@ -65,7 +136,7 @@ async def get_zoho_connect_url(
     else:
         frontend_url = settings.FRONTEND_URL.rstrip('/')
 
-    state_param = f"{tenant_id}|{frontend_url}"
+    state_param = generate_signed_zoho_state(tenant_id=tenant_id, frontend_url=frontend_url)
 
     if not settings.ZOHO_CLIENT_ID:
         raise HTTPException(
@@ -91,13 +162,13 @@ async def zoho_oauth_callback(
     request: Request,
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),  # tenant_id passed as state
+    state: Optional[str] = Query(None),
     accounts_server: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Handles Zoho OAuth 2.0 redirect callback, exchanges authorization code for tokens,
-    encrypts tokens at rest, and saves connection details.
+    Handles Zoho OAuth 2.0 redirect callback, verifies cryptographic state signature,
+    exchanges authorization code for tokens, encrypts tokens at rest, and saves connection details.
     Redirects browser seamlessly back to the frontend settings/connection page.
     """
     frontend_base = f"{settings.FRONTEND_URL.rstrip('/')}/integrations"
@@ -114,6 +185,19 @@ async def zoho_oauth_callback(
         logger.warning("Zoho OAuth callback called without authorization code.")
         return RedirectResponse(
             url=f"{frontend_base}?zoho_status=error&error_detail=Missing%20authorization%20code",
+            status_code=302,
+        )
+
+    # Verify cryptographic HMAC signature on state parameter
+    try:
+        state_data = verify_signed_zoho_state(state)
+        tenant_id = state_data["tenant_id"]
+        if state_data.get("frontend_url"):
+            frontend_base = f"{state_data['frontend_url'].rstrip('/')}/integrations"
+    except ValueError as val_err:
+        logger.warning(f"Zoho OAuth state verification failed: {val_err}")
+        return RedirectResponse(
+            url=f"{frontend_base}?zoho_status=error&error_detail={urllib.parse.quote(str(val_err))}",
             status_code=302,
         )
 
@@ -147,7 +231,7 @@ async def zoho_oauth_callback(
     expires_in = token_data.get("expires_in", 3600)
     api_domain = token_data.get("api_domain", settings.ZOHO_BOOKS_API_BASE_URL)
 
-    # Fetch or create ZohoConnection record
+    # Fetch or create ZohoConnection record strictly for the verified tenant_id
     connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
     connection.encrypted_access_token = encrypt_secret(access_token)
     if refresh_token:

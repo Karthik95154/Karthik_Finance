@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 from typing import Dict, Any
 
-from app.db.models import Invoice, ZohoConnection, TaxRate
+from app.db.models import Invoice, ZohoConnection, TaxRate, Tenant
 from app.services.tds_engine import get_effective_tds_data, tds_engine
 from app.services.master_data_service import master_data_service
 from app.services.export_service import export_service
@@ -66,12 +66,24 @@ async def test_master_data_exact_tds_resolution_and_zero_fallback():
     tenant_id = "test-tenant"
     mock_db = AsyncMock()
 
-    # Zoho has only: Commission/Brokerage 2% and Professional Fees 10%
+    mock_conn = ZohoConnection(id=uuid4(), tenant_id=tenant_id, organization_id="org_123", status="CONNECTED")
     mock_tds_taxes = [
         TaxRate(id=uuid4(), tenant_id=tenant_id, zoho_tax_id="ZOHO_TDS_COMM_2", tax_name="Commission or Brokerage (2%)", tax_percentage=2.0, tax_type="TDS", is_active=True),
         TaxRate(id=uuid4(), tenant_id=tenant_id, zoho_tax_id="ZOHO_TDS_PROF_10", tax_name="Professional Fees (10%)", tax_percentage=10.0, tax_type="TDS", is_active=True),
     ]
-    mock_db.execute = AsyncMock(return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_tds_taxes)))))
+    async def mock_exec_tds(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM zoho_connections" in stmt_str or "zoho_connections." in stmt_str:
+            res.scalars.return_value.all.return_value = [mock_conn]
+            res.scalar_one_or_none.return_value = mock_conn
+        elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
+            res.scalars.return_value.all.return_value = mock_tds_taxes
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_exec_tds
 
     # TEST 3: Exact match for 10% Professional
     res_10 = await master_data_service.get_zoho_tds_tax(
@@ -154,10 +166,12 @@ async def test_export_service_tds_not_applicable_never_sends_tds_tax_id():
 
     mock_conn = ZohoConnection(id=uuid4(), tenant_id=tenant_id, organization_id="org_123", status="CONNECTED")
     mock_journal = MagicMock(is_balanced=True, status="APPROVED")
+    mock_tenant = Tenant(id=tenant_id, name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_tenant)),
     ])
     mock_db.commit = AsyncMock()
 
@@ -228,10 +242,12 @@ async def test_export_service_missing_tds_tax_raises_blocking_error():
 
     mock_conn = ZohoConnection(id=uuid4(), tenant_id=tenant_id, organization_id="org_123", status="CONNECTED")
     mock_journal = MagicMock(is_balanced=True, status="APPROVED")
+    mock_tenant = Tenant(id=tenant_id, name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_tenant)),
     ])
     mock_db.commit = AsyncMock()
 

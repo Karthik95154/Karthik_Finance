@@ -552,12 +552,14 @@ async def update_invoice_extraction(
 @router.get("/{invoice_id}/file")
 async def get_invoice_file(
     invoice_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Streams original unmodified invoice binary from Supabase Storage.
+    Streams original unmodified invoice binary from Supabase Storage for authorized tenant users.
     """
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -565,6 +567,13 @@ async def get_invoice_file(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    # If user has CUSTOMER role, require the invoice to be HITL approved
+    if current_user.role == "CUSTOMER" and invoice.approval_status != "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Customer access unavailable: Invoice is awaiting internal Finance review and approval.",
         )
 
     try:
@@ -613,13 +622,14 @@ async def get_invoice_file(
 @router.get("/{invoice_id}/pages")
 async def get_invoice_pages(
     invoice_id: uuid.UUID,
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Renders multi-page PDF invoices into a list of base64 PNG images, or returns
-    the direct image base64 if it's already an image format.
+    Renders multi-page PDF invoices into a list of base64 PNG images for authorized tenant users.
     """
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -627,6 +637,13 @@ async def get_invoice_pages(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    # If user has CUSTOMER role, require the invoice to be HITL approved
+    if current_user.role == "CUSTOMER" and invoice.approval_status != "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Customer access unavailable: Invoice is awaiting internal Finance review and approval.",
         )
 
     try:

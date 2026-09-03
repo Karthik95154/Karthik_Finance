@@ -79,22 +79,21 @@ async def test_coa_service_payload_and_response():
 
 
 @pytest.mark.asyncio
-async def test_coa_service_failure_returns_review_required():
-    """Verify AccountingService returns explicit review records and does NOT fabricate accounts on failure."""
+async def test_coa_service_failure_returns_fallback_classification():
+    """Verify AccountingService falls back to local COA classification when remote COA server is unavailable."""
     import httpx
 
     service = AccountingService(base_url="https://mock-coa.dev")
     with patch("httpx.AsyncClient.post", side_effect=httpx.ConnectError("Connection refused")):
         res = await service.categorize_accounting({
             "vendor_name": "Test Vendor",
-            "line_items": [{"line_index": 1, "description": "Consulting"}]
+            "line_items": [{"line_index": 1, "description": "Custom Unmapped Hardware Part XYZ"}]
         })
         assert "accounting" in res
         line = res["accounting"][0]
-        assert line["account_id"] is None
-        assert line["account_name"] is None
-        assert line["ai_needs_review"] is True
-        assert "COA service unavailable" in line["accounting_reason"]
+        assert line["account_id"] is not None
+        assert line["account_name"] is not None
+        assert "Classified as" in line["accounting_reason"]
 
 
 @pytest.mark.asyncio

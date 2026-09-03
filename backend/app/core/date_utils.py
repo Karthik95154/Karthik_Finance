@@ -189,3 +189,84 @@ def validate_invoice_due_dates(invoice_date_str: Optional[str], due_date_str: Op
         return False, f"Due date ({due_disp}) cannot be earlier than invoice date ({inv_disp})."
 
     return True, None
+
+
+def is_date_in_closed_period(
+    target_date: Union[str, date, datetime, None],
+    books_closed_through_date: Union[str, date, datetime, None],
+) -> bool:
+    """
+    Pure calendar-date comparison:
+    target_date <= books_closed_through_date => CLOSED (True)
+    target_date > books_closed_through_date => OPEN (False)
+    If books_closed_through_date is None/empty => OPEN (False)
+    """
+    if not target_date or not books_closed_through_date:
+        return False
+
+    norm_target = parse_and_normalize_date(target_date)
+    norm_lock = parse_and_normalize_date(books_closed_through_date)
+    if not norm_target or not norm_lock:
+        return False
+
+    try:
+        t_dt = datetime.strptime(norm_target, "%Y-%m-%d").date()
+        l_dt = datetime.strptime(norm_lock, "%Y-%m-%d").date()
+        return t_dt <= l_dt
+    except (ValueError, TypeError):
+        return False
+
+
+def check_accounting_period(
+    document_date: Union[str, date, datetime, None],
+    posting_date: Union[str, date, datetime, None],
+    books_closed_through_date: Union[str, date, datetime, None],
+    period_resolution: Optional[str] = "NONE",
+) -> dict:
+    """
+    Authoritative evaluation of accounting period status.
+    Uses calendar-date comparison strictly.
+    """
+    norm_doc = parse_and_normalize_date(document_date)
+    norm_lock = parse_and_normalize_date(books_closed_through_date)
+    effective_posting = parse_and_normalize_date(posting_date) or norm_doc
+
+    is_doc_closed = is_date_in_closed_period(norm_doc, norm_lock)
+    is_posting_closed = is_date_in_closed_period(effective_posting, norm_lock)
+
+    # Resolution validity
+    resolution_val = (period_resolution or "NONE").upper()
+    is_resolved = False
+    resolution_error = None
+
+    if not is_doc_closed:
+        is_resolved = True
+    else:
+        if resolution_val == "POST_TO_OPEN_PERIOD":
+            if is_posting_closed:
+                resolution_error = f"Selected posting date ({format_to_indian_standard(effective_posting)}) is still within the closed period (Books closed through {format_to_indian_standard(norm_lock)}). Posting date must be strictly after the closed date."
+            else:
+                is_resolved = True
+        elif resolution_val == "PRIOR_PERIOD_EXCEPTION":
+            is_resolved = True
+        elif resolution_val == "FLAGGED_FOR_AUDIT":
+            is_resolved = False
+            resolution_error = "Invoice is flagged for audit and blocked from accounting approval."
+        else:
+            is_resolved = False
+            resolution_error = f"Invoice document date ({format_to_indian_standard(norm_doc)}) is in a closed accounting period (Books closed through {format_to_indian_standard(norm_lock)}). A period resolution must be selected."
+
+    return {
+        "is_closed_period": is_doc_closed,
+        "is_doc_date_closed": is_doc_closed,
+        "is_posting_date_closed": is_posting_closed,
+        "is_resolved": is_resolved,
+        "resolution_error": resolution_error,
+        "document_date": norm_doc,
+        "document_date_formatted": format_to_indian_standard(norm_doc),
+        "posting_date": effective_posting,
+        "posting_date_formatted": format_to_indian_standard(effective_posting),
+        "books_closed_through_date": norm_lock,
+        "books_closed_through_date_formatted": format_to_indian_standard(norm_lock) if norm_lock else None,
+        "period_resolution": resolution_val,
+    }

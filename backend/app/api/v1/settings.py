@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Integration
+from app.core.security import AuthenticatedUser, get_current_user, require_roles
 from app.core.security_util import encrypt_data
 from app.services.imap_service import imap_service
 
@@ -31,9 +32,13 @@ def mask_password(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @router.get("/imap_email")
-async def get_imap_settings(db: AsyncSession = Depends(get_db)):
-    """Retrieves current email integration status and configuration (password masked)."""
-    query = select(Integration).where(Integration.id == "imap_email")
+async def get_imap_settings(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieves current email integration status and configuration (password masked) for the tenant."""
+    tenant_id = current_user.tenant_id
+    query = select(Integration).where(Integration.tenant_id == tenant_id)
     result = await db.execute(query)
     integration = result.scalar_one_or_none()
 
@@ -56,11 +61,12 @@ async def get_imap_settings(db: AsyncSession = Depends(get_db)):
 @router.post("/imap_email/configure")
 async def configure_imap_settings(
     payload: IMAPConfigureRequest,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Validates connection and saves IMAP configuration securely."""
-    # Find existing config
-    query = select(Integration).where(Integration.id == "imap_email")
+    """Validates connection and saves IMAP configuration securely for the tenant (ADMIN only)."""
+    tenant_id = current_user.tenant_id
+    query = select(Integration).where(Integration.tenant_id == tenant_id)
     result = await db.execute(query)
     integration = result.scalar_one_or_none()
 
@@ -111,7 +117,8 @@ async def configure_imap_settings(
     # Save to database
     if not integration:
         integration = Integration(
-            id="imap_email",
+            id=f"imap_email_{tenant_id}",
+            tenant_id=tenant_id,
             status="connected",
             config=config_data,
         )
@@ -131,9 +138,13 @@ async def configure_imap_settings(
 
 
 @router.post("/imap_email/disconnect")
-async def disconnect_imap_settings(db: AsyncSession = Depends(get_db)):
-    """Clears configuration and disconnects IMAP integration."""
-    query = select(Integration).where(Integration.id == "imap_email")
+async def disconnect_imap_settings(
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clears configuration and disconnects IMAP integration for the tenant (ADMIN only)."""
+    tenant_id = current_user.tenant_id
+    query = select(Integration).where(Integration.tenant_id == tenant_id)
     result = await db.execute(query)
     integration = result.scalar_one_or_none()
 

@@ -1,7 +1,7 @@
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
-from app.db.models import Invoice, ZohoConnection, ChartOfAccount, TaxRate, JournalEntry
+from app.db.models import Invoice, ZohoConnection, ChartOfAccount, TaxRate, JournalEntry, Tenant
 from app.services.export_service import export_service
 
 
@@ -113,6 +113,8 @@ async def test_full_zoho_export_success_flow():
     tax_18 = TaxRate(zoho_tax_id="TAX_18", tax_name="GST 18%", tax_percentage=18.0, is_active=True)
     tds_tax = TaxRate(zoho_tax_id="TDS_194J", tax_name="Section 194J Technical Services (2%)", tax_percentage=2.0, tax_type="TDS", is_active=True)
 
+    mock_tenant = Tenant(id=tenant_id, name="Test Org", slug="test-org", books_closed_through_date=None)
+
     mock_db = AsyncMock()
     async def mock_execute(stmt, *args, **kwargs):
         res = MagicMock()
@@ -121,8 +123,11 @@ async def test_full_zoho_export_success_flow():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = mock_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM zoho_connections" in stmt_str or "zoho_connections." in stmt_str:
             res.scalar_one_or_none.return_value = mock_connection
+            res.scalars.return_value.all.return_value = [mock_connection]
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:

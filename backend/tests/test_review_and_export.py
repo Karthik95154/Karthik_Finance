@@ -5,7 +5,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from app.main import app
 from app.db.database import get_db
-from app.db.models import Invoice, JournalEntry, ChartOfAccount
+from app.db.models import Invoice, JournalEntry, ChartOfAccount, Tenant
 from app.core.security import create_access_token
 
 
@@ -85,10 +85,20 @@ async def test_approve_invoice_flow(auth_headers):
         },
     )
 
+    mock_tenant = Tenant(id="default-tenant-001", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_invoice
-    mock_db.execute.return_value = mock_result
+    async def mock_exec_approve(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_invoice
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_exec_approve
     mock_db.flush = AsyncMock()
     mock_db.commit = AsyncMock()
     mock_db.refresh = AsyncMock()
@@ -576,6 +586,7 @@ async def test_itc_review_required_allows_zoho_export(auth_headers):
 
     mock_db = AsyncMock()
 
+    mock_tenant = Tenant(id="default-tenant-001", name="Test Org", slug="test-org", books_closed_through_date=None)
     async def mock_execute(stmt, *args, **kwargs):
         res = MagicMock()
         stmt_str = str(stmt)
@@ -583,6 +594,8 @@ async def test_itc_review_required_allows_zoho_export(auth_headers):
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [mock_coa]
         else:

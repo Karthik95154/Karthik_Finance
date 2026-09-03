@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Invoice, Integration
 from app.core.config import settings
+from app.core.security import AuthenticatedUser, get_current_user, require_roles
 from app.storage.supabase_storage import storage_service
 from app.services.imap_service import imap_service
 from app.services.invoice_processing import process_invoice_background
@@ -20,11 +21,16 @@ router = APIRouter(prefix="", tags=["Inbox / Ingestion"])
 
 
 @router.get("/inbox/staged")
-async def get_staged_documents(db: AsyncSession = Depends(get_db)):
-    """Retrieves all staged invoices waiting for review, excluding NOT_FINANCIAL records while preserving FINANCIAL, UNKNOWN, and legacy NULL records."""
+async def get_staged_documents(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Retrieves staged invoices waiting for review, strictly scoped to the authenticated tenant."""
+    tenant_id = current_user.tenant_id
     query = (
         select(Invoice)
         .where(
+            Invoice.tenant_id == tenant_id,
             Invoice.status == "STAGED",
             or_(
                 Invoice.financial_relevance != "NOT_FINANCIAL",
@@ -38,15 +44,16 @@ async def get_staged_documents(db: AsyncSession = Depends(get_db)):
     return staged
 
 
-
 @router.post("/inbox/staged/{invoice_id}/process")
 async def process_staged_document(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Triggers invoice extraction and Stage 3 accounting pipeline for a staged document."""
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    """Triggers invoice extraction and Stage 3 accounting pipeline for a staged document belonging to the tenant."""
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -82,10 +89,12 @@ async def process_staged_document(
 async def delete_staged_document(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deletes a staged invoice from the database instantly, cleaning up Supabase Storage in the background."""
-    query = select(Invoice).where(Invoice.id == invoice_id)
+    """Deletes a staged invoice from the database and Supabase Storage, strictly verifying tenant ownership."""
+    tenant_id = current_user.tenant_id
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -114,20 +123,25 @@ async def delete_staged_document(
 
 @router.post("/email/poll")
 @router.post("/inbox/poll")
-async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(get_db)):
-    """Triggers live polling of the configured IMAP mailbox to ingest new attachments."""
+async def poll_email_inbox(
+    window_hours: int = 24,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Triggers live polling of the tenant's configured IMAP mailbox to ingest new attachments."""
     import time
     start_total = time.perf_counter()
+    tenant_id = current_user.tenant_id
     
-    # Find email config
-    query = select(Integration).where(Integration.id == "imap_email")
+    # Find email config for this tenant
+    query = select(Integration).where(Integration.tenant_id == tenant_id)
     result = await db.execute(query)
     integration = result.scalar_one_or_none()
 
     if not integration or integration.status != "connected" or not integration.config:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Corporate email integration is not configured. Please connect your inbox in Settings.",
+            detail="Corporate email integration is not configured for your tenant. Please connect your inbox in Settings.",
         )
 
     try:
@@ -162,7 +176,7 @@ async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(ge
     hashes = [att["file_hash"] for att in attachments]
     existing_invoices = {}
     if hashes:
-        dup_query = select(Invoice).where(Invoice.file_hash.in_(hashes))
+        dup_query = select(Invoice).where(Invoice.tenant_id == tenant_id, Invoice.file_hash.in_(hashes))
         dup_result = await db.execute(dup_query)
         existing_invoices = {inv.file_hash: inv for inv in dup_result.scalars().all()}
     dup_time_ms = (time.perf_counter() - start_dup) * 1000.0
@@ -255,9 +269,10 @@ async def poll_email_inbox(window_hours: int = 24, db: AsyncSession = Depends(ge
             rel_val = classification_res.financial_relevance.value if hasattr(classification_res.financial_relevance, "value") else str(classification_res.financial_relevance)
             type_val = classification_res.document_type.value if hasattr(classification_res.document_type, "value") else str(classification_res.document_type)
 
-            # Save record as STAGED invoice
+            # Save record as STAGED invoice with tenant_id explicitly set
             new_invoice = Invoice(
                 id=invoice_id,
+                tenant_id=tenant_id,
                 file_path=storage_path,
                 file_name=attachment["filename"],
                 file_size=len(attachment["file_bytes"]),

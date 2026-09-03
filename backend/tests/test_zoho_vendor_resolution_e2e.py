@@ -1,7 +1,7 @@
 import pytest
 from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
-from app.db.models import Invoice, JournalEntry, ChartOfAccount, TaxRate, ZohoConnection
+from app.db.models import Invoice, JournalEntry, ChartOfAccount, TaxRate, ZohoConnection, Tenant
 from app.services.zoho_client import zoho_client_service
 from app.services.export_service import export_service
 from app.services.invoice_processing import get_effective_invoice_data
@@ -172,6 +172,7 @@ async def test_vendor_taken_from_authoritative_saved_data_and_updates_on_edit():
         is_active=True,
     )
 
+    mock_tenant = Tenant(id="test-tenant", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -181,6 +182,8 @@ async def test_vendor_taken_from_authoritative_saved_data_and_updates_on_edit():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa_1]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
@@ -286,6 +289,7 @@ async def test_unresolved_vendor_creation_failure_raises_blocking_error():
     coa_1 = ChartOfAccount(id=uuid4(), tenant_id="test-tenant", zoho_account_id="4076465000000212005", account_name="PROFESSIONAL EXPENSE", is_active=True)
     tax_1 = TaxRate(id=uuid4(), tenant_id="test-tenant", zoho_tax_id="4076465000000088015", tax_name="IGST18", tax_percentage=18.0, tax_type="tax", is_active=True)
 
+    mock_tenant = Tenant(id="test-tenant", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -295,6 +299,8 @@ async def test_unresolved_vendor_creation_failure_raises_blocking_error():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa_1]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:

@@ -286,6 +286,14 @@ export default function InvoiceWorkspace({
   const [vendorModalOpen, setVendorModalOpen] = useState<boolean>(false);
   const [isAddingVendor, setIsAddingVendor] = useState<boolean>(false);
 
+  // Closed Accounting Period State
+  const [postingDate, setPostingDate] = useState<string>("");
+  const [periodResolution, setPeriodResolution] = useState<string>("NONE");
+  const [periodReason, setPeriodReason] = useState<string>("");
+  const [booksClosedDate, setBooksClosedDate] = useState<string | null>(null);
+  const [periodInfo, setPeriodInfo] = useState<any>(null);
+  const [periodModalOpen, setPeriodModalOpen] = useState<boolean>(false);
+
   useEffect(() => {
     if (!invoiceId) return;
 
@@ -302,6 +310,11 @@ export default function InvoiceWorkspace({
         // 1. Fetch invoice first for instant rendering (<50ms)
         const invData = await fetchInvoicePromise;
         setInvoice(invData);
+        setBooksClosedDate(invData.books_closed_through_date || null);
+        setPeriodInfo(invData.period_info || null);
+        setPeriodResolution(invData.period_resolution || "NONE");
+        setPeriodReason(invData.period_resolution_reason || "");
+        setPostingDate(invData.posting_date || invData.document_date || "");
 
         // 2. Fetch Zoho master data and sidebar list in background without blocking UI
         getZohoMasterData()
@@ -1277,7 +1290,16 @@ export default function InvoiceWorkspace({
     try {
       setIsHitlApproving(true);
       setError(null);
-      await approveHitlExtraction(invoiceId, formData);
+
+      // Gate 1 Closed Period Pre-flight Check
+      if (periodInfo?.is_closed_period && periodResolution === "NONE") {
+        setPeriodModalOpen(true);
+        setError(`This invoice document date falls in a closed accounting period (Books closed through ${periodInfo.books_closed_through_date_formatted || booksClosedDate}). Please resolve the accounting period before approving.`);
+        setIsHitlApproving(false);
+        return;
+      }
+
+      await approveHitlExtraction(invoiceId, formData, postingDate || null, periodResolution, periodReason || null);
       setActionNotice("Stage 1 Extraction approved! Resuming AI Accounting & TDS classification...");
       setTimeout(() => {
         router.push("/");
@@ -1293,8 +1315,16 @@ export default function InvoiceWorkspace({
     try {
       setIsHitlApproving(true);
       setError(null);
-      await approveHitlFinal(invoiceId, accountingData, journalEntry);
-      setActionNotice("Stage 2 Finance review approved! Invoice status set to APPROVED.");
+
+      if (periodInfo?.is_closed_period && periodResolution === "NONE") {
+        setPeriodModalOpen(true);
+        setError(`This invoice posting date falls in a closed accounting period (Books closed through ${periodInfo.books_closed_through_date_formatted || booksClosedDate}). An authorized exception is required.`);
+        setIsHitlApproving(false);
+        return;
+      }
+
+      await approveHitlFinal(invoiceId, accountingData, journalEntry, postingDate || null, periodResolution, periodReason || null);
+      setActionNotice("Stage 2 Finance review approved! Invoice status set to HITL_COMPLETED awaiting Finance approval.");
       setTimeout(() => {
         router.push("/");
       }, 1500);
@@ -1981,12 +2011,89 @@ export default function InvoiceWorkspace({
               >
                 {/* 1. INVOICE INFORMATION */}
                 <section>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                    <Receipt size={16} color="var(--accent)" />
-                    <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      1. Invoice Information
-                    </h3>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <Receipt size={16} color="var(--accent)" />
+                      <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
+                        1. Invoice Information
+                      </h3>
+                    </div>
+
+                    {periodInfo?.is_closed_period && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "5px",
+                            padding: "4px 10px",
+                            borderRadius: "12px",
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            background: periodResolution === "PRIOR_PERIOD_EXCEPTION" ? "#fef3c7" : periodResolution === "POST_TO_OPEN_PERIOD" ? "#dcfce7" : "#fee2e2",
+                            color: periodResolution === "PRIOR_PERIOD_EXCEPTION" ? "#92400e" : periodResolution === "POST_TO_OPEN_PERIOD" ? "#166534" : "#991b1b",
+                            border: `1px solid ${periodResolution === "PRIOR_PERIOD_EXCEPTION" ? "#fde68a" : periodResolution === "POST_TO_OPEN_PERIOD" ? "#bbf7d0" : "#fca5a5"}`,
+                          }}
+                        >
+                          <AlertTriangle size={12} />
+                          <span>
+                            {periodResolution === "PRIOR_PERIOD_EXCEPTION"
+                              ? "Prior-Period Exception Approved"
+                              : periodResolution === "POST_TO_OPEN_PERIOD"
+                              ? "Posting to Open Period"
+                              : "Closed Period Detected"}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setPeriodModalOpen(true)}
+                          className="btn btn-secondary"
+                          style={{ padding: "3px 10px", fontSize: "11px", height: "auto" }}
+                        >
+                          {periodResolution === "NONE" ? "Resolve Period" : "Change Resolution"}
+                        </button>
+                      </div>
+                    )}
                   </div>
+
+                  {/* Prominent Closed Period Warning Banner */}
+                  {periodInfo?.is_closed_period && (
+                    <div
+                      style={{
+                        background: "#fffbeb",
+                        border: "1px solid #fde68a",
+                        borderRadius: "8px",
+                        padding: "12px 16px",
+                        marginBottom: "16px",
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: "10px",
+                      }}
+                    >
+                      <AlertTriangle size={18} color="#d97706" style={{ marginTop: "2px", flexShrink: 0 }} />
+                      <div style={{ flex: 1, fontSize: "13px", color: "#92400e" }}>
+                        <div style={{ fontWeight: "700", marginBottom: "3px" }}>
+                          Closed Accounting Period (Audit Lock Date: {periodInfo.books_closed_through_date_formatted || booksClosedDate})
+                        </div>
+                        <div>
+                          The physical invoice date ({formatToIndianDate(formData.invoice_date)}) falls in a closed financial audit period.
+                          {periodResolution === "POST_TO_OPEN_PERIOD" ? (
+                            <span style={{ color: "#166534", fontWeight: "600", marginLeft: "4px" }}>
+                              Posting to open period ({formatToIndianDate(postingDate)}).
+                            </span>
+                          ) : periodResolution === "PRIOR_PERIOD_EXCEPTION" ? (
+                            <span style={{ color: "#92400e", fontWeight: "600", marginLeft: "4px" }}>
+                              Prior-Period Exception authorized with audit reason.
+                            </span>
+                          ) : (
+                            <span style={{ color: "#b91c1c", fontWeight: "600", marginLeft: "4px" }}>
+                              Please select a period resolution before Stage 1 approval.
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
                     <div>
@@ -2000,13 +2107,34 @@ export default function InvoiceWorkspace({
                       />
                     </div>
                     <div>
-                      <label className="form-label">Invoice Date</label>
+                      <label className="form-label">Document Date (Physical)</label>
                       <input
                         type="text"
                         className="form-input"
                         value={formData.invoice_date ?? ""}
                         placeholder="DD-MM-YYYY"
                         onChange={(e) => handleFieldChange("invoice_date", e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label" style={{ color: periodInfo?.is_closed_period ? "var(--accent)" : "inherit", fontWeight: periodInfo?.is_closed_period ? "700" : "normal" }}>
+                        Accounting Posting Date {periodInfo?.is_closed_period ? " (GL / Zoho)" : ""}
+                      </label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={postingDate || formData.invoice_date || ""}
+                        placeholder="DD-MM-YYYY or YYYY-MM-DD"
+                        style={{
+                          borderColor: periodInfo?.is_closed_period ? "var(--accent)" : undefined,
+                          background: periodInfo?.is_closed_period ? "rgba(99, 102, 241, 0.05)" : undefined,
+                        }}
+                        onChange={(e) => {
+                          setPostingDate(e.target.value);
+                          if (periodResolution === "NONE" && periodInfo?.is_closed_period) {
+                            setPeriodResolution("POST_TO_OPEN_PERIOD");
+                          }
+                        }}
                       />
                     </div>
                     <div>

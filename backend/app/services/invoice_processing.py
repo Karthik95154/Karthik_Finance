@@ -114,6 +114,19 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
     if merged.get("due_date"):
         merged["due_date"] = parse_and_normalize_date(merged["due_date"])
 
+    # Document Date (physical invoice date - immutable reference)
+    merged["document_date"] = merged.get("invoice_date")
+
+    # Posting Date (accounting & GL date)
+    if invoice.posting_date:
+        merged["posting_date"] = invoice.posting_date.isoformat()
+    elif merged.get("posting_date"):
+        merged["posting_date"] = parse_and_normalize_date(merged.get("posting_date"))
+    else:
+        merged["posting_date"] = merged.get("invoice_date")
+
+    merged["period_resolution"] = getattr(invoice, "period_resolution", None) or "NONE"
+
     return merged
 
 

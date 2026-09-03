@@ -7,6 +7,7 @@ from sqlalchemy import (
     Float,
     Text,
     DateTime,
+    Date,
     Boolean,
     ForeignKey,
 )
@@ -21,6 +22,7 @@ class Tenant(Base):
     id = Column(String(64), primary_key=True)  # e.g. "default-tenant-001"
     name = Column(String(255), nullable=False)
     slug = Column(String(100), nullable=False, unique=True, index=True)
+    books_closed_through_date = Column(Date, nullable=True, default=None)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -210,6 +212,13 @@ class Invoice(Base):
     exported_at = Column(DateTime(timezone=True), nullable=True)
     locked_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Closed Accounting Period & Posting Date Controls
+    posting_date = Column(Date, nullable=True, default=None, index=True)
+    period_resolution = Column(String(50), nullable=False, default="NONE", index=True)
+    period_resolution_reason = Column(Text, nullable=True)
+    period_resolved_by = Column(String(255), nullable=True)
+    period_resolved_at = Column(DateTime(timezone=True), nullable=True)
+
     # Errors & Metrics
     error_message = Column(Text, nullable=True)
     confidence_score = Column(Float, nullable=True)
@@ -261,7 +270,10 @@ class Invoice(Base):
 class Integration(Base):
     __tablename__ = "integrations"
 
-    id = Column(String(50), primary_key=True, default="imap_email")
+    id = Column(String(100), primary_key=True, default="imap_email")
+    tenant_id = Column(
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, default="default-tenant-001", index=True
+    )
     status = Column(String(50), nullable=False, default="disconnected")
     config = Column(JSONB, nullable=True)
     last_synced_at = Column(DateTime(timezone=True), nullable=True)

@@ -10,7 +10,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 
-from app.db.models import Invoice, JournalEntry, JournalLineModel, ZohoConnection, TaxRate
+from app.db.models import Invoice, JournalEntry, JournalLineModel, ZohoConnection, TaxRate, Tenant
 from app.services.gst_engine import gst_engine
 from app.services.itc_engine import itc_engine
 from app.services.tds_engine import tds_engine
@@ -102,10 +102,20 @@ async def test_case_1_normal_intra_state_e2e():
     )
 
     persisted_lines = []
+    mock_tenant = Tenant(id="tenant-e2e", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = MagicMock()
-    mock_res = MagicMock()
-    mock_res.scalar_one_or_none.return_value = mock_inv
-    mock_db.execute = AsyncMock(return_value=mock_res)
+    async def mock_exec_app(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_inv
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_exec_app
     mock_db.flush = AsyncMock()
     mock_db.commit = AsyncMock()
     
@@ -128,7 +138,7 @@ async def test_case_1_normal_intra_state_e2e():
     assert jsonb_journal["total_credit"] == 59000.0
     assert len(persisted_lines) == len(jsonb_journal["lines"])
 
-    # 5. Zoho Export Payload Alignment Check
+    mock_tenant = Tenant(id="tenant-e2e", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_connection = ZohoConnection(id=uuid.uuid4(), tenant_id="tenant-e2e", status="CONNECTED", organization_id="ORG_1")
     mock_db_export = AsyncMock()
 
@@ -139,8 +149,11 @@ async def test_case_1_normal_intra_state_e2e():
             res.scalar_one_or_none.return_value = mock_inv
         elif "journal_entries" in stmt_str:
             res.scalar_one_or_none.return_value = JournalEntry(id=uuid.uuid4(), invoice_id=inv_id, is_balanced=True, status="APPROVED")
+        elif "tenants" in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "zoho_connections" in stmt_str:
             res.scalar_one_or_none.return_value = mock_connection
+            res.scalars.return_value.all.return_value = [mock_connection]
         elif "tax_rates" in stmt_str:
             tax = TaxRate(zoho_tax_id="TAX_18", tax_percentage=18.0, tax_name="GST18", tax_type="tax_group", is_active=True)
             res.scalars.return_value.all.return_value = [tax]

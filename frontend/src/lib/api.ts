@@ -1252,7 +1252,13 @@ export async function getHitlExtraction(invoiceId: string) {
   return res.json();
 }
 
-export async function approveHitlExtraction(invoiceId: string, correctedData: any) {
+export async function approveHitlExtraction(
+  invoiceId: string,
+  correctedData: any,
+  postingDate?: string | null,
+  periodResolution?: string | null,
+  periodResolutionReason?: string | null
+) {
   const token = localStorage.getItem("token");
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
@@ -1260,9 +1266,70 @@ export async function approveHitlExtraction(invoiceId: string, correctedData: an
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/extraction/approve`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ corrected_data: correctedData }),
+    body: JSON.stringify({
+      corrected_data: correctedData,
+      posting_date: postingDate,
+      period_resolution: periodResolution,
+      period_resolution_reason: periodResolutionReason,
+    }),
   });
-  if (!res.ok) throw new Error("Failed to approve HITL extraction");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to approve HITL extraction");
+  }
+  return res.json();
+}
+
+export async function resolvePeriod(
+  invoiceId: string,
+  decision: "POST_TO_OPEN_PERIOD" | "PRIOR_PERIOD_EXCEPTION" | "FLAGGED_FOR_AUDIT",
+  postingDate?: string | null,
+  reason?: string | null
+) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/period-resolution`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      decision,
+      posting_date: postingDate,
+      reason,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to resolve accounting period");
+  }
+  return res.json();
+}
+
+export async function getTenantClosedPeriod() {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = {};
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/tenants/closed-period`, { headers });
+  if (!res.ok) throw new Error("Failed to fetch tenant closed period");
+  return res.json();
+}
+
+export async function updateTenantClosedPeriod(booksClosedThroughDate: string | null) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/tenants/closed-period`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ books_closed_through_date: booksClosedThroughDate }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to update tenant closed period");
+  }
   return res.json();
 }
 
@@ -1278,7 +1345,14 @@ export async function getHitlFinal(invoiceId: string) {
   return res.json();
 }
 
-export async function approveHitlFinal(invoiceId: string, finalAccounting: any, finalJournal: any) {
+export async function approveHitlFinal(
+  invoiceId: string,
+  finalAccounting: any,
+  finalJournal: any,
+  postingDate?: string | null,
+  periodResolution?: string | null,
+  periodResolutionReason?: string | null
+) {
   const token = localStorage.getItem("token");
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
@@ -1286,8 +1360,17 @@ export async function approveHitlFinal(invoiceId: string, finalAccounting: any, 
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/final/approve`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ final_accounting: finalAccounting, final_journal: finalJournal }),
+    body: JSON.stringify({
+      final_accounting: finalAccounting,
+      final_journal: finalJournal,
+      posting_date: postingDate,
+      period_resolution: periodResolution,
+      period_resolution_reason: periodResolutionReason,
+    }),
   });
-  if (!res.ok) throw new Error("Failed to approve final HITL");
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to approve final HITL");
+  }
   return res.json();
 }

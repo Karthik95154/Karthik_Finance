@@ -13,7 +13,8 @@ from app.core.security import (
     require_roles,
 )
 from app.db.database import get_db
-from app.db.models import Invoice, JournalEntry, JournalLine, AuditLog, ChartOfAccount
+from app.db.models import Invoice, JournalEntry, JournalLine, AuditLog, ChartOfAccount, Tenant
+from app.core.date_utils import parse_and_normalize_date, is_date_in_closed_period, format_to_indian_standard
 from app.services.journal_generator import journal_generator, sync_relational_journal
 from app.services.audit_service import audit_service
 from app.services.export_service import export_service
@@ -24,6 +25,60 @@ router = APIRouter(tags=["Finance Review & Export"])
 
 class RejectRequest(BaseModel):
     reason: str
+
+
+class TenantClosedPeriodRequest(BaseModel):
+    books_closed_through_date: Optional[str] = None  # ISO YYYY-MM-DD or null
+
+
+@router.get("/tenants/closed-period")
+async def get_tenant_closed_period(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns the authenticated tenant's closed accounting period lock date."""
+    tenant_query = select(Tenant).where(Tenant.id == current_user.tenant_id)
+    t_res = await db.execute(tenant_query)
+    tenant = t_res.scalar_one_or_none()
+
+    lock_date = tenant.books_closed_through_date.isoformat() if (tenant and tenant.books_closed_through_date) else None
+    return {
+        "tenant_id": current_user.tenant_id,
+        "books_closed_through_date": lock_date,
+        "books_closed_through_date_formatted": format_to_indian_standard(lock_date) if lock_date else None,
+    }
+
+
+@router.put("/tenants/closed-period")
+async def update_tenant_closed_period(
+    payload: TenantClosedPeriodRequest,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Updates the authenticated tenant's books_closed_through_date. Only ADMIN authorized."""
+    tenant_query = select(Tenant).where(Tenant.id == current_user.tenant_id)
+    t_res = await db.execute(tenant_query)
+    tenant = t_res.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    new_date = None
+    if payload.books_closed_through_date:
+        norm_date = parse_and_normalize_date(payload.books_closed_through_date)
+        if not norm_date:
+            raise HTTPException(status_code=400, detail="Invalid date format for books_closed_through_date.")
+        from datetime import datetime
+        new_date = datetime.strptime(norm_date, "%Y-%m-%d").date()
+
+    tenant.books_closed_through_date = new_date
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": "Tenant closed accounting period updated successfully.",
+        "tenant_id": current_user.tenant_id,
+        "books_closed_through_date": new_date.isoformat() if new_date else None,
+    }
 
 
 class JournalPreviewResponse(BaseModel):
@@ -347,6 +402,36 @@ async def approve_invoice(
     # 2. Extract Authoritative Working Payload and Accounting Classification
     from app.services.invoice_processing import get_effective_invoice_data
     vlm_data = get_effective_invoice_data(invoice)
+
+    # GATE 2 ENFORCEMENT: Server-side Closed Accounting Period Validation
+    t_query = select(Tenant).where(Tenant.id == tenant_id)
+    t_res = await db.execute(t_query)
+    tenant_obj = t_res.scalar_one_or_none()
+    if not tenant_obj:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Tenant organization '{tenant_id}' could not be loaded for accounting period validation."
+        )
+    lock_date = tenant_obj.books_closed_through_date
+
+    doc_date = parse_and_normalize_date(vlm_data.get("invoice_date"))
+    effective_posting = parse_and_normalize_date(invoice.posting_date) or doc_date
+
+    if is_date_in_closed_period(effective_posting, lock_date):
+        if invoice.period_resolution != "PRIOR_PERIOD_EXCEPTION":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Cannot approve invoice: Posting date ({effective_posting}) falls within a closed accounting period "
+                    f"(Books closed through {lock_date}). An authorized Finance Prior-Period Exception is required before approval."
+                ),
+            )
+        # Verify exception has mandatory reason
+        if not invoice.period_resolution_reason or len(invoice.period_resolution_reason.strip()) < 10:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Prior-Period Exception requires a valid audit rationale (minimum 10 characters).",
+            )
 
     accounting_data = (
         invoice.current_accounting_output

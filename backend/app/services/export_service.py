@@ -93,8 +93,9 @@ class InvoiceExportService:
             raise ValueError("Invoice cannot be exported without an approved, balanced General Ledger journal entry.")
 
         # 4. Check Date Validity & Authoritative Working Data
-        from app.core.date_utils import parse_and_normalize_date, validate_invoice_due_dates
+        from app.core.date_utils import parse_and_normalize_date, validate_invoice_due_dates, is_date_in_closed_period, format_to_indian_standard
         from app.services.invoice_processing import get_effective_invoice_data
+        from app.db.models import Tenant
         
         vlm_data_check = get_effective_invoice_data(invoice)
 
@@ -107,12 +108,29 @@ class InvoiceExportService:
         if not is_valid_dates:
             raise ValueError(f"Cannot export to Zoho: {date_err}")
 
-        # 5. Check Zoho Connection
+        # 5. GATE 3 ENFORCEMENT: Fresh server-side accounting period check immediately before export
+        effective_posting_date = parse_and_normalize_date(invoice.posting_date) or invoice_date_norm
+        t_query = select(Tenant).where(Tenant.id == tenant_id)
+        t_res = await db.execute(t_query)
+        tenant_obj = t_res.scalar_one_or_none()
+        if not tenant_obj:
+            raise ValueError(f"Cannot export to Zoho: Tenant organization '{tenant_id}' could not be loaded for closed period validation.")
+
+        lock_date = tenant_obj.books_closed_through_date
+
+        if is_date_in_closed_period(effective_posting_date, lock_date):
+            if invoice.period_resolution != "PRIOR_PERIOD_EXCEPTION":
+                raise ValueError(
+                    f"Cannot export to Zoho: Posting date ({effective_posting_date}) is in a closed accounting period "
+                    f"(Books closed through {lock_date}). An authorized Finance Prior-Period Exception is required."
+                )
+
+        # 6. Check Zoho Connection
         connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
         if connection.status != "CONNECTED" or not connection.organization_id:
             raise ValueError("Tenant is not connected to a Zoho Books organization. Please connect Zoho first.")
 
-        # 6. Set In-Flight Lock
+        # 7. Set In-Flight Lock
         invoice.export_status = "EXPORTING"
         await db.commit()
 
@@ -124,6 +142,7 @@ class InvoiceExportService:
             vendor_pan = (vlm_data.get("vendor_pan") or "").strip() or None
             invoice_num = (vlm_data.get("invoice_number") or f"INV-{str(invoice.id)[:8]}").strip()
             invoice_date = invoice_date_norm
+            posting_date = effective_posting_date
             due_date = due_date_norm
 
             # 8. Authoritative Line Item Account Validation (ZERO SYNTHETIC FALLBACK)
@@ -485,7 +504,7 @@ class InvoiceExportService:
             bill_payload: Dict[str, Any] = {
                 "vendor_id": vendor_id,
                 "bill_number": invoice_num,
-                "date": invoice_date,
+                "date": posting_date,
                 "due_date": due_date,
                 "line_items": bill_line_items,
             }
@@ -529,7 +548,14 @@ class InvoiceExportService:
             if ref_num:
                 bill_payload["reference_number"] = str(ref_num)
 
-            notes = vlm_data.get("notes")
+            notes = vlm_data.get("notes") or ""
+            # If posting_date differs from physical invoice_date, preserve original invoice date in Zoho notes
+            if str(posting_date) != str(invoice_date):
+                inv_disp = format_to_indian_standard(invoice_date) or invoice_date
+                post_disp = format_to_indian_standard(posting_date) or posting_date
+                period_note = f"[Original Invoice Date: {inv_disp} | Accounting Posting Date: {post_disp}]"
+                notes = f"{period_note} {notes}".strip()
+
             if notes:
                 bill_payload["notes"] = str(notes)
 

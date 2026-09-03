@@ -281,6 +281,13 @@ export default function InvoiceWorkspace({
   const [vendorModalOpen, setVendorModalOpen] = useState<boolean>(false);
   const [isAddingVendor, setIsAddingVendor] = useState<boolean>(false);
 
+  // Closed Accounting Period State
+  const [postingDate, setPostingDate] = useState<string>("");
+  const [periodResolution, setPeriodResolution] = useState<string>("NONE");
+  const [periodReason, setPeriodReason] = useState<string>("");
+  const [booksClosedDate, setBooksClosedDate] = useState<string | null>(null);
+  const [periodModalOpen, setPeriodModalOpen] = useState<boolean>(false);
+
   useEffect(() => {
     if (!invoiceId) return;
 
@@ -290,8 +297,14 @@ export default function InvoiceWorkspace({
         // 1. Fetch invoice first for instant rendering (<50ms)
         const invData = await getInvoice(invoiceId);
         setInvoice(invData);
+        setPeriodResolution(invData.period_resolution || "NONE");
+        setPeriodReason(invData.period_resolution_reason || "");
+        setPostingDate(invData.posting_date || "");
 
-        // 2. Fetch Zoho master data and sidebar list in background without blocking UI
+        // 2. Fetch tenant closed date and Zoho master data
+        getTenantClosedPeriod()
+          .then((t) => setBooksClosedDate(t.books_closed_through_date || null))
+          .catch(() => null);
         getZohoMasterData()
           .then((m) => setZohoAccounts(m.accounts || []))
           .catch(() => null);
@@ -1850,12 +1863,80 @@ export default function InvoiceWorkspace({
               >
                 {/* 1. INVOICE INFORMATION */}
                 <section>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                    <Receipt size={16} color="var(--accent)" />
-                    <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      1. Invoice Information
-                    </h3>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      <Receipt size={16} color="var(--accent)" />
+                      <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
+                        1. Invoice Information
+                      </h3>
+                    </div>
+
+                    {periodResolution === "PRIOR_PERIOD_EXCEPTION" ? (
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                          padding: "4px 10px",
+                          borderRadius: "12px",
+                          fontSize: "11px",
+                          fontWeight: "700",
+                          background: "#fef3c7",
+                          color: "#92400e",
+                          border: "1px solid #fde68a",
+                        }}
+                      >
+                        <ShieldCheck size={12} />
+                        <span>Prior-Period Exception Authorized</span>
+                      </span>
+                    ) : periodResolution === "POST_TO_OPEN_PERIOD" ? (
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                          padding: "4px 10px",
+                          borderRadius: "12px",
+                          fontSize: "11px",
+                          fontWeight: "700",
+                          background: "#dcfce7",
+                          color: "#166534",
+                          border: "1px solid #bbf7d0",
+                        }}
+                      >
+                        <CheckCircle2 size={12} />
+                        <span>Posted to Open Period</span>
+                      </span>
+                    ) : null}
                   </div>
+
+                  {/* Prominent Closed Period Info Banner if lock date is present */}
+                  {booksClosedDate && (
+                    <div
+                      style={{
+                        background: "rgba(99, 102, 241, 0.05)",
+                        border: "1px solid rgba(99, 102, 241, 0.2)",
+                        borderRadius: "8px",
+                        padding: "8px 14px",
+                        marginBottom: "14px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        fontSize: "12px",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <BookOpen size={14} color="var(--accent)" />
+                        <span>Company Books Closed Through: <strong style={{ color: "var(--text-primary)" }}>{formatToIndianDate(booksClosedDate)}</strong></span>
+                      </div>
+                      {postingDate && (
+                        <div>
+                          Effective Accounting Date: <strong style={{ color: "var(--accent)" }}>{formatToIndianDate(postingDate)}</strong>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
                     <div>
@@ -1869,13 +1950,23 @@ export default function InvoiceWorkspace({
                       />
                     </div>
                     <div>
-                      <label className="form-label">Invoice Date</label>
+                      <label className="form-label">Document Date (Physical)</label>
                       <input
                         type="text"
                         className="form-input"
                         value={formData.invoice_date ?? ""}
                         placeholder="DD-MM-YYYY"
                         onChange={(e) => handleFieldChange("invoice_date", e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label">Accounting Posting Date</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={postingDate || formData.invoice_date || ""}
+                        placeholder="DD-MM-YYYY"
+                        onChange={(e) => setPostingDate(e.target.value)}
                       />
                     </div>
                     <div>
