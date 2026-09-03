@@ -8,6 +8,7 @@ from app.api.v1.invoices import router as invoices_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.inbox import router as inbox_router
 from app.api.v1.zoho import router as zoho_router
+from app.api.v1.hitl import router as hitl_router
 from app.api.v1.review import router as review_router
 from app.core.config import settings
 
@@ -80,6 +81,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=r"https://.*\.github\.dev|https://.*\.devtunnels\.ms",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -92,6 +94,7 @@ app.include_router(invoices_router, prefix=settings.API_V1_STR)
 app.include_router(settings_router, prefix=settings.API_V1_STR)
 app.include_router(inbox_router, prefix=settings.API_V1_STR)
 app.include_router(zoho_router, prefix=settings.API_V1_STR)
+app.include_router(hitl_router, prefix=settings.API_V1_STR)
 app.include_router(review_router, prefix=settings.API_V1_STR)
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import time
 from datetime import datetime, timezone
 from typing import Dict
@@ -68,8 +69,27 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         endpoint=settings.SUPABASE_URL,
     )
 
-    # 3. Colab Qwen3-VL Engine Check
-    vlm_detailed = await ai_service.check_colab_health_detailed()
+    # 3, 4, 5. External Colab Engine Checks (Executed concurrently with fast timeout)
+    async def _safe_check(coro, default_name, endpoint_url):
+        try:
+            res = await asyncio.wait_for(coro, timeout=1.5)
+            return res if isinstance(res, dict) else {}
+        except Exception:
+            return {
+                "name": default_name,
+                "status": "offline",
+                "status_code": 503,
+                "message": "Endpoint offline or unreachable",
+                "latency_ms": 0.0,
+                "endpoint": endpoint_url,
+            }
+
+    vlm_detailed, acc_detailed, tds_detailed = await asyncio.gather(
+        _safe_check(ai_service.check_colab_health_detailed(), "Qwen3-VL Vision Engine", settings.QWEN_VL_SERVICE_URL),
+        _safe_check(accounting_service.check_health_detailed(), "Qwen3-4B Accounting Engine", settings.QWEN_COA_SERVICE_URL),
+        _safe_check(tds_service.check_health_detailed(), "Qwen3-4B TDS Engine", settings.QWEN_TDS_SERVICE_URL),
+    )
+
     services_map["colab_vlm"] = ServiceHealthDetail(
         name=vlm_detailed.get("name", "Qwen3-VL Vision Engine"),
         status=vlm_detailed.get("status", "offline"),
@@ -79,8 +99,6 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         endpoint=vlm_detailed.get("endpoint"),
     )
 
-    # 4. Colab Qwen3-4B Accounting / COA Engine Check
-    acc_detailed = await accounting_service.check_health_detailed()
     services_map["colab_accounting"] = ServiceHealthDetail(
         name=acc_detailed.get("name", "Qwen3-4B Accounting Engine"),
         status=acc_detailed.get("status", "offline"),
@@ -90,8 +108,6 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         endpoint=acc_detailed.get("endpoint"),
     )
 
-    # 5. Colab Qwen3-4B TDS Engine Check
-    tds_detailed = await tds_service.check_health_detailed()
     services_map["colab_tds"] = ServiceHealthDetail(
         name=tds_detailed.get("name", "Qwen3-4B TDS Engine"),
         status=tds_detailed.get("status", "offline"),

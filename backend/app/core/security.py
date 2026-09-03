@@ -25,7 +25,7 @@ class AuthenticatedUser(BaseModel):
     id: str
     email: str
     tenant_id: str
-    role: str  # "ADMIN", "FINANCE", "VIEWER", "CUSTOMER"
+    role: str  # "ADMIN", "FINANCE", "FINANCE_REVIEWER", "DATA_REVIEWER", "VIEWER", "CUSTOMER"
     full_name: Optional[str] = None
 
 
@@ -152,7 +152,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if role not in ("ADMIN", "FINANCE", "VIEWER", "CUSTOMER"):
+    if role not in ("ADMIN", "FINANCE", "FINANCE_REVIEWER", "DATA_REVIEWER", "VIEWER", "CUSTOMER"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid role '{role}' in token claims.",

@@ -491,7 +491,9 @@ async def approve_invoice(
         tenant_id=tenant_id,
     )
 
+    invoice.status = "COMPLETED"
     invoice.approval_status = "APPROVED"
+    invoice.accounting_status = "COMPLETED"
     invoice.locked_at = datetime.now(timezone.utc)
     invoice.updated_at = datetime.now(timezone.utc)
     await db.commit()

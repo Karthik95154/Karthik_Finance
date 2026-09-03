@@ -45,6 +45,7 @@ class ZohoStatusResponse(BaseModel):
 
 @router.get("/connect")
 async def get_zoho_connect_url(
+    request: Request,
     accounts_url: Optional[str] = None,
     redirect_uri: Optional[str] = None,
     current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
@@ -55,6 +56,17 @@ async def get_zoho_connect_url(
     """
     tenant_id = current_user.tenant_id
 
+    # Extract dynamic frontend URL to support dev tunnels smoothly
+    origin = request.headers.get("origin") or request.headers.get("referer")
+    if origin:
+        from urllib.parse import urlparse
+        parsed = urlparse(origin)
+        frontend_url = f"{parsed.scheme}://{parsed.netloc}"
+    else:
+        frontend_url = settings.FRONTEND_URL.rstrip('/')
+
+    state_param = f"{tenant_id}|{frontend_url}"
+
     if not settings.ZOHO_CLIENT_ID:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -63,7 +75,7 @@ async def get_zoho_connect_url(
 
     chosen_redirect = redirect_uri or settings.ZOHO_REDIRECT_URI
     auth_url = zoho_client_service.get_authorization_url(
-        tenant_id=tenant_id,
+        tenant_id=state_param,
         accounts_url=accounts_url,
         redirect_uri=chosen_redirect,
     )
@@ -105,7 +117,6 @@ async def zoho_oauth_callback(
             status_code=302,
         )
 
-    tenant_id = state or settings.DEFAULT_TENANT_ID
     logger.info(f"Processing Zoho OAuth callback for tenant {tenant_id}...")
 
     # Determine redirect URI dynamically matching how the browser was routed

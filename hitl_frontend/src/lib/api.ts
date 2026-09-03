@@ -1291,3 +1291,27 @@ export async function approveHitlFinal(invoiceId: string, finalAccounting: any, 
   if (!res.ok) throw new Error("Failed to approve final HITL");
   return res.json();
 }
+
+export async function getHitlHistory() {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = {};
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/hitl/history`, {
+    headers,
+  });
+  if (!res.ok) throw new Error("Failed to fetch HITL history");
+  return res.json();
+}
+
+export async function getInvoiceHitlHistory(invoiceId: string) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = {};
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/history`, {
+    headers,
+  });
+  if (!res.ok) throw new Error("Failed to fetch invoice HITL history");
+  return res.json();
+}

@@ -378,168 +378,169 @@ async def update_invoice_extraction(
     if update_data.current_accounting_output is not None:
         invoice.current_accounting_output = update_data.current_accounting_output
 
-    # Re-evaluate Deterministic Validation Pipeline (Stages 4, 5, 6) using authoritative saved data
-    try:
-        from app.services.invoice_processing import get_effective_invoice_data
-        from app.services.gst_engine import gst_engine
-        from app.services.itc_engine import itc_engine
-        from app.services.financial_validator import financial_validator
-        from app.services.tds_engine import tds_engine
-        from app.services.journal_generator import journal_generator, sync_relational_journal
+    # Re-evaluate Deterministic Validation Pipeline (Stages 4, 5, 6) only if invoice has already passed Stage 1
+    if invoice.status != "HITL_REVIEW":
+        try:
+            from app.services.invoice_processing import get_effective_invoice_data
+            from app.services.gst_engine import gst_engine
+            from app.services.itc_engine import itc_engine
+            from app.services.financial_validator import financial_validator
+            from app.services.tds_engine import tds_engine
+            from app.services.journal_generator import journal_generator, sync_relational_journal
 
-        working_payload = get_effective_invoice_data(invoice)
-        
-        accounting_dict = (
-            invoice.current_accounting_output
-            if isinstance(invoice.current_accounting_output, dict)
-            else (invoice.accounting_output if isinstance(invoice.accounting_output, dict) else {})
-        )
-        accounting_lines = accounting_dict.get("accounting") or []
-        tds_assessment = accounting_dict.get("tds_assessment") or {}
-
-        # 1. Stage 4 GST Engine
-        gst_result = gst_engine.evaluate_gst(working_payload)
-
-        # 2. Stage 4 ITC Engine
-        combined_context = {
-            "accounting": accounting_lines,
-            "tds_assessment": tds_assessment,
-        }
-        itc_result = itc_engine.evaluate_itc(working_payload, combined_context)
-
-        # 3. Stage 5 Financial Validator
-        financial_validation_result = financial_validator.validate_invoice(working_payload, gst_result)
-
-        # 4. Stage 5 Statutory TDS Recalculation on authoritative subtotal (Single Source of Truth)
-        from app.services.tds_engine import get_effective_tds_data
-        effective_tds = get_effective_tds_data(accounting_dict)
-        tds_applicable = bool(effective_tds.get("applicable"))
-
-        subtotal = float(working_payload.get("subtotal") or 0.0)
-        tds_rate = effective_tds.get("rate")
-        tds_section = effective_tds.get("section")
-        tds_provision = effective_tds.get("provision")
-        tds_nature = effective_tds.get("nature_of_payment")
-        vendor_pan = working_payload.get("vendor_pan")
-
-        final_tds_calc = tds_engine.calculate_tds(
-            applicable=tds_applicable,
-            section=tds_section,
-            provision=tds_provision,
-            nature_of_payment=tds_nature,
-            base_amount=subtotal,
-            rate=float(tds_rate) if tds_rate is not None else None,
-            vendor_pan=vendor_pan,
-        )
-
-        persisted_accounting_output = {
-            **accounting_dict,
-            "accounting": accounting_lines,
-            "tds_assessment": {
-                **effective_tds,
-                "tds_applicable": tds_applicable,
-                "tds_section": tds_section,
-                "tds_provision": tds_provision,
-                "nature_of_payment": tds_nature,
-                "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
-                "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
-                "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
-                "tds_reasoning": final_tds_calc.get("reason"),
-            },
-            "tds_final": final_tds_calc,
-            "tds": final_tds_calc,
-        }
-
-        # 5. Stage 6 Double-Entry Journal Generator
-        # Check if the user passed explicit manual journal edits with lines
-        if update_data.journal_entry and isinstance(update_data.journal_entry, dict) and update_data.journal_entry.get("lines"):
-            raw_lines = update_data.journal_entry.get("lines") or []
-            parsed_lines = []
-            dr_total = 0.0
-            cr_total = 0.0
-            for idx, l in enumerate(raw_lines, 1):
-                d_val = float(l.get("debit") or 0.0)
-                c_val = float(l.get("credit") or 0.0)
-                dr_total += d_val
-                cr_total += c_val
-                l_type = l.get("line_type") or ("DEBIT" if d_val > 0 else "CREDIT")
-                parsed_lines.append({
-                    "line_number": idx,
-                    "account_id": l.get("account_id") or f"ACC_{idx}",
-                    "account_name": l.get("account_name") or f"Account {idx}",
-                    "line_type": l_type,
-                    "debit": round(d_val, 2),
-                    "credit": round(c_val, 2),
-                    "amount": round(d_val if d_val > 0 else c_val, 2),
-                    "provenance": "HITL_OVERRIDE" if is_internal_role else "CUSTOMER_EDIT",
-                    "description": l.get("description") or f"Line {idx}",
-                    "is_approved": True,
-                })
+            working_payload = get_effective_invoice_data(invoice)
             
-            dr_total = round(dr_total, 2)
-            cr_total = round(cr_total, 2)
-            diff = round(dr_total - cr_total, 2)
-            is_bal = (abs(diff) < 0.01 and dr_total > 0)
-            
-            journal_errors = []
-            if not is_bal:
-                journal_errors.append(f"Manual journal unbalanced: Total Debits (₹{dr_total:,.2f}) != Total Credits (₹{cr_total:,.2f})")
-            
-            journal_result = {
-                "status": "BALANCED" if is_bal else "UNBALANCED",
-                "approval_status": "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING",
-                "approved_by": current_user.email if (was_approved and not is_internal_role and is_bal) else None,
-                "approved_at": datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None,
-                "total_debit": dr_total,
-                "total_credit": cr_total,
-                "difference": diff,
-                "currency": "INR",
-                "is_balanced": is_bal,
-                "lines": parsed_lines,
-                "validation": {
-                    "balanced": is_bal,
-                    "tolerance": 0.05,
-                    "errors": journal_errors,
-                    "warnings": [],
-                },
-            }
-        else:
-            journal_result = journal_generator.generate_journal(
-                invoice_data=working_payload,
-                accounting_classification=persisted_accounting_output,
-                gst_result=gst_result,
-                itc_result=itc_result,
-                tds_result=final_tds_calc,
-                financial_validation_result=financial_validation_result,
+            accounting_dict = (
+                invoice.current_accounting_output
+                if isinstance(invoice.current_accounting_output, dict)
+                else (invoice.accounting_output if isinstance(invoice.accounting_output, dict) else {})
             )
-            is_bal = bool(journal_result.get("is_balanced") or journal_result.get("validation", {}).get("balanced"))
-            journal_result["approval_status"] = "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING"
-            journal_result["approved_by"] = current_user.email if (was_approved and not is_internal_role and is_bal) else None
-            journal_result["approved_at"] = datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None
-            journal_result["status"] = "BALANCED" if is_bal else "UNBALANCED"
+            accounting_lines = accounting_dict.get("accounting") or []
+            tds_assessment = accounting_dict.get("tds_assessment") or {}
 
-        # Lifecycle state rule:
-        # If internal finance edits, reset to PENDING_REVIEW.
-        # If customer edits an approved invoice, retain APPROVED status (do NOT re-enter HITL).
-        if is_internal_role:
-            invoice.approval_status = "PENDING_REVIEW"
-            invoice.locked_at = None
-        elif was_approved:
-            invoice.approval_status = "APPROVED"
+            # 1. Stage 4 GST Engine
+            gst_result = gst_engine.evaluate_gst(working_payload)
 
-        # Persist updated authoritative engine outputs
-        invoice.accounting_output = persisted_accounting_output
-        invoice.current_accounting_output = persisted_accounting_output
-        invoice.gst_result = gst_result
-        invoice.itc_result = itc_result
-        invoice.financial_validation_result = financial_validation_result
-        invoice.journal_entry = journal_result
+            # 2. Stage 4 ITC Engine
+            combined_context = {
+                "accounting": accounting_lines,
+                "tds_assessment": tds_assessment,
+            }
+            itc_result = itc_engine.evaluate_itc(working_payload, combined_context)
 
-        await sync_relational_journal(db, invoice.id, journal_result)
-    except Exception as eval_exc:
-        # Non-blocking log if deterministic revalidation encountered an issue
-        import logging
-        logging.getLogger(__name__).warning(f"Error during deterministic revalidation on update for {invoice_id}: {eval_exc}")
+            # 3. Stage 5 Financial Validator
+            financial_validation_result = financial_validator.validate_invoice(working_payload, gst_result)
+
+            # 4. Stage 5 Statutory TDS Recalculation on authoritative subtotal (Single Source of Truth)
+            from app.services.tds_engine import get_effective_tds_data
+            effective_tds = get_effective_tds_data(accounting_dict)
+            tds_applicable = bool(effective_tds.get("applicable"))
+
+            subtotal = float(working_payload.get("subtotal") or 0.0)
+            tds_rate = effective_tds.get("rate")
+            tds_section = effective_tds.get("section")
+            tds_provision = effective_tds.get("provision")
+            tds_nature = effective_tds.get("nature_of_payment")
+            vendor_pan = working_payload.get("vendor_pan")
+
+            final_tds_calc = tds_engine.calculate_tds(
+                applicable=tds_applicable,
+                section=tds_section,
+                provision=tds_provision,
+                nature_of_payment=tds_nature,
+                base_amount=subtotal,
+                rate=float(tds_rate) if tds_rate is not None else None,
+                vendor_pan=vendor_pan,
+            )
+
+            persisted_accounting_output = {
+                **accounting_dict,
+                "accounting": accounting_lines,
+                "tds_assessment": {
+                    **effective_tds,
+                    "tds_applicable": tds_applicable,
+                    "tds_section": tds_section,
+                    "tds_provision": tds_provision,
+                    "nature_of_payment": tds_nature,
+                    "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+                    "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+                    "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+                    "tds_reasoning": final_tds_calc.get("reason"),
+                },
+                "tds_final": final_tds_calc,
+                "tds": final_tds_calc,
+            }
+
+            # 5. Stage 6 Double-Entry Journal Generator
+            # Check if the user passed explicit manual journal edits with lines
+            if update_data.journal_entry and isinstance(update_data.journal_entry, dict) and update_data.journal_entry.get("lines"):
+                raw_lines = update_data.journal_entry.get("lines") or []
+                parsed_lines = []
+                dr_total = 0.0
+                cr_total = 0.0
+                for idx, l in enumerate(raw_lines, 1):
+                    d_val = float(l.get("debit") or 0.0)
+                    c_val = float(l.get("credit") or 0.0)
+                    dr_total += d_val
+                    cr_total += c_val
+                    l_type = l.get("line_type") or ("DEBIT" if d_val > 0 else "CREDIT")
+                    parsed_lines.append({
+                        "line_number": idx,
+                        "account_id": l.get("account_id") or f"ACC_{idx}",
+                        "account_name": l.get("account_name") or f"Account {idx}",
+                        "line_type": l_type,
+                        "debit": round(d_val, 2),
+                        "credit": round(c_val, 2),
+                        "amount": round(d_val if d_val > 0 else c_val, 2),
+                        "provenance": "HITL_OVERRIDE" if is_internal_role else "CUSTOMER_EDIT",
+                        "description": l.get("description") or f"Line {idx}",
+                        "is_approved": True,
+                    })
+                
+                dr_total = round(dr_total, 2)
+                cr_total = round(cr_total, 2)
+                diff = round(dr_total - cr_total, 2)
+                is_bal = (abs(diff) < 0.01 and dr_total > 0)
+                
+                journal_errors = []
+                if not is_bal:
+                    journal_errors.append(f"Manual journal unbalanced: Total Debits (₹{dr_total:,.2f}) != Total Credits (₹{cr_total:,.2f})")
+                
+                journal_result = {
+                    "status": "BALANCED" if is_bal else "UNBALANCED",
+                    "approval_status": "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING",
+                    "approved_by": current_user.email if (was_approved and not is_internal_role and is_bal) else None,
+                    "approved_at": datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None,
+                    "total_debit": dr_total,
+                    "total_credit": cr_total,
+                    "difference": diff,
+                    "currency": "INR",
+                    "is_balanced": is_bal,
+                    "lines": parsed_lines,
+                    "validation": {
+                        "balanced": is_bal,
+                        "tolerance": 0.05,
+                        "errors": journal_errors,
+                        "warnings": [],
+                    },
+                }
+            else:
+                journal_result = journal_generator.generate_journal(
+                    invoice_data=working_payload,
+                    accounting_classification=persisted_accounting_output,
+                    gst_result=gst_result,
+                    itc_result=itc_result,
+                    tds_result=final_tds_calc,
+                    financial_validation_result=financial_validation_result,
+                )
+                is_bal = bool(journal_result.get("is_balanced") or journal_result.get("validation", {}).get("balanced"))
+                journal_result["approval_status"] = "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING"
+                journal_result["approved_by"] = current_user.email if (was_approved and not is_internal_role and is_bal) else None
+                journal_result["approved_at"] = datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None
+                journal_result["status"] = "BALANCED" if is_bal else "UNBALANCED"
+
+            # Lifecycle state rule:
+            # If internal finance edits, reset to PENDING_REVIEW.
+            # If customer edits an approved invoice, retain APPROVED status (do NOT re-enter HITL).
+            if is_internal_role:
+                invoice.approval_status = "PENDING_REVIEW"
+                invoice.locked_at = None
+            elif was_approved:
+                invoice.approval_status = "APPROVED"
+
+            # Persist updated authoritative engine outputs
+            invoice.accounting_output = persisted_accounting_output
+            invoice.current_accounting_output = persisted_accounting_output
+            invoice.gst_result = gst_result
+            invoice.itc_result = itc_result
+            invoice.financial_validation_result = financial_validation_result
+            invoice.journal_entry = journal_result
+
+            await sync_relational_journal(db, invoice.id, journal_result)
+        except Exception as eval_exc:
+            # Non-blocking log if deterministic revalidation encountered an issue
+            import logging
+            logging.getLogger(__name__).warning(f"Error during deterministic revalidation on update for {invoice_id}: {eval_exc}")
 
     invoice.updated_at = datetime.now(timezone.utc)
     await db.commit()

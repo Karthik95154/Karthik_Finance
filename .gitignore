@@ -20,6 +20,8 @@ lib64/
 !frontend/src/lib/**
 !frontend-hitl/src/lib/
 !frontend-hitl/src/lib/**
+!hitl_frontend/src/lib/
+!hitl_frontend/src/lib/**
 parts/
 sdist/
 var/
@@ -57,6 +59,15 @@ yarn-error.log*
 out/
 
 # IDE & OS
+# Local Storage & Uploads
+backend/storage/uploads/
+storage/uploads/
+*.pdf
+*.jpeg
+*.jpg
+*.png
+!frontend/public/**
+!hitl_frontend/public/**
 .idea/
 .vscode/
 *.swp
@@ -64,4 +75,3 @@ out/
 .DS_Store
 Thumbs.db
 zoho_audit_screenshots/
-

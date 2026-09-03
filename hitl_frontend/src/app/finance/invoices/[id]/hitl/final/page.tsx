@@ -3,6 +3,6 @@
 import React from "react";
 import InvoiceWorkspace from "@/components/InvoiceWorkspace";
 
-export default function FinanceInvoiceDetailPage() {
-  return <InvoiceWorkspace mode="internal" />;
+export default function HitlFinalPage() {
+  return <InvoiceWorkspace mode="hitl_final" />;
 }

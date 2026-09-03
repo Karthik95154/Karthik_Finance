@@ -107,6 +107,7 @@ class ChartOfAccount(Base):
     tenant_id = Column(
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    organization_id = Column(String(100), nullable=True, index=True)
     zoho_account_id = Column(String(100), nullable=False, index=True)
     account_name = Column(String(255), nullable=False)
     account_code = Column(String(50), nullable=True)
@@ -134,6 +135,7 @@ class TaxRate(Base):
     tenant_id = Column(
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    organization_id = Column(String(100), nullable=True, index=True)
     zoho_tax_id = Column(String(100), nullable=False, index=True)
     tax_name = Column(String(255), nullable=False)
     tax_percentage = Column(Float, nullable=False, default=0.0)
@@ -161,6 +163,7 @@ class Vendor(Base):
     tenant_id = Column(
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    organization_id = Column(String(100), nullable=True, index=True)
     zoho_contact_id = Column(String(100), nullable=True, index=True)
     vendor_name = Column(String(255), nullable=False)
     gstin = Column(String(15), nullable=True, index=True)
@@ -363,3 +366,19 @@ class AuditLog(Base):
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
     )
+
+class HitlReview(Base):
+    __tablename__ = "hitl_reviews"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False, index=True)
+    stage = Column(String(50), nullable=False)  # EXTRACTION, FINAL_FINANCE
+    reviewer_id = Column(String(100), nullable=False)
+    status = Column(String(50), nullable=False, default="APPROVED")  # APPROVED, REJECTED
+    
+    input_snapshot = Column(JSONB, nullable=True)
+    corrected_output = Column(JSONB, nullable=True)
+    changes = Column(JSONB, nullable=True)
+    
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    approved_at = Column(DateTime(timezone=True), nullable=True, default=lambda: datetime.now(timezone.utc))
