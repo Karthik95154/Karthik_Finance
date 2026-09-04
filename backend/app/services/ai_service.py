@@ -142,6 +142,8 @@ class AIService:
                 logger.error(f"Failed to decode JSON from Colab response: {response.text[:300]}")
                 raise ValueError(f"Malformed JSON returned from Qwen3-VL: {str(e)}") from e
 
+            result = init_data
+
             # Handle Async Background Job Polling from Colab
             if isinstance(result, dict) and (
                 result.get("status") in ("processing", "queued", "running")
