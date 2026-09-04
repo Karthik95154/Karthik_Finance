@@ -119,7 +119,27 @@ async def zoho_oauth_callback(
             status_code=302,
         )
 
-    logger.info(f"Processing Zoho OAuth callback for tenant {tenant_id}...")
+    # Parse state param (tenant_id:user_id or tenant_id|frontend_url or tenant_id:user_id|frontend_url)
+    tenant_id = settings.DEFAULT_TENANT_ID
+    user_id = None
+    if state:
+        state_unquoted = urllib.parse.unquote(state)
+        # Check if frontend_url was embedded with |
+        if "|" in state_unquoted:
+            tenant_part, custom_frontend = state_unquoted.split("|", 1)
+            if custom_frontend.startswith("http"):
+                frontend_base = f"{custom_frontend.rstrip('/')}/integrations"
+        else:
+            tenant_part = state_unquoted
+
+        if ":" in tenant_part:
+            parts = tenant_part.split(":", 1)
+            tenant_id = parts[0]
+            user_id = parts[1]
+        else:
+            tenant_id = tenant_part
+
+    logger.info(f"Processing Zoho OAuth callback for user {user_id} tenant {tenant_id}...")
 
     # Determine redirect URI dynamically matching how the browser was routed
     callback_redirect_uri = str(request.url).split("?")[0]

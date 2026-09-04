@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import PublicNavbar from "@/components/PublicNavbar";
 import PublicFooter from "@/components/PublicFooter";
+import { API_BASE } from "@/lib/api";
 import { ShieldCheck, ArrowRight, Lock, Mail, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 
 export default function SignInPage() {
@@ -41,7 +42,7 @@ export default function SignInPage() {
     try {
       setIsLoading(true);
       // Request JWT token from backend auth endpoint
-      const res = await fetch("http://127.0.0.1:8000/api/v1/auth/token", {
+      const res = await fetch(`${API_BASE}/auth/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
