@@ -17,6 +17,7 @@ class MasterDataService:
         self,
         tenant_id: str,
         db: AsyncSession,
+        user_id: Optional[Any] = None,
     ) -> ZohoConnection:
         """Retrieves active ZohoConnection for tenant or returns a placeholder record, prioritizing CONNECTED status."""
         query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id)

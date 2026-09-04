@@ -544,4 +544,51 @@ async def test_create_vendor_payload_uses_valid_zoho_state_code():
         assert ap_payload["billing_address"]["state"] == "Andhra Pradesh"
 
 
+@pytest.mark.asyncio
+async def test_create_vendor_payload_includes_email_phone_and_contact_persons():
+    """
+    Verifies that create_vendor populates top-level email, phone, work_phone and
+    the contact_persons array with is_primary_contact=True so Zoho Books displays
+    email and work phone in the UI All Vendors table.
+    """
+    mock_conn = ZohoConnection(id=uuid4(), tenant_id="t1", organization_id="org_1", status="CONNECTED")
+    mock_db = AsyncMock()
+
+    with patch.object(zoho_client_service, "_make_authorized_request", new_callable=AsyncMock) as mock_req:
+        mock_req.return_value = {"contact": {"contact_id": "CNT_NEW_WITH_CONTACT_PERSON"}}
+
+        await zoho_client_service.create_vendor(
+            connection=mock_conn,
+            db=mock_db,
+            vendor_name="Deccan Precision Components Pvt. Ltd.",
+            gstin="36AADCD5678N1Z3",
+            pan="AADCD5678N",
+            email="sales@deccanprecision.in",
+            phone="9876543210",
+            address="Plot 63, Phase III, IDA Bollaram, Hyderabad, TG 502325",
+            state_name="Telangana",
+        )
+
+        call_args = mock_req.call_args[1]
+        payload = call_args["json_data"]
+
+        # Verify top-level fields
+        assert payload["contact_name"] == "Deccan Precision Components Pvt. Ltd."
+        assert payload["company_name"] == "Deccan Precision Components Pvt. Ltd."
+        assert payload["email"] == "sales@deccanprecision.in"
+        assert payload["phone"] == "9876543210"
+        assert payload["work_phone"] == "9876543210"
+
+        # Verify contact_persons array
+        assert "contact_persons" in payload
+        assert len(payload["contact_persons"]) == 1
+        cp = payload["contact_persons"][0]
+        assert cp["first_name"] == "Deccan Precision Components Pvt. Ltd."
+        assert cp["email"] == "sales@deccanprecision.in"
+        assert cp["phone"] == "9876543210"
+        assert cp["mobile"] == "9876543210"
+        assert cp["is_primary_contact"] is True
+
+
+
 

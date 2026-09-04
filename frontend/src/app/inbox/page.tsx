@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import {
   listStagedDocuments,
+  getCachedStagedDocuments,
   processStagedDocument,
   deleteStagedDocument,
   pollEmails,
@@ -46,11 +47,16 @@ export default function InboxPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const itemsPerPage = 10;
 
-  const loadDocuments = async () => {
-    setIsLoading(true);
+  const loadDocuments = async (forceRefresh = false) => {
+    const cached = getCachedStagedDocuments();
+    if (!cached || cached.length === 0) {
+      if (forceRefresh || stagedDocs.length === 0) {
+        setIsLoading(true);
+      }
+    }
     try {
       const [docs, imap] = await Promise.all([
-        listStagedDocuments(),
+        listStagedDocuments(forceRefresh),
         getIMAPSettings().catch(() => null),
       ]);
 
@@ -76,7 +82,6 @@ export default function InboxPage() {
         }
       });
       setConnectedEmails(Array.from(emailSet));
-      setCurrentPage(1);
     } catch (err: any) {
       setNotification({ type: "error", message: err.message || "Failed to load staging queue." });
     } finally {
@@ -84,7 +89,19 @@ export default function InboxPage() {
     }
   };
 
-  useEffect(() => { loadDocuments(); }, []);
+  useEffect(() => {
+    const cached = getCachedStagedDocuments();
+    if (cached && cached.length > 0) {
+      const sortedDocs = [...cached].sort((a, b) => {
+        const dateA = new Date(a.email_received_at || a.created_at).getTime();
+        const dateB = new Date(b.email_received_at || b.created_at).getTime();
+        return dateB - dateA;
+      });
+      setStagedDocs(sortedDocs);
+      setIsLoading(false);
+    }
+    loadDocuments(false);
+  }, []);
 
   useEffect(() => {
     if (notification) {
@@ -526,7 +543,7 @@ export default function InboxPage() {
                 <X size={20} />
               </button>
             </div>
-            <div style={{ flex: 1, backgroundColor: "#f1f3f4", position: "relative" }}>
+            <div style={{ flex: 1, minHeight: 0, backgroundColor: "#f1f3f4", position: "relative", display: "flex", flexDirection: "column" }}>
               {previewDoc.file_name.toLowerCase().endsWith(".pdf") ? (
                 <iframe
                   src={getInvoiceFileUrl(previewDoc.id)}
@@ -534,11 +551,29 @@ export default function InboxPage() {
                   style={{ width: "100%", height: "100%", border: "none" }}
                 />
               ) : (
-                <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }}>
+                <div
+                  style={{
+                    flex: 1,
+                    width: "100%",
+                    height: "100%",
+                    overflowY: "auto",
+                    overflowX: "auto",
+                    padding: "24px",
+                    boxSizing: "border-box",
+                    backgroundColor: "#f1f3f4",
+                  }}
+                >
                   <img
                     src={getInvoiceFileUrl(previewDoc.id)}
                     alt="Invoice Attachment"
-                    style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: "4px" }}
+                    style={{
+                      width: "100%",
+                      height: "auto",
+                      display: "block",
+                      margin: "0 auto",
+                      borderRadius: "4px",
+                      boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+                    }}
                   />
                 </div>
               )}

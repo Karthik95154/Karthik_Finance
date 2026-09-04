@@ -23,7 +23,7 @@ class Settings(BaseSettings):
         "http://localhost:3003",
         "http://127.0.0.1:3003",
     ]
-    FRONTEND_URL: str = "http://localhost:3000"
+    FRONTEND_URL: str = "http://localhost:3002"
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
