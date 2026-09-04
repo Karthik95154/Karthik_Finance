@@ -48,7 +48,7 @@ class FinalApproveRequest(BaseModel):
 async def get_extraction_hitl(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: AuthenticatedUser = Depends(require_roles(["ADMIN", "DATA_REVIEWER"])),
+    user: AuthenticatedUser = Depends(require_roles(["ADMIN", "DATA_REVIEWER", "FINANCE_REVIEWER", "FINANCE"])),
 ):
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == user.tenant_id)
     result = await db.execute(query)
@@ -72,7 +72,7 @@ async def approve_extraction_hitl(
     invoice_id: uuid.UUID,
     payload: ExtractionApproveRequest,
     db: AsyncSession = Depends(get_db),
-    user: AuthenticatedUser = Depends(require_roles(["ADMIN", "DATA_REVIEWER"])),
+    user: AuthenticatedUser = Depends(require_roles(["ADMIN", "DATA_REVIEWER", "FINANCE_REVIEWER", "FINANCE"])),
 ):
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == user.tenant_id)
     result = await db.execute(query)
@@ -172,8 +172,8 @@ async def approve_final_hitl(
     )
     db.add(hitl_review)
 
-    invoice.status = "HITL_COMPLETED"
-    invoice.approval_status = "PENDING_FINANCE_APPROVAL"
+    invoice.status = "COMPLETED"
+    invoice.approval_status = "APPROVED"
     invoice.accounting_status = "COMPLETED"
     invoice.locked_at = datetime.now(timezone.utc)
 
@@ -187,7 +187,7 @@ async def approve_final_hitl(
 
     invoice.updated_at = datetime.now(timezone.utc)
     await db.commit()
-    return {"message": "HITL review completed. Invoice moved to HITL_COMPLETED and is now awaiting final Finance approval in Main App."}
+    return {"message": "HITL review completed. Invoice approved and released.", "approval_status": "APPROVED", "status": "COMPLETED"}
 
 
 @router.get("/invoices/{invoice_id}/hitl/history")

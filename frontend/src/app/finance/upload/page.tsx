@@ -2,7 +2,7 @@
 
 import React, { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { uploadInvoice, UploadResponse } from "@/lib/api";
+import { uploadInvoice, UploadResponse, invalidateInvoicesCache } from "@/lib/api";
 import { UploadCloud, FileText, CheckCircle2, AlertCircle, ArrowRight } from "lucide-react";
 import AppShell from "@/components/AppShell";
 
@@ -68,6 +68,7 @@ export default function UploadPage() {
       setError(null);
 
       const result = await uploadInvoice(selectedFile);
+      invalidateInvoicesCache();
       setUploadResult(result);
     } catch (err: any) {
       setError(err.message || "Failed to upload invoice. Please try again.");

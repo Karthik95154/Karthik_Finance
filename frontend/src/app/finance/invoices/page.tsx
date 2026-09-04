@@ -48,7 +48,7 @@ export default function InvoicesListPage() {
       setInvoices(cached);
       setLoading(false);
     }
-    loadInvoices(false);
+    loadInvoices(true);
   }, []);
 
   // Pagination State (10 items per page)

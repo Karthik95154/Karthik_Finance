@@ -254,7 +254,13 @@ async def list_invoices(
     except (ValueError, TypeError):
         user_filter = (Invoice.user_id.is_(None))
 
-    query = select(Invoice).where(user_filter).order_by(Invoice.created_at.desc())
+    query = select(Invoice).where(user_filter)
+
+    # Strictly restrict CUSTOMER role to approved invoices only
+    if current_user.role == "CUSTOMER":
+        query = query.where(Invoice.approval_status == "APPROVED")
+
+    query = query.order_by(Invoice.created_at.desc())
     result = await db.execute(query)
     invoices = result.scalars().all()
 
