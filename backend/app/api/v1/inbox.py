@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Invoice, Integration
@@ -18,6 +18,15 @@ from app.services.groq_classifier import classify_document, get_unknown_fallback
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="", tags=["Inbox / Ingestion"])
+
+
+def get_user_filter(current_user: AuthenticatedUser):
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        return true()
+
 
 
 @router.get("/inbox/staged")

@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select, delete, or_
+from sqlalchemy import select, delete, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
@@ -27,11 +27,8 @@ class RejectRequest(BaseModel):
 
 
 class JournalPreviewResponse(BaseModel):
-    invoice_id: str
-    supply_type: str
-    total_debit: float
-    total_credit: float
-    is_balanced: bool
+    invoice_id: UUID
+    status: str
     has_unapproved_lines: bool = False
     difference: float
     lines: List[Dict[str, Any]]
@@ -42,7 +39,7 @@ def get_user_filter(current_user: AuthenticatedUser):
         user_uuid = UUID(current_user.id)
         return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
     except (ValueError, TypeError):
-        return (Invoice.user_id.is_(None))
+        return true()
 
 
 @router.get("/invoices/{invoice_id}/journal")

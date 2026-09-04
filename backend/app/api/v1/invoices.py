@@ -12,7 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import (
@@ -37,6 +37,15 @@ from app.services.invoice_processing import (
 from app.services.duplicate_detector import duplicate_detector
 
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
+
+
+def get_user_filter(current_user: AuthenticatedUser):
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        return true()
+
 
 
 def sanitize_filename(filename: str) -> str:
@@ -588,11 +597,7 @@ async def get_invoice_file(
     """
     Streams original unmodified invoice binary from Supabase Storage.
     """
-    try:
-        user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
-    except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
+    user_filter = get_user_filter(current_user)
 
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
