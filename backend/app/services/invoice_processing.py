@@ -125,6 +125,11 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
     """
     logger.info(f"Starting Stage 3, 4, 5 & 6 processing for invoice {invoice_id}")
 
+    invoice_payload = None
+    cached_coa = None
+    cached_taxes = None
+
+    # Step 1: Initial state transition and load cached master data in a short-lived session
     async with AsyncSessionLocal() as session:
         try:
             query = select(Invoice).where(Invoice.id == invoice_id)
@@ -154,102 +159,147 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             tenant_id = invoice.tenant_id or "default-tenant-001"
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
             cached_taxes = await master_data_service.get_cached_taxes(tenant_id, session)
+        except Exception as exc:
+            logger.exception(f"Error initializing Stage 3 processing for invoice {invoice_id}: {exc}")
+            try:
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.accounting_status = "FAILED"
+                    inv.status = "FAILED"
+                    inv.error_message = str(exc)
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+            except Exception:
+                pass
+            return
 
-            # 1. Call COA and TDS services concurrently using the EXACT SAME invoice_payload
-            coa_task = accounting_service.categorize_accounting(
-                invoice_json=invoice_payload,
-                chart_of_accounts=cached_coa,
-                available_taxes=cached_taxes,
-            )
-            tds_task = tds_service.assess_tds(
-                invoice_json=invoice_payload,
-            )
+    # Step 2: External AI Inference & Deterministic Computations (Zero DB connections held)
+    try:
+        # 1. Call COA and TDS services concurrently using the EXACT SAME invoice_payload
+        coa_task = accounting_service.categorize_accounting(
+            invoice_json=invoice_payload,
+            chart_of_accounts=cached_coa,
+            available_taxes=cached_taxes,
+        )
+        tds_task = tds_service.assess_tds(
+            invoice_json=invoice_payload,
+        )
 
-            coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
+        coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
 
-            accounting_lines = []
-            if isinstance(coa_res, dict):
-                accounting_lines = coa_res.get("accounting") or []
-            elif isinstance(coa_res, Exception):
-                logger.warning(f"COA service exception for invoice {invoice_id}: {coa_res}")
-                accounting_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
+        accounting_lines = []
+        if isinstance(coa_res, dict):
+            accounting_lines = coa_res.get("accounting") or []
+        elif isinstance(coa_res, Exception):
+            logger.warning(f"COA service exception for invoice {invoice_id}: {coa_res}")
+            accounting_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
 
-            tds_assessment = {}
-            if isinstance(tds_res, dict):
-                tds_assessment = tds_res.get("tds_assessment") or {}
-            elif isinstance(tds_res, Exception):
-                logger.warning(f"TDS service exception for invoice {invoice_id}: {tds_res}")
-                tds_assessment = tds_service._build_unavailable_response(str(tds_res)).get("tds_assessment", {})
+        tds_assessment = {}
+        if isinstance(tds_res, dict):
+            tds_assessment = tds_res.get("tds_assessment") or {}
+        elif isinstance(tds_res, Exception):
+            logger.warning(f"TDS service exception for invoice {invoice_id}: {tds_res}")
+            tds_assessment = tds_service._build_unavailable_response(str(tds_res)).get("tds_assessment", {})
 
-            # 2. Call Deterministic Stage 4 GST Engine
-            gst_result = gst_engine.evaluate_gst(invoice_payload)
+        # 2. Call Deterministic Stage 4 GST Engine
+        gst_result = gst_engine.evaluate_gst(invoice_payload)
 
-            # 3. Call Deterministic Stage 4 ITC Engine
-            combined_accounting_context = {
-                "accounting": accounting_lines,
-                "tds_assessment": tds_assessment,
-            }
-            itc_result = itc_engine.evaluate_itc(invoice_payload, combined_accounting_context)
+        # 3. Call Deterministic Stage 4 ITC Engine
+        combined_accounting_context = {
+            "accounting": accounting_lines,
+            "tds_assessment": tds_assessment,
+        }
+        itc_result = itc_engine.evaluate_itc(invoice_payload, combined_accounting_context)
 
-            # 4. Call Deterministic Stage 5 Financial Validator
-            financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
+        # 4. Call Deterministic Stage 5 Financial Validator
+        financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-            # 5. Deterministic Final TDS (Authoritative statutory calculation on subtotal)
-            from app.services.tds_engine import get_effective_tds_data
-            effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
-            tds_applicable = bool(effective_tds.get("applicable"))
+        # 5. Deterministic Final TDS (Authoritative statutory calculation on subtotal)
+        from app.services.tds_engine import get_effective_tds_data
+        effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
+        tds_applicable = bool(effective_tds.get("applicable"))
 
-            subtotal = float(invoice_payload.get("subtotal") or 0.0)
-            tds_rate = effective_tds.get("rate")
-            tds_section = effective_tds.get("section")
-            tds_provision = effective_tds.get("provision")
-            tds_nature = effective_tds.get("nature_of_payment")
-            vendor_pan = invoice_payload.get("vendor_pan")
+        subtotal = float(invoice_payload.get("subtotal") or 0.0)
+        tds_rate = effective_tds.get("rate")
+        tds_section = effective_tds.get("section")
+        tds_provision = effective_tds.get("provision")
+        tds_nature = effective_tds.get("nature_of_payment")
+        vendor_pan = invoice_payload.get("vendor_pan")
 
-            final_tds_calc = tds_engine.calculate_tds(
-                applicable=tds_applicable,
-                section=tds_section,
-                provision=tds_provision,
-                nature_of_payment=tds_nature,
-                base_amount=subtotal,
-                rate=float(tds_rate) if tds_rate is not None else None,
-                vendor_pan=vendor_pan,
-            )
+        final_tds_calc = tds_engine.calculate_tds(
+            applicable=tds_applicable,
+            section=tds_section,
+            provision=tds_provision,
+            nature_of_payment=tds_nature,
+            base_amount=subtotal,
+            rate=float(tds_rate) if tds_rate is not None else None,
+            vendor_pan=vendor_pan,
+        )
 
-            # Build unified accounting output maintaining clear proposal vs final separation
-            persisted_accounting_output = {
-                "accounting": accounting_lines,
-                "tds_assessment": {
-                    **tds_assessment,
-                    "tds_applicable": tds_applicable,
-                    "tds_section": tds_section,
-                    "tds_provision": tds_provision,
-                    "nature_of_payment": tds_nature,
-                    "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
-                    "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
-                    "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
-                    "tds_reasoning": final_tds_calc.get("reason"),
-                },
-                "tds_final": final_tds_calc,
-                "tds": final_tds_calc,
-            }
+        # Build unified accounting output maintaining clear proposal vs final separation
+        persisted_accounting_output = {
+            "accounting": accounting_lines,
+            "tds_assessment": {
+                **tds_assessment,
+                "tds_applicable": tds_applicable,
+                "tds_section": tds_section,
+                "tds_provision": tds_provision,
+                "nature_of_payment": tds_nature,
+                "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+                "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+                "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+                "tds_reasoning": final_tds_calc.get("reason"),
+            },
+            "tds_final": final_tds_calc,
+            "tds": final_tds_calc,
+        }
 
-            # Re-read effective invoice payload in case user edited fields while AI calls were in-flight
-            latest_payload = get_effective_invoice_data(invoice)
-            if latest_payload:
-                invoice_payload = latest_payload
+        # 6. Call Deterministic Stage 6 Journal Generator (Double-Entry General Ledger Preview)
+        journal_result = journal_generator.generate_journal(
+            invoice_data=invoice_payload,
+            accounting_classification=persisted_accounting_output,
+            gst_result=gst_result,
+            itc_result=itc_result,
+            tds_result=final_tds_calc,
+            financial_validation_result=financial_validation_result,
+        )
 
-            # 6. Call Deterministic Stage 6 Journal Generator (Double-Entry General Ledger Preview)
-            journal_result = journal_generator.generate_journal(
-                invoice_data=invoice_payload,
-                accounting_classification=persisted_accounting_output,
-                gst_result=gst_result,
-                itc_result=itc_result,
-                tds_result=final_tds_calc,
-                financial_validation_result=financial_validation_result,
-            )
+        avg_confidence = None
+        if isinstance(accounting_lines, list) and len(accounting_lines) > 0:
+            confidences = [
+                float(item.get("confidence_score") if item.get("confidence_score") is not None else (item.get("ai_confidence") or 0.0))
+                for item in accounting_lines
+                if isinstance(item, dict) and (item.get("confidence_score") is not None or item.get("ai_confidence") is not None)
+            ]
+            if confidences:
+                avg_confidence = round(sum(confidences) / len(confidences), 2)
 
-            # Persist results (Zero Data Loss)
+    except Exception as exc:
+        logger.exception(f"Error during AI/rule computation for invoice {invoice_id}: {exc}")
+        async with AsyncSessionLocal() as session:
+            try:
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.accounting_status = "FAILED"
+                    inv.status = "FAILED"
+                    inv.error_message = str(exc)
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+            except Exception as commit_exc:
+                logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
+        return
+
+    # Step 3: Persist results in a fresh short-lived session
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+            invoice = res.scalar_one_or_none()
+            if not invoice:
+                logger.error(f"Invoice {invoice_id} not found during result persistence.")
+                return
+
             invoice.accounting_output = persisted_accounting_output
             invoice.current_accounting_output = persisted_accounting_output
             invoice.gst_result = gst_result
@@ -260,29 +310,23 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             invoice.status = "FINAL_HITL_REVIEW"
             invoice.error_message = None
             invoice.updated_at = datetime.now(timezone.utc)
-
-            # Calculate average confidence across line items if available
-            if isinstance(accounting_lines, list) and len(accounting_lines) > 0:
-                confidences = [
-                    float(item.get("confidence_score") if item.get("confidence_score") is not None else (item.get("ai_confidence") or 0.0))
-                    for item in accounting_lines
-                    if isinstance(item, dict) and (item.get("confidence_score") is not None or item.get("ai_confidence") is not None)
-                ]
-                if confidences:
-                    invoice.accounting_confidence = round(sum(confidences) / len(confidences), 2)
+            if avg_confidence is not None:
+                invoice.accounting_confidence = avg_confidence
 
             await sync_relational_journal(session, invoice.id, journal_result)
             await session.commit()
             logger.info(f"Invoice {invoice_id} Stage 3, 4, 5 & 6 processing completed successfully.")
-
         except Exception as exc:
-            logger.exception(f"Error during Stage 3, 4, 5 & 6 processing for invoice {invoice_id}: {exc}")
+            logger.exception(f"Error persisting Stage 3-6 results for invoice {invoice_id}: {exc}")
             try:
-                invoice.accounting_status = "FAILED"
-                invoice.status = "FAILED"
-                invoice.error_message = str(exc)
-                invoice.updated_at = datetime.now(timezone.utc)
-                await session.commit()
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.accounting_status = "FAILED"
+                    inv.status = "FAILED"
+                    inv.error_message = str(exc)
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
             except Exception as commit_exc:
                 logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
 
@@ -430,6 +474,12 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
 
 async def process_accounting_downstream_background(invoice_id) -> None:
     logger.info(f"Starting downstream accounting processing for approved HITL invoice {invoice_id}")
+    tenant_id = None
+    extraction_result = None
+    cached_coa = None
+    cached_taxes = None
+
+    # Step 1: Read invoice state and cached master data in a short-lived session
     async with AsyncSessionLocal() as session:
         try:
             query = select(Invoice).where(Invoice.id == invoice_id)
@@ -441,106 +491,151 @@ async def process_accounting_downstream_background(invoice_id) -> None:
                 return
 
             tenant_id = invoice.tenant_id or "default-tenant-001"
-            
-            # Use current_vlm_output which was edited and approved by HITL
             extraction_result = invoice.current_vlm_output
 
-
-            # 6. Fetch live tenant Chart of Accounts & Taxes
+            # Fetch live tenant Chart of Accounts & Taxes
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
             cached_taxes = await master_data_service.get_cached_taxes(tenant_id, session)
+        except Exception as exc:
+            logger.exception(f"Error reading invoice {invoice_id} for downstream processing: {exc}")
+            try:
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.status = "FAILED"
+                    inv.error_message = str(exc)
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+            except Exception:
+                pass
+            return
 
-            # 7. Call COA & TDS concurrently with the EXACT SAME normalized invoice JSON
-            invoice_payload = extraction_result.get("data") if isinstance(extraction_result, dict) and "data" in extraction_result else extraction_result
+    # Step 2: External AI Inference & Deterministic Computations (Zero DB connections held)
+    try:
+        # Call COA & TDS concurrently with the EXACT SAME normalized invoice JSON
+        invoice_payload = extraction_result.get("data") if isinstance(extraction_result, dict) and "data" in extraction_result else extraction_result
 
-            coa_task = accounting_service.categorize_accounting(
-                invoice_json=invoice_payload,
-                chart_of_accounts=cached_coa,
-                available_taxes=cached_taxes,
-            )
-            tds_task = tds_service.assess_tds(
-                invoice_json=invoice_payload,
-            )
+        coa_task = accounting_service.categorize_accounting(
+            invoice_json=invoice_payload,
+            chart_of_accounts=cached_coa,
+            available_taxes=cached_taxes,
+        )
+        tds_task = tds_service.assess_tds(
+            invoice_json=invoice_payload,
+        )
 
-            coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
+        coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
 
-            accounting_lines = []
-            if isinstance(coa_res, dict):
-                accounting_lines = coa_res.get("accounting") or []
-            elif isinstance(coa_res, Exception):
-                logger.warning(f"COA service error for invoice {invoice_id}: {coa_res}")
-                accounting_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
+        accounting_lines = []
+        if isinstance(coa_res, dict):
+            accounting_lines = coa_res.get("accounting") or []
+        elif isinstance(coa_res, Exception):
+            logger.warning(f"COA service error for invoice {invoice_id}: {coa_res}")
+            accounting_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
 
-            tds_assessment = {}
-            if isinstance(tds_res, dict):
-                tds_assessment = tds_res.get("tds_assessment") or {}
-            elif isinstance(tds_res, Exception):
-                logger.warning(f"TDS service error for invoice {invoice_id}: {tds_res}")
-                tds_assessment = tds_service._build_unavailable_response(str(tds_res)).get("tds_assessment", {})
+        tds_assessment = {}
+        if isinstance(tds_res, dict):
+            tds_assessment = tds_res.get("tds_assessment") or {}
+        elif isinstance(tds_res, Exception):
+            logger.warning(f"TDS service error for invoice {invoice_id}: {tds_res}")
+            tds_assessment = tds_service._build_unavailable_response(str(tds_res)).get("tds_assessment", {})
 
-            # 8. Call Deterministic Stage 4 GST Engine
-            gst_result = gst_engine.evaluate_gst(invoice_payload)
+        # Deterministic Stage 4 GST Engine
+        gst_result = gst_engine.evaluate_gst(invoice_payload)
 
-            # 9. Call Deterministic Stage 4 ITC Engine
-            combined_accounting_context = {
-                "accounting": accounting_lines,
-                "tds_assessment": tds_assessment,
-            }
-            itc_result = itc_engine.evaluate_itc(invoice_payload, combined_accounting_context)
+        # Deterministic Stage 4 ITC Engine
+        combined_accounting_context = {
+            "accounting": accounting_lines,
+            "tds_assessment": tds_assessment,
+        }
+        itc_result = itc_engine.evaluate_itc(invoice_payload, combined_accounting_context)
 
-            # 10. Call Deterministic Stage 5 Financial Validator
-            financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
+        # Deterministic Stage 5 Financial Validator
+        financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-            # 11. Deterministic Final TDS (Authoritative calculation)
-            from app.services.tds_engine import get_effective_tds_data
-            effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
-            tds_applicable = bool(effective_tds.get("applicable"))
+        # Deterministic Final TDS (Authoritative calculation)
+        from app.services.tds_engine import get_effective_tds_data
+        effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
+        tds_applicable = bool(effective_tds.get("applicable"))
 
-            subtotal = float(invoice_payload.get("subtotal") or 0.0)
-            tds_rate = effective_tds.get("rate")
-            tds_section = effective_tds.get("section")
-            tds_provision = effective_tds.get("provision")
-            tds_nature = effective_tds.get("nature_of_payment")
-            vendor_pan = invoice_payload.get("vendor_pan")
+        subtotal = float(invoice_payload.get("subtotal") or 0.0)
+        tds_rate = effective_tds.get("rate")
+        tds_section = effective_tds.get("section")
+        tds_provision = effective_tds.get("provision")
+        tds_nature = effective_tds.get("nature_of_payment")
+        vendor_pan = invoice_payload.get("vendor_pan")
 
-            final_tds_calc = tds_engine.calculate_tds(
-                applicable=tds_applicable,
-                section=tds_section,
-                provision=tds_provision,
-                nature_of_payment=tds_nature,
-                base_amount=subtotal,
-                rate=float(tds_rate) if tds_rate is not None else None,
-                vendor_pan=vendor_pan,
-            )
+        final_tds_calc = tds_engine.calculate_tds(
+            applicable=tds_applicable,
+            section=tds_section,
+            provision=tds_provision,
+            nature_of_payment=tds_nature,
+            base_amount=subtotal,
+            rate=float(tds_rate) if tds_rate is not None else None,
+            vendor_pan=vendor_pan,
+        )
 
-            persisted_accounting_output = {
-                "accounting": accounting_lines,
-                "tds_assessment": {
-                    **tds_assessment,
-                    "tds_applicable": tds_applicable,
-                    "tds_section": tds_section,
-                    "tds_provision": tds_provision,
-                    "nature_of_payment": tds_nature,
-                    "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
-                    "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
-                    "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
-                    "tds_reasoning": final_tds_calc.get("reason"),
-                },
-                "tds_final": final_tds_calc,
-                "tds": final_tds_calc,
-            }
+        persisted_accounting_output = {
+            "accounting": accounting_lines,
+            "tds_assessment": {
+                **tds_assessment,
+                "tds_applicable": tds_applicable,
+                "tds_section": tds_section,
+                "tds_provision": tds_provision,
+                "nature_of_payment": tds_nature,
+                "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+                "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+                "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+                "tds_reasoning": final_tds_calc.get("reason"),
+            },
+            "tds_final": final_tds_calc,
+            "tds": final_tds_calc,
+        }
 
-            # 12. Call Deterministic Stage 6 Journal Generator
-            journal_result = journal_generator.generate_journal(
-                invoice_data=invoice_payload,
-                accounting_classification=persisted_accounting_output,
-                gst_result=gst_result,
-                itc_result=itc_result,
-                tds_result=final_tds_calc,
-                financial_validation_result=financial_validation_result,
-            )
+        # Deterministic Stage 6 Journal Generator
+        journal_result = journal_generator.generate_journal(
+            invoice_data=invoice_payload,
+            accounting_classification=persisted_accounting_output,
+            gst_result=gst_result,
+            itc_result=itc_result,
+            tds_result=final_tds_calc,
+            financial_validation_result=financial_validation_result,
+        )
 
-            # 13. Persist complete accounting, GST/ITC, financial validation, and journal responses
+        avg_confidence = None
+        if isinstance(accounting_lines, list) and len(accounting_lines) > 0:
+            confidences = [
+                float(item.get("confidence_score") if item.get("confidence_score") is not None else (item.get("ai_confidence") or 0.0))
+                for item in accounting_lines
+                if isinstance(item, dict) and (item.get("confidence_score") is not None or item.get("ai_confidence") is not None)
+            ]
+            if confidences:
+                avg_confidence = round(sum(confidences) / len(confidences), 2)
+
+    except Exception as exc:
+        logger.exception(f"Error computing downstream accounting for invoice {invoice_id}: {exc}")
+        async with AsyncSessionLocal() as session:
+            try:
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.status = "FAILED"
+                    inv.error_message = str(exc)
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+            except Exception as commit_exc:
+                logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
+        return
+
+    # Step 3: Persist results in a fresh short-lived session
+    async with AsyncSessionLocal() as session:
+        try:
+            res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+            invoice = res.scalar_one_or_none()
+            if not invoice:
+                logger.error(f"Invoice {invoice_id} not found during downstream result persistence.")
+                return
+
             invoice.accounting_output = persisted_accounting_output
             invoice.current_accounting_output = persisted_accounting_output
             invoice.gst_result = gst_result
@@ -551,26 +646,21 @@ async def process_accounting_downstream_background(invoice_id) -> None:
             invoice.status = "FINAL_HITL_REVIEW"
             invoice.error_message = None
             invoice.updated_at = datetime.now(timezone.utc)
-
-            if isinstance(accounting_lines, list) and len(accounting_lines) > 0:
-                confidences = [
-                    float(item.get("confidence_score") if item.get("confidence_score") is not None else (item.get("ai_confidence") or 0.0))
-                    for item in accounting_lines
-                    if isinstance(item, dict) and (item.get("confidence_score") is not None or item.get("ai_confidence") is not None)
-                ]
-                if confidences:
-                    invoice.accounting_confidence = round(sum(confidences) / len(confidences), 2)
+            if avg_confidence is not None:
+                invoice.accounting_confidence = avg_confidence
 
             await sync_relational_journal(session, invoice.id, journal_result)
             await session.commit()
             logger.info(f"Invoice {invoice_id} full Stage 2, 3, 4, 5 & 6 processing completed successfully.")
-
         except Exception as exc:
-            logger.exception(f"Error processing invoice {invoice_id}: {exc}")
+            logger.exception(f"Error persisting downstream results for invoice {invoice_id}: {exc}")
             try:
-                invoice.status = "FAILED"
-                invoice.error_message = str(exc)
-                invoice.updated_at = datetime.now(timezone.utc)
-                await session.commit()
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.status = "FAILED"
+                    inv.error_message = str(exc)
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
             except Exception as commit_exc:
                 logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
