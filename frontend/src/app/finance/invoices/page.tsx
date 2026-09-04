@@ -90,7 +90,7 @@ export default function InvoicesListPage() {
       actions={
         <button
           type="button"
-          onClick={loadInvoices}
+          onClick={() => loadInvoices(true)}
           disabled={loading}
           className="btn btn-secondary"
           style={{

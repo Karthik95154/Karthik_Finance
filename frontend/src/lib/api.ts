@@ -448,12 +448,11 @@ export async function getInvoiceStatus(id: string): Promise<InvoiceStatus> {
   return res.json();
 }
 
-export async function listInvoices(): Promise<InvoiceListItem[]> {
-  const authHeaders = await getAuthHeaders();
-  const res = await fetch(`${API_BASE}/invoices`, {
-    headers: authHeaders,
-    cache: "no-store",
-  });
+export async function listInvoices(forceRefresh = false): Promise<InvoiceListItem[]> {
+  const now = Date.now();
+  if (!forceRefresh && inMemoryInvoices && now - inMemoryInvoicesTime < 15000) {
+    return inMemoryInvoices;
+  }
 
   if (!forceRefresh && !inMemoryInvoices && typeof window !== "undefined") {
     const cached = getCachedInvoices();
@@ -601,6 +600,7 @@ export interface UserProfile {
   email: string;
   role: string;
   tenant_id: string;
+  full_name?: string | null;
 }
 
 export type ZohoConnectionState = "DISCONNECTED" | "CONNECTED" | "ERROR" | "CONNECTING" | "SYNCING" | "ORGANIZATION_REQUIRED";
