@@ -11,6 +11,9 @@ from app.db.database import get_db
 from app.db.models import Invoice, Integration
 
 
+from app.core.security import create_access_token
+
+
 def test_encryption_decryption():
     """Verify that credentials can be encrypted and decrypted correctly using Fernet."""
     test_pwd = "my_app_password_123"
@@ -22,6 +25,15 @@ def test_encryption_decryption():
 @pytest.mark.asyncio
 async def test_settings_api_flow():
     """Verify settings configure, get, and disconnect endpoints work correctly and mask passwords."""
+    user_id = str(uuid.uuid4())
+    token = create_access_token(
+        user_id=user_id,
+        email="finance@company.com",
+        tenant_id="default-tenant-001",
+        role="ADMIN",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
     mock_db = AsyncMock()
     mock_result = MagicMock()
     
@@ -46,7 +58,7 @@ async def test_settings_api_flow():
                     "email_address": "finance@company.com",
                     "password": "my_google_app_password"
                 }
-                res = await client.post("/api/v1/settings/integrations/imap_email/configure", json=payload)
+                res = await client.post("/api/v1/settings/integrations/imap_email/configure", json=payload, headers=headers)
                 assert res.status_code == 200
                 assert res.json()["success"] is True
                 assert res.json()["status"] == "connected"
@@ -66,14 +78,14 @@ async def test_settings_api_flow():
                 mock_result.scalar_one_or_none.return_value = mock_integration
 
                 # 2. Get settings (verify masked password)
-                res = await client.get("/api/v1/settings/integrations/imap_email")
+                res = await client.get("/api/v1/settings/integrations/imap_email", headers=headers)
                 assert res.status_code == 200
                 assert res.json()["status"] == "connected"
                 assert res.json()["config"]["email_address"] == "finance@company.com"
                 assert res.json()["config"]["password"] == "••••••••••••••••"
 
                 # 3. Disconnect settings
-                res = await client.post("/api/v1/settings/integrations/imap_email/disconnect")
+                res = await client.post("/api/v1/settings/integrations/imap_email/disconnect", headers=headers)
                 assert res.status_code == 200
                 assert res.json()["status"] == "disconnected"
     finally:
@@ -83,6 +95,15 @@ async def test_settings_api_flow():
 @pytest.mark.asyncio
 async def test_email_polling_and_inbox_lifecycle():
     """Verify IMAP polling, staged inbox list, process, and delete endpoints flow."""
+    user_id = str(uuid.uuid4())
+    token = create_access_token(
+        user_id=user_id,
+        email="finance@company.com",
+        tenant_id="default-tenant-001",
+        role="ADMIN",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
     mock_db = AsyncMock()
     mock_result = MagicMock()
     
@@ -135,7 +156,7 @@ async def test_email_polling_and_inbox_lifecycle():
                 # Mock Invoice duplicate check (returns None for new file)
                 mock_result.scalars.return_value.first.return_value = None
 
-                res = await client.post("/api/v1/email/poll")
+                res = await client.post("/api/v1/email/poll", headers=headers)
                 assert res.status_code == 200
                 data = res.json()
                 assert data["success"] is True
@@ -159,7 +180,7 @@ async def test_email_polling_and_inbox_lifecycle():
             )
             mock_result.scalars.return_value.all.return_value = [mock_invoice]
             
-            res = await client.get("/api/v1/inbox/staged")
+            res = await client.get("/api/v1/inbox/staged", headers=headers)
             assert res.status_code == 200
             staged_list = res.json()
             assert len(staged_list) == 1
@@ -170,7 +191,7 @@ async def test_email_polling_and_inbox_lifecycle():
                 # Mock duplicate check to return mock_invoice
                 mock_result.scalars.return_value.first.return_value = mock_invoice
 
-                res = await client.post("/api/v1/email/poll")
+                res = await client.post("/api/v1/email/poll", headers=headers)
                 assert res.status_code == 200
                 data_dup = res.json()
                 assert data_dup["new_documents"] == 0
@@ -181,7 +202,7 @@ async def test_email_polling_and_inbox_lifecycle():
             mock_result.scalar_one_or_none.return_value = mock_invoice
             
             with patch("app.api.v1.inbox.process_invoice_background") as mock_process_bg:
-                res = await client.post(f"/api/v1/inbox/staged/{mock_invoice.id}/process")
+                res = await client.post(f"/api/v1/inbox/staged/{mock_invoice.id}/process", headers=headers)
                 assert res.status_code == 200
                 assert res.json()["success"] is True
                 assert res.json()["status"] == "PENDING"
@@ -189,7 +210,7 @@ async def test_email_polling_and_inbox_lifecycle():
 
             # 5. Delete staged document
             with patch.object(storage_service, "delete_file", return_value=True):
-                res = await client.delete(f"/api/v1/inbox/staged/{mock_invoice.id}")
+                res = await client.delete(f"/api/v1/inbox/staged/{mock_invoice.id}", headers=headers)
                 assert res.status_code == 200
                 assert res.json()["success"] is True
     finally:
@@ -199,6 +220,15 @@ async def test_email_polling_and_inbox_lifecycle():
 @pytest.mark.asyncio
 async def test_pdf_preview_pages():
     """Verify PDF multi-page rendering API correctly extracts pages as base64 images using PyMuPDF."""
+    user_id = str(uuid.uuid4())
+    token = create_access_token(
+        user_id=user_id,
+        email="finance@company.com",
+        tenant_id="default-tenant-001",
+        role="ADMIN",
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
     mock_db = AsyncMock()
     mock_result = MagicMock()
     
@@ -232,7 +262,7 @@ async def test_pdf_preview_pages():
                 mock_doc.load_page.return_value = mock_page
                 mock_fitz_open.return_value = mock_doc
                 
-                res = await client.get(f"/api/v1/invoices/{mock_invoice.id}/pages")
+                res = await client.get(f"/api/v1/invoices/{mock_invoice.id}/pages", headers=headers)
                 assert res.status_code == 200
                 data = res.json()
                 assert "pages" in data

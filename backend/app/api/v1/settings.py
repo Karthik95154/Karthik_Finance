@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -16,10 +17,10 @@ router = APIRouter(prefix="/settings/integrations", tags=["Integration Settings"
 
 
 class IMAPConfigureRequest(BaseModel):
-    imap_server: str = Field(..., example="imap.gmail.com")
-    imap_port: int = Field(993, example=993)
-    email_address: str = Field(..., example="user@gmail.com")
-    password: str = Field(..., example="Google App Password")
+    imap_server: str = Field(..., description="IMAP server hostname, e.g. imap.gmail.com")
+    imap_port: int = Field(993, description="IMAP port, default 993")
+    email_address: str = Field(..., description="Email address for mailbox")
+    password: str = Field(..., description="Password or App Password")
 
 
 def mask_password(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -36,9 +37,19 @@ async def get_imap_settings(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieves current email integration status and configuration (password masked) for the tenant."""
+    """Retrieves current email integration status and configuration (password masked) for the authenticated user."""
     tenant_id = current_user.tenant_id
-    query = select(Integration).where(Integration.tenant_id == tenant_id)
+    user_id = current_user.id
+    try:
+        parsed_user_id = uuid.UUID(str(user_id))
+    except Exception:
+        parsed_user_id = None
+
+    if parsed_user_id:
+        query = select(Integration).where(Integration.tenant_id == tenant_id, Integration.user_id == parsed_user_id)
+    else:
+        query = select(Integration).where(Integration.tenant_id == tenant_id)
+
     result = await db.execute(query)
     integration = result.scalar_one_or_none()
 
@@ -61,12 +72,22 @@ async def get_imap_settings(
 @router.post("/imap_email/configure")
 async def configure_imap_settings(
     payload: IMAPConfigureRequest,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Validates connection and saves IMAP configuration securely for the tenant (ADMIN only)."""
+    """Validates connection and saves IMAP configuration securely for the authenticated user."""
     tenant_id = current_user.tenant_id
-    query = select(Integration).where(Integration.tenant_id == tenant_id)
+    user_id = current_user.id
+    try:
+        parsed_user_id = uuid.UUID(str(user_id))
+    except Exception:
+        parsed_user_id = None
+
+    if parsed_user_id:
+        query = select(Integration).where(Integration.tenant_id == tenant_id, Integration.user_id == parsed_user_id)
+    else:
+        query = select(Integration).where(Integration.tenant_id == tenant_id)
+
     result = await db.execute(query)
     integration = result.scalar_one_or_none()
 
@@ -117,8 +138,9 @@ async def configure_imap_settings(
     # Save to database
     if not integration:
         integration = Integration(
-            id=f"imap_email_{tenant_id}",
+            id=f"imap_email_{tenant_id}_{user_id}"[:100],
             tenant_id=tenant_id,
+            user_id=parsed_user_id,
             status="connected",
             config=config_data,
         )
@@ -126,6 +148,8 @@ async def configure_imap_settings(
     else:
         integration.config = config_data
         integration.status = "connected"
+        if parsed_user_id:
+            integration.user_id = parsed_user_id
 
     await db.commit()
     await db.refresh(integration)
@@ -139,12 +163,22 @@ async def configure_imap_settings(
 
 @router.post("/imap_email/disconnect")
 async def disconnect_imap_settings(
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Clears configuration and disconnects IMAP integration for the tenant (ADMIN only)."""
+    """Clears configuration and disconnects IMAP integration for the authenticated user."""
     tenant_id = current_user.tenant_id
-    query = select(Integration).where(Integration.tenant_id == tenant_id)
+    user_id = current_user.id
+    try:
+        parsed_user_id = uuid.UUID(str(user_id))
+    except Exception:
+        parsed_user_id = None
+
+    if parsed_user_id:
+        query = select(Integration).where(Integration.tenant_id == tenant_id, Integration.user_id == parsed_user_id)
+    else:
+        query = select(Integration).where(Integration.tenant_id == tenant_id)
+
     result = await db.execute(query)
     integration = result.scalar_one_or_none()
 

@@ -12,7 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import (
@@ -53,15 +53,19 @@ def sanitize_filename(filename: str) -> str:
 async def upload_invoice(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Uploads an invoice to Supabase Storage, checks for duplicates, records metadata,
     and triggers background extraction pipeline.
-    Requires ADMIN or FINANCE role.
     """
     tenant_id = current_user.tenant_id
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(current_user.id))
+    except Exception:
+        parsed_user_id = None
 
     content_type = file.content_type or "application/octet-stream"
     if content_type not in settings.ALLOWED_MIME_TYPES:
@@ -102,6 +106,8 @@ async def upload_invoice(
         if existing_duplicate.status in ["STAGED", "FAILED"]:
             existing_duplicate.status = "PENDING"
             existing_duplicate.error_message = None
+            if parsed_user_id and not existing_duplicate.owner_user_id:
+                existing_duplicate.owner_user_id = parsed_user_id
             await db.commit()
             await db.refresh(existing_duplicate)
             background_tasks.add_task(process_invoice_background, existing_duplicate.id)
@@ -137,6 +143,7 @@ async def upload_invoice(
     invoice = Invoice(
         id=invoice_id,
         tenant_id=tenant_id,
+        owner_user_id=parsed_user_id,
         file_path=storage_path,
         file_name=original_name,
         file_size=file_size,
@@ -174,7 +181,7 @@ async def upload_invoice(
 async def categorize_invoice_accounting(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -226,11 +233,23 @@ async def list_invoices(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Lists all invoices for the authenticated user's tenant.
-    Accessible to ADMIN, FINANCE, and VIEWER roles.
+    Lists all invoices for the authenticated user's tenant with appropriate role filtering.
     """
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.tenant_id == tenant_id).order_by(Invoice.created_at.desc())
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(current_user.id))
+    except Exception:
+        parsed_user_id = None
+
+    query = select(Invoice).where(Invoice.tenant_id == tenant_id)
+
+    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
+        query = query.where((Invoice.owner_user_id == parsed_user_id) | (Invoice.owner_user_id.is_(None)))
+        if current_user.role == "CUSTOMER":
+            query = query.where(Invoice.approval_status == "APPROVED")
+
+    query = query.order_by(Invoice.created_at.desc())
     result = await db.execute(query)
     invoices = result.scalars().all()
 
@@ -245,6 +264,7 @@ async def list_invoices(
             InvoiceListItemResponse(
                 id=inv.id,
                 tenant_id=inv.tenant_id,
+                owner_user_id=inv.owner_user_id,
                 file_name=inv.file_name,
                 file_size=inv.file_size,
                 mime_type=inv.mime_type,
@@ -252,6 +272,11 @@ async def list_invoices(
                 accounting_status=inv.accounting_status,
                 approval_status=inv.approval_status,
                 export_status=inv.export_status,
+                financial_relevance=inv.financial_relevance,
+                document_type=inv.document_type,
+                classification_confidence=inv.classification_confidence,
+                classification_reason=inv.classification_reason,
+                classification_model=inv.classification_model,
                 zoho_bill_id=inv.zoho_bill_id,
                 zoho_bill_number=inv.zoho_bill_number,
                 vendor_name=data.get("vendor_name"),
@@ -272,9 +297,14 @@ async def get_invoice_status(
 ):
     """
     Polling endpoint for tracking invoice processing, approval, and export status.
-    Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
     tenant_id = current_user.tenant_id
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(current_user.id))
+    except Exception:
+        parsed_user_id = None
+
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
@@ -284,6 +314,13 @@ async def get_invoice_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
         )
+
+    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
+        if invoice.owner_user_id and invoice.owner_user_id != parsed_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Invoice with ID {invoice_id} not found.",
+            )
 
     return InvoiceStatusResponse(
         invoice_id=invoice.id,
@@ -306,10 +343,16 @@ async def get_invoice(
 ):
     """
     Retrieves full stored invoice metadata.
-    Accessible to ADMIN, FINANCE, VIEWER, and CUSTOMER roles.
+    Accessible to ADMIN, FINANCE, FINANCE_MANAGER, DATA_REVIEWER, VIEWER, and CUSTOMER roles.
     For CUSTOMER / VIEWER roles, invoice is only exposed after passing internal HITL approval.
     """
     tenant_id = current_user.tenant_id
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(current_user.id))
+    except Exception:
+        parsed_user_id = None
+
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
@@ -319,6 +362,13 @@ async def get_invoice(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
         )
+
+    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
+        if invoice.owner_user_id and invoice.owner_user_id != parsed_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Invoice with ID {invoice_id} not found.",
+            )
 
     # If user has CUSTOMER role, require the invoice to be HITL approved
     if current_user.role == "CUSTOMER" and invoice.approval_status != "APPROVED":
@@ -334,7 +384,7 @@ async def get_invoice(
 async def update_invoice_extraction(
     invoice_id: uuid.UUID,
     update_data: InvoiceUpdateRequest,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "CUSTOMER"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER", "CUSTOMER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -356,7 +406,7 @@ async def update_invoice_extraction(
             detail=f"Invoice with ID {invoice_id} not found.",
         )
 
-    is_internal_role = current_user.role in ("ADMIN", "FINANCE")
+    is_internal_role = current_user.role in ("ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER")
     was_approved = (invoice.approval_status == "APPROVED")
 
     # If an internal finance user edits an approved invoice, unlock and reset approval
@@ -559,6 +609,12 @@ async def get_invoice_file(
     Streams original unmodified invoice binary from Supabase Storage for authorized tenant users.
     """
     tenant_id = current_user.tenant_id
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(current_user.id))
+    except Exception:
+        parsed_user_id = None
+
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
@@ -568,6 +624,13 @@ async def get_invoice_file(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
         )
+
+    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
+        if invoice.owner_user_id and invoice.owner_user_id != parsed_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Invoice with ID {invoice_id} not found.",
+            )
 
     # If user has CUSTOMER role, require the invoice to be HITL approved
     if current_user.role == "CUSTOMER" and invoice.approval_status != "APPROVED":
@@ -629,6 +692,12 @@ async def get_invoice_pages(
     Renders multi-page PDF invoices into a list of base64 PNG images for authorized tenant users.
     """
     tenant_id = current_user.tenant_id
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(current_user.id))
+    except Exception:
+        parsed_user_id = None
+
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
@@ -638,6 +707,13 @@ async def get_invoice_pages(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
         )
+
+    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
+        if invoice.owner_user_id and invoice.owner_user_id != parsed_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Invoice with ID {invoice_id} not found.",
+            )
 
     # If user has CUSTOMER role, require the invoice to be HITL approved
     if current_user.role == "CUSTOMER" and invoice.approval_status != "APPROVED":

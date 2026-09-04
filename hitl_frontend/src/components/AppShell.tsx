@@ -63,35 +63,18 @@ export default function AppShell({
     return () => clearInterval(interval);
   }, []);
 
-  const navItems = [
+  const navItems: Array<{
+    label: string;
+    href: string;
+    icon: any;
+    active: boolean;
+    badge?: string;
+  }> = [
     {
-      label: "Dashboard",
-      href: "/dashboard",
-      icon: LayoutDashboard,
-      active: pathname === "/dashboard",
-    },
-    {
-      label: "Inbox",
-      href: "/inbox",
-      icon: Inbox,
-      active: pathname === "/inbox",
-      badge: "Stage 7",
-    },
-    {
-      label: "Invoices",
-      href: "/finance/invoices",
-      icon: FileSpreadsheet,
-      active:
-        pathname.startsWith("/finance/invoices") &&
-        !pathname.includes("/processing") &&
-        pathname !== "/finance/settings",
-    },
-    {
-      label: "Integrations",
-      href: "/integrations",
-      icon: Layers,
-      active: pathname === "/integrations" || pathname === "/finance/settings",
-      badge: "Stage 8",
+      label: "HITL Review Queue",
+      href: "/",
+      icon: ShieldCheck,
+      active: pathname === "/",
     },
   ];
 
@@ -147,7 +130,7 @@ export default function AppShell({
           }}
         >
           <Link
-            href="/dashboard"
+            href="/"
             style={{
               display: "flex",
               alignItems: "center",
@@ -180,7 +163,7 @@ export default function AppShell({
                   lineHeight: "1.2",
                 }}
               >
-                Finance Module
+                HITL Review
               </div>
               <div
                 style={{
@@ -189,7 +172,7 @@ export default function AppShell({
                   fontWeight: "500",
                 }}
               >
-                Autonomous AP
+                Verification Console
               </div>
             </div>
           </Link>
@@ -207,29 +190,6 @@ export default function AppShell({
           >
             <X size={18} />
           </button>
-        </div>
-
-        {/* Primary Action Button */}
-        <div style={{ padding: "16px 16px 8px" }}>
-          <Link
-            href="/finance/upload"
-            className="btn btn-primary"
-            style={{
-              width: "100%",
-              padding: "9px 14px",
-              fontSize: "13px",
-              fontWeight: "600",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "8px",
-              borderRadius: "var(--radius-sm)",
-              boxShadow: "0 2px 6px rgba(0, 113, 227, 0.2)",
-            }}
-          >
-            <UploadCloud size={16} />
-            <span>Upload Invoice</span>
-          </Link>
         </div>
 
         {/* Navigation List */}

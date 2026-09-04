@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     AUTH_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     AUTH_TOKEN_EXPIRE_MINUTES: int = 1440
-    ENABLE_DEV_AUTH: bool = True
+    ENABLE_DEV_AUTH: bool = False
 
     def model_post_init(self, __context) -> None:
         if self.FRONTEND_URL:
@@ -92,6 +92,7 @@ class Settings(BaseSettings):
                 self.AUTH_SECRET_KEY = "sakshi-dev-jwt-secret-local-only-not-for-production"
             if not self.TOKEN_ENCRYPTION_KEY:
                 self.TOKEN_ENCRYPTION_KEY = "sakshi-dev-token-encryption-key-32b-local"
+            self.ENABLE_DEV_AUTH = True
 
     # Zoho Books Integration
     ZOHO_CLIENT_ID: str = ""

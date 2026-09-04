@@ -83,12 +83,15 @@ async def test_hitl_extraction_workflow(client: AsyncClient, db_session, admin_t
     )
     assert resp.status_code == 403
 
-    resp = await client.post(
-        f"/api/v1/invoices/{invoice.id}/hitl/extraction/approve",
-        headers={"Authorization": f"Bearer {admin_token}"},
-        json={"corrected_data": {"data": {"total_amount": 10500, "subtotal": 10500, "tax_total": 0}}}
-    )
-    assert resp.status_code == 200
+    from unittest.mock import patch
+
+    with patch("app.api.v1.hitl.process_accounting_downstream_background"):
+        resp = await client.post(
+            f"/api/v1/invoices/{invoice.id}/hitl/extraction/approve",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"corrected_data": {"data": {"total_amount": 10500, "subtotal": 10500, "tax_total": 0}}}
+        )
+        assert resp.status_code == 200
 
     await db_session.refresh(invoice)
     assert invoice.status in ("ACCOUNTING_PROCESSING", "FINAL_HITL_REVIEW")

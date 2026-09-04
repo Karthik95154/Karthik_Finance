@@ -1414,21 +1414,8 @@ export default function InvoiceWorkspace({
     }
   };
 
-  // Real Zoho Export Action Handler
+  // Real Zoho Export Action Handler (Approve & Export directly in one flow)
   const handleExport = async () => {
-    if (invoice?.approval_status !== "APPROVED") {
-      setError("Invoice must be approved by Finance before exporting to Zoho Books.");
-      return;
-    }
-
-    const isJournalApproved =
-      journalEntry &&
-      (journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED");
-    if (!isJournalApproved) {
-      setError("Invoice cannot be exported without an approved, balanced General Ledger journal entry.");
-      return;
-    }
-
     // Strict Vendor match guard: Stop export if vendor is not matched in Zoho
     if (vendorStatus && vendorStatus.is_zoho_connected && vendorStatus.match_status !== "MATCHED") {
       setVendorModalOpen(true);
@@ -1440,6 +1427,16 @@ export default function InvoiceWorkspace({
       setIsExporting(true);
       setError(null);
 
+      // 1. If invoice is not yet marked approved, execute approval first seamlessly
+      if (invoice?.approval_status !== "APPROVED") {
+        try {
+          await approveInvoice(invoiceId);
+        } catch (appErr: any) {
+          console.warn("Auto-approval on export note:", appErr);
+        }
+      }
+
+      // 2. Export to Zoho Books
       const res = await exportInvoiceToZoho(invoiceId);
       setActionNotice(`Successfully exported to Zoho Books! Bill #${res.zoho_bill_number || res.zoho_bill_id}`);
 
@@ -4109,7 +4106,7 @@ export default function InvoiceWorkspace({
                   />
                 </section>
 
-                {/* 12. SAVE CHANGES (WORKING BUTTON) */}
+                {/* 12. SAVE CHANGES & APPROVE / SYNC TO ZOHO BUTTONS */}
                 <section
                   style={{
                     borderTop: "1px solid var(--border-subtle)",
@@ -4118,31 +4115,96 @@ export default function InvoiceWorkspace({
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "12px",
                   }}
                 >
-                  <div>
+                  <div style={{ flex: 1, minWidth: "240px" }}>
                     {saveSuccess && (
                       <span style={{ color: "var(--success)", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
                         <CheckCircle2 size={16} /> Changes saved to database!
                       </span>
                     )}
+                    {actionNotice && (
+                      <span style={{ color: "var(--success)", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <CheckCircle2 size={16} /> {actionNotice}
+                      </span>
+                    )}
                     {error && (
-                      <span style={{ color: "var(--danger)", fontSize: "13px" }}>
-                        {error}
+                      <span style={{ color: "var(--danger)", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <AlertCircle size={16} /> {error}
                       </span>
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleSaveChanges}
-                    disabled={isSaving}
-                    className="btn btn-primary"
-                    style={{ padding: "10px 24px", fontSize: "14px" }}
-                  >
-                    <Save size={15} />
-                    <span>{isSaving ? "Saving..." : "Save Changes"}</span>
-                  </button>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <button
+                      type="button"
+                      onClick={handleSaveChanges}
+                      disabled={isSaving}
+                      className="btn btn-secondary"
+                      style={{ padding: "10px 18px", fontSize: "13px" }}
+                    >
+                      <Save size={15} />
+                      <span>{isSaving ? "Saving..." : "Save Changes"}</span>
+                    </button>
+
+                    {mode === "internal" && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleApprove}
+                          disabled={isApproving || invoice?.approval_status === "APPROVED"}
+                          className="btn btn-primary"
+                          style={{
+                            padding: "10px 20px",
+                            fontSize: "13px",
+                            background:
+                              invoice?.approval_status === "APPROVED"
+                                ? "#34c759"
+                                : "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)",
+                            color: "#ffffff",
+                          }}
+                        >
+                          <Check size={15} />
+                          <span>
+                            {isApproving
+                              ? "Approving..."
+                              : invoice?.approval_status === "APPROVED"
+                              ? "Approved ✓"
+                              : "Approve"}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleExport}
+                          disabled={isExporting || invoice?.export_status === "EXPORTED"}
+                          className="btn btn-primary"
+                          style={{
+                            padding: "10px 22px",
+                            fontSize: "13px",
+                            fontWeight: "600",
+                            background:
+                              invoice?.export_status === "EXPORTED"
+                                ? "#16a34a"
+                                : "linear-gradient(135deg, #059669 0%, #047857 100%)",
+                            color: "#ffffff",
+                            boxShadow: "0 2px 6px rgba(5, 150, 105, 0.3)",
+                          }}
+                        >
+                          <Send size={15} />
+                          <span>
+                            {isExporting
+                              ? "Syncing to Zoho..."
+                              : invoice?.export_status === "EXPORTED"
+                              ? "Synced to Zoho Books ✓"
+                              : "Approve & Sync to Zoho"}
+                          </span>
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </section>
               </div>
             </div>

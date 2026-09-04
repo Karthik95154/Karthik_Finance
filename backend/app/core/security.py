@@ -17,6 +17,67 @@ logger = logging.getLogger(__name__)
 security_bearer = HTTPBearer(auto_error=False)
 
 
+import os
+import hmac
+
+# Password Hashing Constants (OWASP / NIST Standard: PBKDF2-HMAC-SHA256 with 600,000 iterations)
+PBKDF2_ROUNDS = 600000
+
+
+def hash_password(plain_password: str) -> str:
+    """
+    Hashes a plaintext password using PBKDF2-HMAC-SHA256 with a 16-byte random salt.
+    Format: pbkdf2_sha256$<rounds>$<salt_hex>$<hash_hex>
+    """
+    if not plain_password:
+        raise ValueError("Password cannot be empty.")
+    salt = os.urandom(16)
+    derived = hashlib.pbkdf2_hmac("sha256", plain_password.encode("utf-8"), salt, PBKDF2_ROUNDS)
+    return f"pbkdf2_sha256${PBKDF2_ROUNDS}${salt.hex()}${derived.hex()}"
+
+
+def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
+    """
+    Verifies a plaintext password against a stored hashed password using constant-time comparison.
+    Supports pbkdf2_sha256 format.
+    """
+    if not plain_password or not hashed_password:
+        return False
+
+    try:
+        if hashed_password.startswith("pbkdf2_sha256$"):
+            parts = hashed_password.split("$")
+            if len(parts) != 4:
+                return False
+            rounds = int(parts[1])
+            salt = bytes.fromhex(parts[2])
+            expected_hash = parts[3]
+            derived = hashlib.pbkdf2_hmac("sha256", plain_password.encode("utf-8"), salt, rounds)
+            return hmac.compare_digest(derived.hex(), expected_hash)
+        elif hashed_password.startswith("$2b$") or hashed_password.startswith("$2a$"):
+            # Optional bcrypt fallback if bcrypt is installed
+            try:
+                import bcrypt
+                return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+            except Exception:
+                return False
+        return False
+    except Exception as e:
+        logger.error(f"Password verification error: {e}")
+        return False
+
+
+ALLOWED_ROLES = (
+    "ADMIN",
+    "FINANCE",
+    "FINANCE_MANAGER",
+    "FINANCE_REVIEWER",
+    "DATA_REVIEWER",
+    "VIEWER",
+    "CUSTOMER",
+)
+
+
 # ============================================================================
 # Authenticated User Model
 # ============================================================================
@@ -25,7 +86,7 @@ class AuthenticatedUser(BaseModel):
     id: str
     email: str
     tenant_id: str
-    role: str  # "ADMIN", "FINANCE", "FINANCE_REVIEWER", "DATA_REVIEWER", "VIEWER", "CUSTOMER"
+    role: str  # "ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER", "VIEWER", "CUSTOMER"
     full_name: Optional[str] = None
 
 
@@ -122,7 +183,7 @@ async def get_current_user(
     Authorization header. Returns verified AuthenticatedUser.
     In development mode with ENABLE_DEV_AUTH=True, falls back to default dev user.
     """
-    if not credentials or not credentials.credentials:
+    if not credentials or not credentials.credentials or credentials.credentials in ("null", "undefined", ""):
         if settings.ENABLE_DEV_AUTH:
             return AuthenticatedUser(
                 id="dev-user-001",
@@ -152,7 +213,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if role not in ("ADMIN", "FINANCE", "FINANCE_REVIEWER", "DATA_REVIEWER", "VIEWER", "CUSTOMER"):
+    if role not in ALLOWED_ROLES:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid role '{role}' in token claims.",

@@ -1,5 +1,11 @@
+import base64
+import hashlib
+import hmac
+import json
 import logging
+import time
 import urllib.parse
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -43,21 +49,15 @@ class ZohoStatusResponse(BaseModel):
     error_message: Optional[str] = None
 
 
-import base64
-import hashlib
-import hmac
-import json
-import time
-import uuid
-
 ZOHO_STATE_MAX_AGE_SECONDS = 900  # 15 minutes
 
 
-def generate_signed_zoho_state(tenant_id: str, frontend_url: str) -> str:
-    """Generates an HMAC-SHA256 signed OAuth state token containing tenant_id, frontend_url, timestamp, and nonce."""
+def generate_signed_zoho_state(tenant_id: str, frontend_url: str = "http://localhost:3000", user_id: Optional[str] = None) -> str:
+    """Generates an HMAC-SHA256 signed OAuth state token containing tenant_id, user_id, frontend_url, timestamp, and nonce."""
     secret = settings.AUTH_SECRET_KEY or "fallback-zoho-state-signing-key-production"
     state_payload = {
         "tenant_id": tenant_id,
+        "user_id": str(user_id) if user_id else "",
         "frontend_url": frontend_url,
         "ts": int(time.time()),
         "nonce": uuid.uuid4().hex[:12],
@@ -119,13 +119,13 @@ async def get_zoho_connect_url(
     request: Request,
     accounts_url: Optional[str] = None,
     redirect_uri: Optional[str] = None,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
 ):
     """
     Returns the Zoho OAuth2 authorization URL for user login with cryptographically signed state.
-    Requires ADMIN or FINANCE role.
     """
     tenant_id = current_user.tenant_id
+    user_id = current_user.id
 
     # Extract dynamic frontend URL to support dev tunnels smoothly
     origin = request.headers.get("origin") or request.headers.get("referer")
@@ -136,7 +136,7 @@ async def get_zoho_connect_url(
     else:
         frontend_url = settings.FRONTEND_URL.rstrip('/')
 
-    state_param = generate_signed_zoho_state(tenant_id=tenant_id, frontend_url=frontend_url)
+    state_param = generate_signed_zoho_state(tenant_id=tenant_id, user_id=user_id, frontend_url=frontend_url)
 
     if not settings.ZOHO_CLIENT_ID:
         raise HTTPException(
@@ -168,7 +168,7 @@ async def zoho_oauth_callback(
 ):
     """
     Handles Zoho OAuth 2.0 redirect callback, verifies cryptographic state signature,
-    exchanges authorization code for tokens, encrypts tokens at rest, and saves connection details.
+    exchanges authorization code for tokens, encrypts tokens at rest, and saves user connection details.
     Redirects browser seamlessly back to the frontend settings/connection page.
     """
     frontend_base = f"{settings.FRONTEND_URL.rstrip('/')}/integrations"
@@ -192,6 +192,7 @@ async def zoho_oauth_callback(
     try:
         state_data = verify_signed_zoho_state(state)
         tenant_id = state_data["tenant_id"]
+        user_id = state_data.get("user_id")
         if state_data.get("frontend_url"):
             frontend_base = f"{state_data['frontend_url'].rstrip('/')}/integrations"
     except ValueError as val_err:
@@ -201,7 +202,7 @@ async def zoho_oauth_callback(
             status_code=302,
         )
 
-    logger.info(f"Processing Zoho OAuth callback for tenant {tenant_id}...")
+    logger.info(f"Processing Zoho OAuth callback for tenant {tenant_id} (user {user_id})...")
 
     # Determine redirect URI dynamically matching how the browser was routed
     callback_redirect_uri = str(request.url).split("?")[0]
@@ -231,8 +232,8 @@ async def zoho_oauth_callback(
     expires_in = token_data.get("expires_in", 3600)
     api_domain = token_data.get("api_domain", settings.ZOHO_BOOKS_API_BASE_URL)
 
-    # Fetch or create ZohoConnection record strictly for the verified tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    # Fetch or create ZohoConnection record strictly for the verified tenant_id and user_id
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
     connection.encrypted_access_token = encrypt_secret(access_token)
     if refresh_token:
         connection.encrypted_refresh_token = encrypt_secret(refresh_token)
@@ -262,9 +263,9 @@ async def zoho_oauth_callback(
     # Trigger automatic initial sync if org was selected
     if connection.organization_id:
         try:
-            await master_data_service.sync_chart_of_accounts(tenant_id, db)
-            await master_data_service.sync_taxes(tenant_id, db)
-            await master_data_service.sync_vendors(tenant_id, db)
+            await master_data_service.sync_chart_of_accounts(tenant_id, db, user_id=user_id)
+            await master_data_service.sync_taxes(tenant_id, db, user_id=user_id)
+            await master_data_service.sync_vendors(tenant_id, db, user_id=user_id)
         except Exception as sync_exc:
             logger.warning(f"Initial sync warning: {sync_exc}")
 
@@ -277,12 +278,12 @@ async def zoho_oauth_callback(
 
 @router.get("/organizations")
 async def list_zoho_organizations(
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Lists accessible organizations for the connected Zoho account."""
+    """Lists accessible organizations for the connected user's Zoho account."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
     if connection.status != "CONNECTED":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -301,12 +302,12 @@ async def list_zoho_organizations(
 @router.post("/select-organization")
 async def select_zoho_organization(
     req: SelectOrgRequest,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Sets the active Zoho Organization ID and triggers an initial COA, Tax, and Vendor sync."""
+    """Sets the active Zoho Organization ID and triggers an initial COA, Tax, and Vendor sync for the user."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
     if connection.status != "CONNECTED":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -320,9 +321,9 @@ async def select_zoho_organization(
     await db.commit()
 
     # Trigger live sync
-    accounts = await master_data_service.sync_chart_of_accounts(tenant_id, db)
-    taxes = await master_data_service.sync_taxes(tenant_id, db)
-    vendors = await master_data_service.sync_vendors(tenant_id, db)
+    accounts = await master_data_service.sync_chart_of_accounts(tenant_id, db, user_id=current_user.id)
+    taxes = await master_data_service.sync_taxes(tenant_id, db, user_id=current_user.id)
+    vendors = await master_data_service.sync_vendors(tenant_id, db, user_id=current_user.id)
 
     return {
         "status": "success",
@@ -335,14 +336,14 @@ async def select_zoho_organization(
 
 @router.post("/sync")
 async def trigger_zoho_sync(
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Manually triggers synchronization of Chart of Accounts, Taxes, and Vendors from Zoho Books."""
+    """Manually triggers synchronization of Chart of Accounts, Taxes, and Vendors from Zoho Books for the authenticated user."""
     tenant_id = current_user.tenant_id
-    accounts = await master_data_service.sync_chart_of_accounts(tenant_id, db)
-    taxes = await master_data_service.sync_taxes(tenant_id, db)
-    vendors = await master_data_service.sync_vendors(tenant_id, db)
+    accounts = await master_data_service.sync_chart_of_accounts(tenant_id, db, user_id=current_user.id)
+    taxes = await master_data_service.sync_taxes(tenant_id, db, user_id=current_user.id)
+    vendors = await master_data_service.sync_vendors(tenant_id, db, user_id=current_user.id)
 
     return {
         "status": "success",
@@ -357,11 +358,11 @@ async def get_zoho_status(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Returns the current Zoho connection, organization, and cache metrics."""
+    """Returns the current Zoho connection, organization, and cache metrics for the authenticated user."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
 
-    # Count cached records
+    # Count cached records for this tenant
     acc_count = (
         await db.execute(
             select(ChartOfAccount).where(ChartOfAccount.tenant_id == tenant_id)
@@ -470,12 +471,12 @@ async def get_master_data_summary(
 
 @router.post("/disconnect")
 async def disconnect_zoho(
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Disconnects Zoho integration and removes stored tokens for the tenant."""
+    """Disconnects Zoho integration and removes stored tokens for the user."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
     connection.status = "DISCONNECTED"
     connection.encrypted_access_token = None
     connection.encrypted_refresh_token = None

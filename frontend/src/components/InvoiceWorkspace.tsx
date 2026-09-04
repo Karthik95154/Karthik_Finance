@@ -32,6 +32,10 @@ import {
   FinancialValidationResult,
   JournalEntry,
   JournalPreviewResponse,
+  getHitlExtraction,
+  approveHitlExtraction,
+  getHitlFinal,
+  approveHitlFinal,
 } from "@/lib/api";
 import {
   ArrowLeft,
@@ -235,7 +239,7 @@ function extractOrDeriveTax(
 }
 
 interface InvoiceWorkspaceProps {
-  mode?: "internal" | "customer";
+  mode?: "internal" | "customer" | "hitl_extraction" | "hitl_final";
   invoiceId?: string;
 }
 
@@ -253,6 +257,7 @@ export default function InvoiceWorkspace({
   const [isSaving, setIsSaving] = useState(false);
   const [isCategorizing, setIsCategorizing] = useState(false);
   const [isApproving, setIsApproving] = useState(false);
+  const [isHitlApproving, setIsHitlApproving] = useState(false);
   const [isApprovingJournal, setIsApprovingJournal] = useState(false);
   const [isApprovingTds, setIsApprovingTds] = useState(false);
   const [isRejecting, setIsRejecting] = useState(false);
@@ -286,6 +291,7 @@ export default function InvoiceWorkspace({
   const [periodResolution, setPeriodResolution] = useState<string>("NONE");
   const [periodReason, setPeriodReason] = useState<string>("");
   const [booksClosedDate, setBooksClosedDate] = useState<string | null>(null);
+  const [periodInfo, setPeriodInfo] = useState<any>(null);
   const [periodModalOpen, setPeriodModalOpen] = useState<boolean>(false);
 
   useEffect(() => {
@@ -294,17 +300,23 @@ export default function InvoiceWorkspace({
     async function loadData() {
       try {
         setLoading(true);
+        const fetchInvoicePromise =
+          mode === "hitl_extraction"
+            ? getHitlExtraction(invoiceId)
+            : mode === "hitl_final"
+            ? getHitlFinal(invoiceId)
+            : getInvoice(invoiceId);
+
         // 1. Fetch invoice first for instant rendering (<50ms)
-        const invData = await getInvoice(invoiceId);
+        const invData = await fetchInvoicePromise;
         setInvoice(invData);
+        setBooksClosedDate(invData.books_closed_through_date || null);
+        setPeriodInfo(invData.period_info || null);
         setPeriodResolution(invData.period_resolution || "NONE");
         setPeriodReason(invData.period_resolution_reason || "");
-        setPostingDate(invData.posting_date || "");
+        setPostingDate(invData.posting_date || invData.document_date || "");
 
-        // 2. Fetch tenant closed date and Zoho master data
-        getTenantClosedPeriod()
-          .then((t) => setBooksClosedDate(t.books_closed_through_date || null))
-          .catch(() => null);
+        // 2. Fetch Zoho master data and sidebar list in background without blocking UI
         getZohoMasterData()
           .then((m) => setZohoAccounts(m.accounts || []))
           .catch(() => null);
@@ -318,11 +330,13 @@ export default function InvoiceWorkspace({
           .then(setVendorStatus)
           .catch(() => null);
 
-        // If still in initial stages, route to processing page
+        // If still in initial stages, route to processing page (only in standard user modes)
         if (
-          invData.status === "PENDING" ||
-          invData.status === "PROCESSING_VLM" ||
-          invData.status === "PROCESSING_ACCOUNTING"
+          mode !== "hitl_extraction" &&
+          mode !== "hitl_final" &&
+          (invData.status === "PENDING" ||
+            invData.status === "PROCESSING_VLM" ||
+            invData.status === "PROCESSING_ACCOUNTING")
         ) {
           router.push(`/finance/invoices/${invoiceId}/processing`);
           return;
@@ -339,7 +353,6 @@ export default function InvoiceWorkspace({
             ? (invData.current_vlm_output as any).data
             : (invData.current_vlm_output as ExtractedInvoiceData) || {};
 
-        // Merge raw extraction with user-edited fields, ensuring line_items and totals are never wiped
         // Merge raw extraction with user-edited fields, ensuring line_items and totals are never wiped
         const extracted: ExtractedInvoiceData = {
           ...rawData,
@@ -1273,6 +1286,55 @@ export default function InvoiceWorkspace({
     }
   };
 
+  const handleApproveHitlExtractionAction = async () => {
+    try {
+      setIsHitlApproving(true);
+      setError(null);
+
+      // Gate 1 Closed Period Pre-flight Check
+      if (periodInfo?.is_closed_period && periodResolution === "NONE") {
+        setPeriodModalOpen(true);
+        setError(`This invoice document date falls in a closed accounting period (Books closed through ${periodInfo.books_closed_through_date_formatted || booksClosedDate}). Please resolve the accounting period before approving.`);
+        setIsHitlApproving(false);
+        return;
+      }
+
+      await approveHitlExtraction(invoiceId, formData, postingDate || null, periodResolution, periodReason || null);
+      setActionNotice("Stage 1 Extraction approved! Resuming AI Accounting & TDS classification...");
+      setTimeout(() => {
+        router.push("/");
+      }, 1500);
+    } catch (err: any) {
+      setError(err.message || "Failed to approve extraction");
+    } finally {
+      setIsHitlApproving(false);
+    }
+  };
+
+  const handleApproveHitlFinalAction = async () => {
+    try {
+      setIsHitlApproving(true);
+      setError(null);
+
+      if (periodInfo?.is_closed_period && periodResolution === "NONE") {
+        setPeriodModalOpen(true);
+        setError(`This invoice posting date falls in a closed accounting period (Books closed through ${periodInfo.books_closed_through_date_formatted || booksClosedDate}). An authorized exception is required.`);
+        setIsHitlApproving(false);
+        return;
+      }
+
+      await approveHitlFinal(invoiceId, accountingData, journalEntry, postingDate || null, periodResolution, periodReason || null);
+      setActionNotice("Stage 2 Finance review approved! Invoice status set to HITL_COMPLETED awaiting Finance approval.");
+      setTimeout(() => {
+        router.push("/");
+      }, 1500);
+    } catch (err: any) {
+      setError(err.message || "Failed to approve final review");
+    } finally {
+      setIsHitlApproving(false);
+    }
+  };
+
   // Real Approval Action Handler with Hard Block & Non-blocking Warning validation
   const handleApprove = async () => {
     // 1. Check for Hard Blocks
@@ -1352,21 +1414,8 @@ export default function InvoiceWorkspace({
     }
   };
 
-  // Real Zoho Export Action Handler
+  // Real Zoho Export Action Handler (Approve & Export directly in one flow)
   const handleExport = async () => {
-    if (invoice?.approval_status !== "APPROVED") {
-      setError("Invoice must be approved by Finance before exporting to Zoho Books.");
-      return;
-    }
-
-    const isJournalApproved =
-      journalEntry &&
-      (journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED");
-    if (!isJournalApproved) {
-      setError("Invoice cannot be exported without an approved, balanced General Ledger journal entry.");
-      return;
-    }
-
     // Strict Vendor match guard: Stop export if vendor is not matched in Zoho
     if (vendorStatus && vendorStatus.is_zoho_connected && vendorStatus.match_status !== "MATCHED") {
       setVendorModalOpen(true);
@@ -1378,6 +1427,16 @@ export default function InvoiceWorkspace({
       setIsExporting(true);
       setError(null);
 
+      // 1. If invoice is not yet marked approved, execute approval first seamlessly
+      if (invoice?.approval_status !== "APPROVED") {
+        try {
+          await approveInvoice(invoiceId);
+        } catch (appErr: any) {
+          console.warn("Auto-approval on export note:", appErr);
+        }
+      }
+
+      // 2. Export to Zoho Books
       const res = await exportInvoiceToZoho(invoiceId);
       setActionNotice(`Successfully exported to Zoho Books! Bill #${res.zoho_bill_number || res.zoho_bill_id}`);
 
@@ -1463,6 +1522,7 @@ export default function InvoiceWorkspace({
             <ArrowLeft size={14} />
             <span>Invoices</span>
           </button>
+
           <button
             onClick={() => router.push("/dashboard")}
             className="btn btn-secondary"
@@ -1642,6 +1702,82 @@ export default function InvoiceWorkspace({
                     : invoice?.export_status === "EXPORTED"
                     ? "Exported to Zoho ✓"
                     : "Export to Zoho"}
+                </span>
+              </button>
+            </>
+          )}
+
+          {/* HITL Stage 1 Extraction Action Button */}
+          {mode === "hitl_extraction" && (
+            <>
+              <button
+                type="button"
+                onClick={() => router.push("/")}
+                className="btn btn-secondary"
+                style={{ padding: "8px 14px", fontSize: "13px" }}
+              >
+                <ArrowLeft size={14} />
+                <span>Back to Queue</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleApproveHitlExtractionAction}
+                disabled={isHitlApproving}
+                className="btn btn-primary"
+                style={{
+                  padding: "8px 20px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  background: "linear-gradient(135deg, #16a34a 0%, #15803d 100%)",
+                  color: "#ffffff",
+                  boxShadow: "0 2px 6px rgba(22, 163, 74, 0.35)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+              >
+                <CheckCircle2 size={15} />
+                <span>
+                  {isHitlApproving ? "Approving & Running Accounting..." : "Approve & Continue to Accounting"}
+                </span>
+              </button>
+            </>
+          )}
+
+          {/* HITL Stage 2 Final Review Action Button */}
+          {mode === "hitl_final" && (
+            <>
+              <button
+                type="button"
+                onClick={() => router.push("/")}
+                className="btn btn-secondary"
+                style={{ padding: "8px 14px", fontSize: "13px" }}
+              >
+                <ArrowLeft size={14} />
+                <span>Back to Queue</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleApproveHitlFinalAction}
+                disabled={isHitlApproving}
+                className="btn btn-primary"
+                style={{
+                  padding: "8px 20px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  background: "linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%)",
+                  color: "#ffffff",
+                  boxShadow: "0 2px 6px rgba(37, 99, 235, 0.35)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+              >
+                <CheckCircle2 size={15} />
+                <span>
+                  {isHitlApproving ? "Finalizing Review..." : "Approve & Finalize HITL Review"}
                 </span>
               </button>
             </>
@@ -1871,70 +2007,79 @@ export default function InvoiceWorkspace({
                       </h3>
                     </div>
 
-                    {periodResolution === "PRIOR_PERIOD_EXCEPTION" ? (
-                      <span
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "5px",
-                          padding: "4px 10px",
-                          borderRadius: "12px",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          background: "#fef3c7",
-                          color: "#92400e",
-                          border: "1px solid #fde68a",
-                        }}
-                      >
-                        <ShieldCheck size={12} />
-                        <span>Prior-Period Exception Authorized</span>
-                      </span>
-                    ) : periodResolution === "POST_TO_OPEN_PERIOD" ? (
-                      <span
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "5px",
-                          padding: "4px 10px",
-                          borderRadius: "12px",
-                          fontSize: "11px",
-                          fontWeight: "700",
-                          background: "#dcfce7",
-                          color: "#166534",
-                          border: "1px solid #bbf7d0",
-                        }}
-                      >
-                        <CheckCircle2 size={12} />
-                        <span>Posted to Open Period</span>
-                      </span>
-                    ) : null}
+                    {periodInfo?.is_closed_period && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "5px",
+                            padding: "4px 10px",
+                            borderRadius: "12px",
+                            fontSize: "11px",
+                            fontWeight: "700",
+                            background: periodResolution === "PRIOR_PERIOD_EXCEPTION" ? "#fef3c7" : periodResolution === "POST_TO_OPEN_PERIOD" ? "#dcfce7" : "#fee2e2",
+                            color: periodResolution === "PRIOR_PERIOD_EXCEPTION" ? "#92400e" : periodResolution === "POST_TO_OPEN_PERIOD" ? "#166534" : "#991b1b",
+                            border: `1px solid ${periodResolution === "PRIOR_PERIOD_EXCEPTION" ? "#fde68a" : periodResolution === "POST_TO_OPEN_PERIOD" ? "#bbf7d0" : "#fca5a5"}`,
+                          }}
+                        >
+                          <AlertTriangle size={12} />
+                          <span>
+                            {periodResolution === "PRIOR_PERIOD_EXCEPTION"
+                              ? "Prior-Period Exception Approved"
+                              : periodResolution === "POST_TO_OPEN_PERIOD"
+                              ? "Posting to Open Period"
+                              : "Closed Period Detected"}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setPeriodModalOpen(true)}
+                          className="btn btn-secondary"
+                          style={{ padding: "3px 10px", fontSize: "11px", height: "auto" }}
+                        >
+                          {periodResolution === "NONE" ? "Resolve Period" : "Change Resolution"}
+                        </button>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Prominent Closed Period Info Banner if lock date is present */}
-                  {booksClosedDate && (
+                  {/* Prominent Closed Period Warning Banner */}
+                  {periodInfo?.is_closed_period && (
                     <div
                       style={{
-                        background: "rgba(99, 102, 241, 0.05)",
-                        border: "1px solid rgba(99, 102, 241, 0.2)",
+                        background: "#fffbeb",
+                        border: "1px solid #fde68a",
                         borderRadius: "8px",
-                        padding: "8px 14px",
-                        marginBottom: "14px",
+                        padding: "12px 16px",
+                        marginBottom: "16px",
                         display: "flex",
-                        alignItems: "center",
-                        justifyContent: "space-between",
-                        fontSize: "12px",
-                        color: "var(--text-secondary)",
+                        alignItems: "flex-start",
+                        gap: "10px",
                       }}
                     >
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-                        <BookOpen size={14} color="var(--accent)" />
-                        <span>Company Books Closed Through: <strong style={{ color: "var(--text-primary)" }}>{formatToIndianDate(booksClosedDate)}</strong></span>
-                      </div>
-                      {postingDate && (
-                        <div>
-                          Effective Accounting Date: <strong style={{ color: "var(--accent)" }}>{formatToIndianDate(postingDate)}</strong>
+                      <AlertTriangle size={18} color="#d97706" style={{ marginTop: "2px", flexShrink: 0 }} />
+                      <div style={{ flex: 1, fontSize: "13px", color: "#92400e" }}>
+                        <div style={{ fontWeight: "700", marginBottom: "3px" }}>
+                          Closed Accounting Period (Audit Lock Date: {periodInfo.books_closed_through_date_formatted || booksClosedDate})
                         </div>
-                      )}
+                        <div>
+                          The physical invoice date ({formatToIndianDate(formData.invoice_date)}) falls in a closed financial audit period.
+                          {periodResolution === "POST_TO_OPEN_PERIOD" ? (
+                            <span style={{ color: "#166534", fontWeight: "600", marginLeft: "4px" }}>
+                              Posting to open period ({formatToIndianDate(postingDate)}).
+                            </span>
+                          ) : periodResolution === "PRIOR_PERIOD_EXCEPTION" ? (
+                            <span style={{ color: "#92400e", fontWeight: "600", marginLeft: "4px" }}>
+                              Prior-Period Exception authorized with audit reason.
+                            </span>
+                          ) : (
+                            <span style={{ color: "#b91c1c", fontWeight: "600", marginLeft: "4px" }}>
+                              Please select a period resolution before Stage 1 approval.
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -1960,13 +2105,24 @@ export default function InvoiceWorkspace({
                       />
                     </div>
                     <div>
-                      <label className="form-label">Accounting Posting Date</label>
+                      <label className="form-label" style={{ color: periodInfo?.is_closed_period ? "var(--accent)" : "inherit", fontWeight: periodInfo?.is_closed_period ? "700" : "normal" }}>
+                        Accounting Posting Date {periodInfo?.is_closed_period ? " (GL / Zoho)" : ""}
+                      </label>
                       <input
                         type="text"
                         className="form-input"
                         value={postingDate || formData.invoice_date || ""}
-                        placeholder="DD-MM-YYYY"
-                        onChange={(e) => setPostingDate(e.target.value)}
+                        placeholder="DD-MM-YYYY or YYYY-MM-DD"
+                        style={{
+                          borderColor: periodInfo?.is_closed_period ? "var(--accent)" : undefined,
+                          background: periodInfo?.is_closed_period ? "rgba(99, 102, 241, 0.05)" : undefined,
+                        }}
+                        onChange={(e) => {
+                          setPostingDate(e.target.value);
+                          if (periodResolution === "NONE" && periodInfo?.is_closed_period) {
+                            setPeriodResolution("POST_TO_OPEN_PERIOD");
+                          }
+                        }}
                       />
                     </div>
                     <div>
@@ -2305,7 +2461,9 @@ export default function InvoiceWorkspace({
                         <tr style={{ background: "#f8fafc", borderBottom: "2px solid #e2e8f0", color: "#334155", textAlign: "left", fontWeight: "600" }}>
                           <th style={{ padding: "10px 8px", width: "36px", textAlign: "center" }}>#</th>
                           <th style={{ padding: "10px 8px", minWidth: "220px" }}>Description</th>
-                          <th style={{ padding: "10px 8px", minWidth: "210px" }}>Expense Account (COA)</th>
+                          {mode !== "hitl_extraction" && (
+                            <th style={{ padding: "10px 8px", minWidth: "210px" }}>Expense Account (COA)</th>
+                          )}
                           <th style={{ padding: "10px 8px", minWidth: "90px" }}>HSN/SAC</th>
                           <th style={{ padding: "10px 8px", minWidth: "65px" }}>Qty</th>
                           <th style={{ padding: "10px 8px", minWidth: "65px" }}>Unit</th>
@@ -2342,6 +2500,7 @@ export default function InvoiceWorkspace({
                                     onChange={(e) => handleLineItemChange(idx, "description", e.target.value)}
                                   />
                                 </td>
+                                {mode !== "hitl_extraction" && (
                                   <td style={{ padding: "6px" }}>
                                     {zohoAccounts && zohoAccounts.length > 0 ? (
                                       <div>
@@ -2401,7 +2560,7 @@ export default function InvoiceWorkspace({
                                           className="table-input"
                                           style={{ fontSize: "11px", fontWeight: "600", color: "#1e293b" }}
                                           value={acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || ""}
-                                          placeholder="Approved Account"
+                                          placeholder="e.g. Purchase of Goods / Raw Materials"
                                           onChange={(e) => {
                                             handleAccountingItemChange(idx, "final_account_name", e.target.value);
                                             handleAccountingItemChange(idx, "approved_account_name", e.target.value);
@@ -2417,6 +2576,7 @@ export default function InvoiceWorkspace({
                                       </div>
                                     )}
                                   </td>
+                                )}
                                 <td style={{ padding: "6px" }}>
                                   <input
                                     type="text"
@@ -2806,7 +2966,7 @@ export default function InvoiceWorkspace({
                 </section>
 
                 {/* 8. STATUTORY TDS ASSESSMENT */}
-                {tdsResult && (
+                {mode !== "hitl_extraction" && tdsResult && (
                   <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -3266,34 +3426,34 @@ export default function InvoiceWorkspace({
                 </section>
 
                 {/* 10. INPUT TAX CREDIT (ITC) */}
-                <section
-                  style={{
-                    borderTop: "1px solid var(--border-subtle)",
-                    paddingTop: "18px",
-                  }}
-                >
-                  <div
+                {mode !== "hitl_extraction" && itcResult && (
+                  <section
                     style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      marginBottom: "12px",
+                      borderTop: "1px solid var(--border-subtle)",
+                      paddingTop: "18px",
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                      <Landmark size={16} color="var(--accent)" />
-                      <h3
-                        style={{
-                          fontSize: "14px",
-                          fontWeight: "700",
-                          letterSpacing: "0.02em",
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        10. Input Tax Credit (ITC)
-                      </h3>
-                    </div>
-                    {itcResult && (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                        <Landmark size={16} color="var(--accent)" />
+                        <h3
+                          style={{
+                            fontSize: "14px",
+                            fontWeight: "700",
+                            letterSpacing: "0.02em",
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          10. Input Tax Credit (ITC)
+                        </h3>
+                      </div>
                       <span
                         className={`badge ${
                           itcResult.status === "ELIGIBLE"
@@ -3310,50 +3470,50 @@ export default function InvoiceWorkspace({
                           ? "✗ INELIGIBLE"
                           : (itcResult.status || "REVIEW REQUIRED")}
                       </span>
-                    )}
-                  </div>
-
-                  {/* Concise ITC Card */}
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-                      gap: "12px",
-                      background: "#fafafa",
-                      padding: "14px 16px",
-                      borderRadius: "var(--radius-sm)",
-                      border: "1px solid var(--border-subtle)",
-                      fontSize: "12px",
-                    }}
-                  >
-                    <div>
-                      <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>ITC Status</div>
-                      <div style={{ fontWeight: "700", fontSize: "13px" }}>
-                        {itcResult?.status === "ELIGIBLE"
-                          ? "Eligible (Full ITC)"
-                          : itcResult?.status === "INELIGIBLE"
-                          ? "Ineligible / Blocked"
-                          : (itcResult?.status || "Standard ITC Available")}
-                      </div>
                     </div>
 
-                    <div>
-                      <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>Applicable ITC Amount</div>
-                      <div style={{ fontWeight: "700", fontSize: "14px", color: "#15803d" }}>
-                        ₹{(itcResult?.net_itc_available ?? itcResult?.eligible_itc ?? itcResult?.eligible_amount ?? formData.tax_total ?? 0).toLocaleString()}
-                      </div>
-                    </div>
-
-                    {itcResult?.rule_reference && (
+                    {/* Concise ITC Card */}
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                        gap: "12px",
+                        background: "#fafafa",
+                        padding: "14px 16px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-subtle)",
+                        fontSize: "12px",
+                      }}
+                    >
                       <div>
-                        <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>Statutory Provision</div>
-                        <div style={{ fontWeight: "600", fontSize: "12px", color: "var(--text-primary)" }}>
-                          {itcResult.rule_reference}
+                        <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>ITC Status</div>
+                        <div style={{ fontWeight: "700", fontSize: "13px" }}>
+                          {itcResult?.status === "ELIGIBLE"
+                            ? "Eligible (Full ITC)"
+                            : itcResult?.status === "INELIGIBLE"
+                            ? "Ineligible / Blocked"
+                            : (itcResult?.status || "Standard ITC Available")}
                         </div>
                       </div>
-                    )}
-                  </div>
-                </section>
+
+                      <div>
+                        <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>Applicable ITC Amount</div>
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: "#15803d" }}>
+                          ₹{(itcResult?.net_itc_available ?? itcResult?.eligible_itc ?? itcResult?.eligible_amount ?? formData.tax_total ?? 0).toLocaleString()}
+                        </div>
+                      </div>
+
+                      {itcResult?.rule_reference && (
+                        <div>
+                          <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>Statutory Provision</div>
+                          <div style={{ fontWeight: "600", fontSize: "12px", color: "var(--text-primary)" }}>
+                            {itcResult.rule_reference}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </section>
+                )}
 
                 {/* 11. FINANCIAL VALIDATION */}
                 <section
@@ -3435,7 +3595,7 @@ export default function InvoiceWorkspace({
                 </section>
 
                 {/* 12. GENERAL LEDGER JOURNAL PREVIEW */}
-                {journalEntry && (
+                {mode !== "hitl_extraction" && journalEntry && (
                   <section
                     style={{
                       borderTop: "1px solid var(--border-subtle)",
@@ -3829,13 +3989,13 @@ export default function InvoiceWorkspace({
                                     fontFamily: "monospace",
                                     padding: "2px 5px",
                                     borderRadius: "4px",
-                                    background: line.provenance === "HITL_OVERRIDE" || line.provenance === "CUSTOMER_EDIT" || line.provenance === "MANUAL_EDIT" ? "#fef3c7" : "#f1f5f9",
-                                    color: line.provenance === "HITL_OVERRIDE" || line.provenance === "CUSTOMER_EDIT" || line.provenance === "MANUAL_EDIT" ? "#92400e" : "var(--text-secondary)",
+                                    background: line.provenance === "HITL_OVERRIDE" || line.provenance === "CUSTOMER_EDIT" ? "#fef3c7" : "#f1f5f9",
+                                    color: line.provenance === "HITL_OVERRIDE" || line.provenance === "CUSTOMER_EDIT" ? "#92400e" : "var(--text-secondary)",
                                     fontWeight: "600",
                                     fontSize: "9px",
                                   }}
                                 >
-                                  {line.provenance === "HITL_OVERRIDE" ? "EDITED" : (line.provenance || "EDITED")}
+                                  {line.provenance || (mode === "customer" ? "CUSTOMER_EDIT" : "HITL_OVERRIDE")}
                                 </span>
                               </td>
                               <td style={{ padding: "6px" }}>
@@ -3937,7 +4097,7 @@ export default function InvoiceWorkspace({
                   />
                 </section>
 
-                {/* 12. SAVE CHANGES (WORKING BUTTON) */}
+                {/* 12. SAVE CHANGES & APPROVE / SYNC TO ZOHO BUTTONS */}
                 <section
                   style={{
                     borderTop: "1px solid var(--border-subtle)",
@@ -3946,214 +4106,97 @@ export default function InvoiceWorkspace({
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
+                    flexWrap: "wrap",
+                    gap: "12px",
                   }}
                 >
-                  <div>
+                  <div style={{ flex: 1, minWidth: "240px" }}>
                     {saveSuccess && (
                       <span style={{ color: "var(--success)", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
                         <CheckCircle2 size={16} /> Changes saved to database!
                       </span>
                     )}
+                    {actionNotice && (
+                      <span style={{ color: "var(--success)", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <CheckCircle2 size={16} /> {actionNotice}
+                      </span>
+                    )}
                     {error && (
-                      <span style={{ color: "var(--danger)", fontSize: "13px" }}>
-                        {error}
+                      <span style={{ color: "var(--danger)", fontSize: "13px", display: "flex", alignItems: "center", gap: "6px" }}>
+                        <AlertCircle size={16} /> {error}
                       </span>
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleSaveChanges}
-                    disabled={isSaving}
-                    className="btn btn-primary"
-                    style={{ padding: "10px 24px", fontSize: "14px" }}
-                  >
-                    <Save size={15} />
-                    <span>{isSaving ? "Saving..." : "Save Changes"}</span>
-                  </button>
-                </section>
-              </div>
-            </div>
-          </div>
-
-          {/* ==================================================== */}
-          {/* BOTTOM: PROCESSING WORKFLOW (3 EQUAL COLUMNS) */}
-          {/* ==================================================== */}
-          <div style={{ marginTop: "40px" }}>
-            <div style={{ marginBottom: "16px" }}>
-              <h2 style={{ fontSize: "18px", fontWeight: "700", letterSpacing: "-0.02em" }}>
-                Processing Workflow
-              </h2>
-              <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-                End-to-end invoice lifecycle from ingestion to Zoho export.
-              </p>
-            </div>
-
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(3, 1fr)",
-                gap: "20px",
-              }}
-            >
-              {/* 1. INCOMING INVOICES */}
-              <div className="card" style={{ padding: "20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", paddingBottom: "12px", borderBottom: "1px solid var(--border-subtle)" }}>
-                  <div style={{ fontSize: "13px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                    Incoming Invoices
-                  </div>
-                  <span className="badge badge-uploaded">{incomingInvoices.length}</span>
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "300px", overflowY: "auto" }}>
-                  {incomingInvoices.length > 0 ? (
-                    incomingInvoices.map((item) => (
-                      <div
-                        key={item.id}
-                        onClick={() => router.push(`/finance/invoices/${item.id}/processing`)}
-                        style={{
-                          padding: "12px",
-                          borderRadius: "var(--radius-sm)",
-                          background: item.id === invoiceId ? "#f0f7ff" : "var(--bg-main)",
-                          border: item.id === invoiceId ? "1px solid var(--accent)" : "1px solid var(--border-subtle)",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)", marginBottom: "4px" }}>
-                          {item.file_name}
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--text-secondary)" }}>
-                          <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                            <Clock size={11} /> {new Date(item.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                          </span>
-                          <span className="badge badge-uploaded" style={{ fontSize: "10px" }}>
-                            {item.status}
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div style={{ textAlign: "center", padding: "30px 10px", color: "var(--text-tertiary)", fontSize: "13px" }}>
-                      No pending incoming invoices.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* 2. EXTRACTED INVOICES */}
-              <div className="card" style={{ padding: "20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", paddingBottom: "12px", borderBottom: "1px solid var(--border-subtle)" }}>
-                  <div style={{ fontSize: "13px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                    Extracted Invoices
-                  </div>
-                  <span className="badge badge-success">{extractedInvoices.length}</span>
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "300px", overflowY: "auto" }}>
-                  {extractedInvoices.length > 0 ? (
-                    extractedInvoices.map((item) => (
-                      <div
-                        key={item.id}
-                        onClick={() => router.push(`/finance/invoices/${item.id}`)}
-                        style={{
-                          padding: "12px",
-                          borderRadius: "var(--radius-sm)",
-                          background: item.id === invoiceId ? "#f0fdf4" : "var(--bg-main)",
-                          border: item.id === invoiceId ? "1px solid var(--success)" : "1px solid var(--border-subtle)",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                          <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)" }}>
-                            {item.invoice_number ? `INV #${item.invoice_number}` : item.file_name}
-                          </span>
-                          {item.total_amount && (
-                            <span style={{ fontSize: "12px", fontWeight: "600" }}>
-                              ₹{item.total_amount.toLocaleString()}
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--text-secondary)" }}>
-                          <span>{item.vendor_name || item.file_name}</span>
-                          <span className="badge badge-success" style={{ fontSize: "10px" }}>
-                            COMPLETED
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div style={{ textAlign: "center", padding: "30px 10px", color: "var(--text-tertiary)", fontSize: "13px" }}>
-                      No extracted invoices yet.
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* 3. EXPORTED TO ZOHO */}
-              <div className="card" style={{ padding: "20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px", paddingBottom: "12px", borderBottom: "1px solid var(--border-subtle)" }}>
-                  <div style={{ fontSize: "13px", fontWeight: "700", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                    Exported to Zoho
-                  </div>
-                  <span className="badge badge-uploaded" style={{ background: "#e8f4fd", color: "#0066cc", border: "1px solid #cce5ff" }}>
-                    {exportedInvoices.length}
-                  </span>
-                </div>
-
-                <div style={{ display: "flex", flexDirection: "column", gap: "10px", maxHeight: "300px", overflowY: "auto" }}>
-                  {exportedInvoices.length > 0 ? (
-                    exportedInvoices.map((item) => (
-                      <div
-                        key={item.id}
-                        onClick={() => router.push(`/finance/invoices/${item.id}`)}
-                        style={{
-                          padding: "12px",
-                          borderRadius: "var(--radius-sm)",
-                          background: item.id === invoiceId ? "#f0f7ff" : "var(--bg-main)",
-                          border: item.id === invoiceId ? "1px solid var(--accent)" : "1px solid var(--border-subtle)",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
-                          <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)" }}>
-                            {item.zoho_bill_number ? `Bill #${item.zoho_bill_number}` : (item.invoice_number ? `INV #${item.invoice_number}` : item.file_name)}
-                          </span>
-                          {item.total_amount && (
-                            <span style={{ fontSize: "12px", fontWeight: "600", color: "var(--text-primary)" }}>
-                              ₹{item.total_amount.toLocaleString()}
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "11px", color: "var(--text-secondary)" }}>
-                          <span>{item.vendor_name || item.file_name}</span>
-                          <span className="badge" style={{ fontSize: "10px", background: "#e8f4fd", color: "#0066cc", border: "1px solid #cce5ff" }}>
-                            ZOHO BILL ✓
-                          </span>
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        padding: "36px 16px",
-                        textAlign: "center",
-                        color: "var(--text-secondary)",
-                      }}
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <button
+                      type="button"
+                      onClick={handleSaveChanges}
+                      disabled={isSaving}
+                      className="btn btn-secondary"
+                      style={{ padding: "10px 18px", fontSize: "13px" }}
                     >
-                      <Send size={24} color="var(--text-tertiary)" style={{ marginBottom: "8px", opacity: 0.5 }} />
-                      <div style={{ fontSize: "12px", fontWeight: "500", color: "var(--text-secondary)" }}>
-                        No invoices exported yet.
-                      </div>
-                      <div style={{ fontSize: "11px", color: "var(--text-tertiary)", marginTop: "2px" }}>
-                        Approve an invoice and click "Export to Zoho" to sync.
-                      </div>
-                    </div>
-                  )}
-                </div>
+                      <Save size={15} />
+                      <span>{isSaving ? "Saving..." : "Save Changes"}</span>
+                    </button>
+
+                    {mode === "internal" && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleApprove}
+                          disabled={isApproving || invoice?.approval_status === "APPROVED"}
+                          className="btn btn-primary"
+                          style={{
+                            padding: "10px 20px",
+                            fontSize: "13px",
+                            background:
+                              invoice?.approval_status === "APPROVED"
+                                ? "#34c759"
+                                : "linear-gradient(135deg, #0284c7 0%, #0369a1 100%)",
+                            color: "#ffffff",
+                          }}
+                        >
+                          <Check size={15} />
+                          <span>
+                            {isApproving
+                              ? "Approving..."
+                              : invoice?.approval_status === "APPROVED"
+                              ? "Approved ✓"
+                              : "Approve"}
+                          </span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleExport}
+                          disabled={isExporting || invoice?.export_status === "EXPORTED"}
+                          className="btn btn-primary"
+                          style={{
+                            padding: "10px 22px",
+                            fontSize: "13px",
+                            fontWeight: "600",
+                            background:
+                              invoice?.export_status === "EXPORTED"
+                                ? "#16a34a"
+                                : "linear-gradient(135deg, #059669 0%, #047857 100%)",
+                            color: "#ffffff",
+                            boxShadow: "0 2px 6px rgba(5, 150, 105, 0.3)",
+                          }}
+                        >
+                          <Send size={15} />
+                          <span>
+                            {isExporting
+                              ? "Syncing to Zoho..."
+                              : invoice?.export_status === "EXPORTED"
+                              ? "Synced to Zoho Books ✓"
+                              : "Approve & Sync to Zoho"}
+                          </span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </section>
               </div>
             </div>
           </div>

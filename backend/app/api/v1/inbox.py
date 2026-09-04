@@ -25,8 +25,14 @@ async def get_staged_documents(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieves staged invoices waiting for review, strictly scoped to the authenticated tenant."""
+    """Retrieves staged invoices waiting for review, strictly scoped to the authenticated user and tenant."""
     tenant_id = current_user.tenant_id
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(current_user.id))
+    except Exception:
+        parsed_user_id = None
+
     query = (
         select(Invoice)
         .where(
@@ -37,8 +43,12 @@ async def get_staged_documents(
                 Invoice.financial_relevance.is_(None),
             ),
         )
-        .order_by(Invoice.created_at.desc())
     )
+
+    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
+        query = query.where(Invoice.owner_user_id == parsed_user_id)
+
+    query = query.order_by(Invoice.created_at.desc())
     result = await db.execute(query)
     staged = result.scalars().all()
     return staged
@@ -48,12 +58,19 @@ async def get_staged_documents(
 async def process_staged_document(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Triggers invoice extraction and Stage 3 accounting pipeline for a staged document belonging to the tenant."""
     tenant_id = current_user.tenant_id
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER"):
+        try:
+            parsed_uid = uuid.UUID(str(current_user.id))
+            query = query.where(Invoice.owner_user_id == parsed_uid)
+        except Exception:
+            pass
+
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -89,12 +106,19 @@ async def process_staged_document(
 async def delete_staged_document(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Deletes a staged invoice from the database and Supabase Storage, strictly verifying tenant ownership."""
     tenant_id = current_user.tenant_id
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER"):
+        try:
+            parsed_uid = uuid.UUID(str(current_user.id))
+            query = query.where(Invoice.owner_user_id == parsed_uid)
+        except Exception:
+            pass
+
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -125,23 +149,32 @@ async def delete_staged_document(
 @router.post("/inbox/poll")
 async def poll_email_inbox(
     window_hours: int = 24,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Triggers live polling of the tenant's configured IMAP mailbox to ingest new attachments."""
+    """Triggers live polling of the authenticated user's configured IMAP mailbox to ingest new attachments."""
     import time
     start_total = time.perf_counter()
     tenant_id = current_user.tenant_id
+    user_id = current_user.id
+    try:
+        parsed_user_id = uuid.UUID(str(user_id))
+    except Exception:
+        parsed_user_id = None
     
-    # Find email config for this tenant
-    query = select(Integration).where(Integration.tenant_id == tenant_id)
+    # Find email config for this user & tenant
+    if parsed_user_id:
+        query = select(Integration).where(Integration.tenant_id == tenant_id, Integration.user_id == parsed_user_id)
+    else:
+        query = select(Integration).where(Integration.tenant_id == tenant_id)
+
     result = await db.execute(query)
     integration = result.scalar_one_or_none()
 
     if not integration or integration.status != "connected" or not integration.config:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Corporate email integration is not configured for your tenant. Please connect your inbox in Settings.",
+            detail="Corporate email integration is not configured for your tenant or user account. Please connect your inbox in Settings.",
         )
 
     try:
@@ -269,10 +302,11 @@ async def poll_email_inbox(
             rel_val = classification_res.financial_relevance.value if hasattr(classification_res.financial_relevance, "value") else str(classification_res.financial_relevance)
             type_val = classification_res.document_type.value if hasattr(classification_res.document_type, "value") else str(classification_res.document_type)
 
-            # Save record as STAGED invoice with tenant_id explicitly set
+            # Save record as STAGED invoice with tenant_id and owner_user_id
             new_invoice = Invoice(
                 id=invoice_id,
                 tenant_id=tenant_id,
+                owner_user_id=parsed_user_id,
                 file_path=storage_path,
                 file_name=attachment["filename"],
                 file_size=len(attachment["file_bytes"]),

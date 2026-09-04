@@ -19,7 +19,7 @@ export default function HitlDashboard() {
     return () => clearInterval(interval);
   }, []);
 
-  const fetchData = async (retryCount = 0) => {
+  const fetchData = async () => {
     try {
       const [allData, historyData] = await Promise.all([
         listInvoices(),
@@ -27,7 +27,7 @@ export default function HitlDashboard() {
       ]);
 
       // Include all invoices that need review or are actively extracting
-      const pendingInvoices = (allData || []).filter(
+      const pendingInvoices = allData.filter(
         (inv) =>
           inv.status === "HITL_REVIEW" ||
           inv.status === "FINAL_HITL_REVIEW" ||
@@ -39,17 +39,6 @@ export default function HitlDashboard() {
       setHistoryInvoices(historyData || []);
       setError(null);
     } catch (err: any) {
-      if (
-        (err.message?.includes("expired") || err.message?.includes("token") || err.message?.includes("401")) &&
-        retryCount === 0 &&
-        typeof window !== "undefined"
-      ) {
-        localStorage.removeItem("token");
-        localStorage.removeItem("auth_token");
-        localStorage.removeItem("dev_auth_token");
-        setTimeout(() => fetchData(1), 300);
-        return;
-      }
       setError(err.message);
     } finally {
       setLoading(false);

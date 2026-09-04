@@ -27,7 +27,7 @@ class InvoiceStatusResponse(BaseModel):
     error_message: Optional[str] = None
     confidence_score: Optional[float] = None
     accounting_confidence: Optional[float] = None
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 class InvoiceResponse(BaseModel):
@@ -35,6 +35,7 @@ class InvoiceResponse(BaseModel):
 
     id: UUID
     tenant_id: Optional[str] = "default-tenant-001"
+    owner_user_id: Optional[UUID] = None
     file_path: str
     file_name: str
     file_size: int
@@ -88,6 +89,7 @@ class InvoiceListItemResponse(BaseModel):
 
     id: UUID
     tenant_id: Optional[str] = "default-tenant-001"
+    owner_user_id: Optional[UUID] = None
     file_name: str
     file_size: int
     mime_type: str

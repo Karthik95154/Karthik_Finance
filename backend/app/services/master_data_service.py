@@ -17,14 +17,30 @@ class MasterDataService:
         self,
         tenant_id: str,
         db: AsyncSession,
+        user_id: Optional[Any] = None,
     ) -> ZohoConnection:
-        """Retrieves active ZohoConnection for tenant or returns a placeholder record, prioritizing CONNECTED status."""
-        query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id)
+        """Retrieves active ZohoConnection for user/tenant or returns a placeholder record, prioritizing CONNECTED status."""
+        import uuid
+        parsed_user_id = None
+        if user_id:
+            try:
+                parsed_user_id = uuid.UUID(str(user_id)) if not isinstance(user_id, uuid.UUID) else user_id
+            except Exception:
+                parsed_user_id = None
+
+        if parsed_user_id:
+            query = select(ZohoConnection).where(
+                ZohoConnection.tenant_id == tenant_id,
+                ZohoConnection.user_id == parsed_user_id,
+            )
+        else:
+            query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id)
+
         result = await db.execute(query)
         conns = result.scalars().all()
 
         if not conns:
-            connection = ZohoConnection(tenant_id=tenant_id, status="DISCONNECTED")
+            connection = ZohoConnection(tenant_id=tenant_id, user_id=parsed_user_id, status="DISCONNECTED")
             db.add(connection)
             await db.commit()
             await db.refresh(connection)
@@ -37,19 +53,6 @@ class MasterDataService:
         else:
             primary = conns[0]
 
-        # Clean up any extra orphan disconnected records to keep database clean
-        if len(conns) > 1:
-            for extra in conns:
-                if extra.id != primary.id and extra.status != "CONNECTED":
-                    try:
-                        await db.delete(extra)
-                    except Exception:
-                        pass
-            try:
-                await db.commit()
-            except Exception:
-                pass
-
         return primary
 
     async def _resolve_organization_id(
@@ -57,11 +60,12 @@ class MasterDataService:
         tenant_id: str,
         db: AsyncSession,
         organization_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
     ) -> Optional[str]:
         """Resolves authoritative active organization_id for tenant."""
         if organization_id:
             return str(organization_id).strip()
-        conn = await self.get_or_create_zoho_connection(tenant_id, db)
+        conn = await self.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
         return str(conn.organization_id).strip() if conn and conn.organization_id else None
 
     async def sync_chart_of_accounts(
@@ -69,9 +73,10 @@ class MasterDataService:
         tenant_id: str,
         db: AsyncSession,
         organization_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Fetches live COA from Zoho and upserts into local chart_of_accounts table scoped to organization_id."""
-        connection = await self.get_or_create_zoho_connection(tenant_id, db)
+        connection = await self.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
         if connection.status != "CONNECTED" or not connection.organization_id:
             logger.warning(f"Tenant {tenant_id} is not connected to Zoho. Skipping live COA sync.")
             return await self.get_cached_chart_of_accounts(tenant_id, db, organization_id=organization_id)
@@ -182,9 +187,10 @@ class MasterDataService:
         tenant_id: str,
         db: AsyncSession,
         organization_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Fetches live GST taxes and statutory TDS taxes from Zoho and upserts into local tax_rates table scoped to organization_id."""
-        connection = await self.get_or_create_zoho_connection(tenant_id, db)
+        connection = await self.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
         if connection.status != "CONNECTED" or not connection.organization_id:
             logger.warning(f"Tenant {tenant_id} is not connected to Zoho. Skipping live tax sync.")
             return await self.get_cached_taxes(tenant_id, db, organization_id=organization_id)
@@ -224,22 +230,21 @@ class MasterDataService:
                     "tax_percentage": float(t.get("tax_percentage", 0.0)),
                     "tax_type": "GST",
                 })
-            for tg in editpage.get("tax_groups", []):
-                tg_id = str(tg.get("tax_group_id") or tg.get("tax_id"))
-                tg_name = tg.get("tax_group_name") or tg.get("tax_name")
-                tg_pct = float(
-                    tg.get("tax_group_percentage")
-                    if tg.get("tax_group_percentage") is not None
-                    else tg.get("tax_percentage", 0.0)
-                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch bills/editpage: {e}")
+
+        # 3. Fetch tax_groups from settings/taxgroups
+        try:
+            tax_groups = await zoho_client_service.get_tax_groups(connection, db)
+            for tg in tax_groups:
                 all_taxes_to_sync.append({
-                    "tax_id": tg_id,
-                    "tax_name": tg_name,
-                    "tax_percentage": tg_pct,
+                    "tax_id": str(tg.get("tax_group_id") or tg.get("tax_id")),
+                    "tax_name": tg.get("tax_group_name") or tg.get("tax_name") or "GST Group",
+                    "tax_percentage": float(tg.get("tax_group_percentage") or tg.get("tax_percentage", 0.0)),
                     "tax_type": "tax_group",
                 })
         except Exception as e:
-            logger.warning(f"Failed to fetch bills/editpage tds_taxes: {e}")
+            logger.warning(f"Failed to fetch settings/taxgroups: {e}")
 
         logger.info(f"Fetched {len(all_taxes_to_sync)} total tax records from Zoho for tenant {tenant_id} (Org: {current_org_id})")
 
@@ -502,9 +507,10 @@ class MasterDataService:
         tenant_id: str,
         db: AsyncSession,
         organization_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Fetches vendor contacts from Zoho and upserts into local vendors table scoped to organization_id."""
-        connection = await self.get_or_create_zoho_connection(tenant_id, db)
+        connection = await self.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
         if connection.status != "CONNECTED" or not connection.organization_id:
             logger.warning(f"Tenant {tenant_id} is not connected to Zoho. Skipping live vendor sync.")
             return await self.get_cached_vendors(tenant_id, db, organization_id=organization_id)

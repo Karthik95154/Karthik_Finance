@@ -5,11 +5,12 @@ from typing import Any, Dict, Optional, List, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, validator
+from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.db.database import get_db
-from app.db.models import Invoice, HitlReview, Tenant, AuditLog
+from app.db.models import Invoice, HitlReview, Tenant, AuditLog, User
 from app.core.security import AuthenticatedUser, get_current_user, require_roles
 from app.services.invoice_processing import process_accounting_downstream_background, get_effective_invoice_data
 from app.core.date_utils import check_accounting_period, parse_and_normalize_date, is_date_in_closed_period
@@ -24,24 +25,26 @@ router = APIRouter()
 # Schemas
 # ============================================================================
 
+
 class ExtractionApproveRequest(BaseModel):
     corrected_data: Dict[str, Any]
-    posting_date: Optional[str] = None
     period_resolution: Optional[str] = None
     period_resolution_reason: Optional[str] = None
+    posting_date: Optional[str] = None
 
     @validator("corrected_data")
-    def validate_math(cls, v):
-        total_amount = v.get("total_amount")
-        subtotal = v.get("subtotal") or 0.0
-        tax_total = v.get("tax_total") or 0.0
+    def validate_corrected_data_not_empty(cls, v):
+        if not v or not isinstance(v, dict):
+            raise ValueError("Corrected data must be a non-empty dictionary.")
         return v
 
 
 class PeriodResolutionRequest(BaseModel):
-    decision: str  # POST_TO_OPEN_PERIOD, PRIOR_PERIOD_EXCEPTION, FLAGGED_FOR_AUDIT
+    decision: Optional[str] = None  # POST_TO_OPEN_PERIOD, PRIOR_PERIOD_EXCEPTION, FLAGGED_FOR_AUDIT
     posting_date: Optional[str] = None
     reason: Optional[str] = None
+    period_resolution: Optional[str] = None
+    period_resolution_reason: Optional[str] = None
 
 
 class FinalApproveRequest(BaseModel):
@@ -60,7 +63,7 @@ class FinalApproveRequest(BaseModel):
 async def get_extraction_hitl(
     invoice_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: AuthenticatedUser = Depends(require_roles(["ADMIN", "DATA_REVIEWER", "FINANCE", "FINANCE_REVIEWER"])),
+    user: AuthenticatedUser = Depends(require_roles(["ADMIN", "DATA_REVIEWER", "FINANCE", "FINANCE_REVIEWER", "FINANCE_MANAGER"])),
 ):
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == user.tenant_id)
     result = await db.execute(query)
@@ -68,6 +71,16 @@ async def get_extraction_hitl(
 
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(user.id))
+    except Exception:
+        parsed_user_id = None
+
+    if user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
+        if invoice.owner_user_id and invoice.owner_user_id != parsed_user_id:
+            raise HTTPException(status_code=404, detail="Invoice not found")
 
     # Fetch tenant closed date
     t_query = select(Tenant).where(Tenant.id == user.tenant_id)
@@ -111,7 +124,7 @@ async def approve_extraction_hitl(
     invoice_id: uuid.UUID,
     payload: ExtractionApproveRequest,
     db: AsyncSession = Depends(get_db),
-    user: AuthenticatedUser = Depends(require_roles(["ADMIN", "DATA_REVIEWER", "FINANCE", "FINANCE_REVIEWER"])),
+    user: AuthenticatedUser = Depends(require_roles(["ADMIN", "DATA_REVIEWER", "FINANCE", "FINANCE_REVIEWER", "FINANCE_MANAGER"])),
 ):
     query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == user.tenant_id)
     result = await db.execute(query)
@@ -119,6 +132,16 @@ async def approve_extraction_hitl(
 
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(user.id))
+    except Exception:
+        parsed_user_id = None
+
+    if user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
+        if invoice.owner_user_id and invoice.owner_user_id != parsed_user_id:
+            raise HTTPException(status_code=404, detail="Invoice not found")
 
     if invoice.status != "HITL_REVIEW":
         raise HTTPException(status_code=409, detail=f"Invoice is not in HITL_REVIEW state (current: {invoice.status})")
@@ -166,7 +189,7 @@ async def approve_extraction_hitl(
             invoice.period_resolved_by = user.email
             invoice.period_resolved_at = datetime.now(timezone.utc)
         elif res_decision == "PRIOR_PERIOD_EXCEPTION":
-            if user.role not in ("ADMIN", "FINANCE"):
+            if user.role not in ("ADMIN", "FINANCE", "FINANCE_MANAGER"):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Role '{user.role}' is not authorized to approve a Prior-Period Exception. Only FINANCE or ADMIN roles may authorize exceptions."
@@ -221,11 +244,19 @@ async def approve_extraction_hitl(
                 pass
         invoice.period_resolution = "NONE"
 
+    valid_db_user_id = None
+    if parsed_user_id:
+        u_res = await db.get(User, parsed_user_id)
+        if u_res:
+            valid_db_user_id = parsed_user_id
+
     # Create HitlReview Audit record
     hitl_review = HitlReview(
         invoice_id=invoice.id,
+        tenant_id=user.tenant_id,
+        user_id=valid_db_user_id,
         stage="EXTRACTION",
-        reviewer_id=user.id,
+        reviewer_id=str(user.id),
         status="APPROVED",
         input_snapshot=invoice.raw_vlm_output,
         corrected_output=payload.corrected_data,
@@ -454,11 +485,25 @@ async def approve_final_hitl(
         except ValueError:
             pass
 
+    parsed_user_id = None
+    try:
+        parsed_user_id = uuid.UUID(str(user.id))
+    except Exception:
+        parsed_user_id = None
+
+    valid_db_user_id = None
+    if parsed_user_id:
+        u_res = await db.get(User, parsed_user_id)
+        if u_res:
+            valid_db_user_id = parsed_user_id
+
     # Create HitlReview Audit record
     hitl_review = HitlReview(
         invoice_id=invoice.id,
+        tenant_id=user.tenant_id,
+        user_id=valid_db_user_id,
         stage="FINAL_FINANCE",
-        reviewer_id=user.id,
+        reviewer_id=str(user.id),
         status="APPROVED",
         input_snapshot=invoice.accounting_output,
         corrected_output=payload.final_accounting,
@@ -540,11 +585,14 @@ async def get_all_hitl_history(
     """
     from sqlalchemy.orm import selectinload
 
-    query = (
-        select(Invoice)
-        .where(Invoice.tenant_id == user.tenant_id)
-        .order_by(Invoice.updated_at.desc())
-    )
+    query = select(Invoice).where(Invoice.tenant_id == user.tenant_id)
+    if user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER"):
+        try:
+            parsed_uid = uuid.UUID(user.id)
+            query = query.where((Invoice.owner_user_id == parsed_uid) | (Invoice.owner_user_id.is_(None)))
+        except (ValueError, TypeError):
+            pass
+    query = query.order_by(Invoice.updated_at.desc())
     result = await db.execute(query)
     all_invoices = result.scalars().all()
 

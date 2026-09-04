@@ -64,9 +64,9 @@ export default function SignUpPage() {
       }
 
       // Navigate to dashboard
-      window.location.href = "/";
+      window.location.href = "/dashboard";
     } catch (err: any) {
-      window.location.href = "/";
+      window.location.href = "/dashboard";
     } finally {
       setIsLoading(false);
     }

@@ -95,7 +95,7 @@ export default function NotFound() {
           }}
         >
           <Link
-            href="/"
+            href="/dashboard"
             style={{
               backgroundColor: "#0071e3",
               color: "#ffffff",
@@ -112,12 +112,12 @@ export default function NotFound() {
             }}
           >
             <LayoutDashboard size={16} />
-            <span>Return to HITL Queue</span>
+            <span>Return to Dashboard</span>
           </Link>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: "10px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}>
             <Link
-              href="/"
+              href="/finance/invoices"
               style={{
                 backgroundColor: "#f8fafc",
                 color: "#334155",

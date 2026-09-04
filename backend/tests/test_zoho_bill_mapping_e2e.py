@@ -693,3 +693,78 @@ async def test_case_8_zoho_source_of_supply_state_code_length():
     assert len(to_zoho_state_code("Telangana")) < 5
     assert len(to_zoho_state_code("Maharashtra")) < 5
 
+
+@pytest.mark.asyncio
+async def test_case_9_zoho_itc_eligibility_mapping_and_error_73003_prevention():
+    """
+    TEST CASE 9 — Zoho Books ITC Eligibility Mapping & Error 73003 Prevention:
+    - Intra-state tax across differing source & destination states sets 'ineligible_others'
+    - Section 17(5) blocked credit sets 'ineligible_others'
+    - Inter-state eligible service sets 'eligible_input_services'
+    - Inter-state eligible capital goods sets 'eligible_capital_goods'
+    - Same-state eligible goods sets 'eligible_inputs'
+    """
+    from app.services.export_service import resolve_zoho_itc_eligibility
+
+    # 1. State mismatch on intra-state supply (Zoho Error 73003 scenario)
+    res_mismatch = resolve_zoho_itc_eligibility(
+        item_desc="Office Supplies",
+        item_hsn="8471",
+        line_itc=None,
+        overall_itc_res={"status": "ELIGIBLE"},
+        source_state="36",
+        dest_state="27",
+        supply_type="INTRA_STATE",
+        line_has_intra_tax=True,
+    )
+    assert res_mismatch == "ineligible_others"
+
+    # 2. Blocked under Section 17(5)
+    res_blocked = resolve_zoho_itc_eligibility(
+        item_desc="Executive Food & Beverage Catering",
+        item_hsn="9963",
+        line_itc={"itc_status": "INELIGIBLE", "status": "INELIGIBLE"},
+        overall_itc_res={"status": "INELIGIBLE"},
+        source_state="36",
+        dest_state="36",
+        supply_type="INTRA_STATE",
+    )
+    assert res_blocked == "ineligible_others"
+
+    # 3. Inter-state Consulting Service (HSN 9983)
+    res_service = resolve_zoho_itc_eligibility(
+        item_desc="Cloud Software Consulting",
+        item_hsn="998311",
+        line_itc={"itc_status": "ELIGIBLE"},
+        overall_itc_res={"status": "ELIGIBLE"},
+        source_state="33",
+        dest_state="36",
+        supply_type="INTER_STATE",
+    )
+    assert res_service == "eligible_input_services"
+
+    # 4. Capital Goods (Laptop / Machinery)
+    res_capital = resolve_zoho_itc_eligibility(
+        item_desc="Dell PowerEdge Server Hardware",
+        item_hsn="8471",
+        line_itc={"itc_status": "ELIGIBLE"},
+        overall_itc_res={"status": "ELIGIBLE"},
+        source_state="36",
+        dest_state="36",
+        supply_type="INTRA_STATE",
+    )
+    assert res_capital == "eligible_capital_goods"
+
+    # 5. Standard Goods (Raw Material / Inputs)
+    res_goods = resolve_zoho_itc_eligibility(
+        item_desc="Copper Wire Cables",
+        item_hsn="8544",
+        line_itc={"itc_status": "ELIGIBLE"},
+        overall_itc_res={"status": "ELIGIBLE"},
+        source_state="36",
+        dest_state="36",
+        supply_type="INTRA_STATE",
+    )
+    assert res_goods == "eligible_inputs"
+
+

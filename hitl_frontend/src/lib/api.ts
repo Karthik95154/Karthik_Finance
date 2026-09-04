@@ -419,11 +419,13 @@ export const API_BASE = rawApiBase.endsWith("/api/v1")
   : `${rawApiBase.replace(/\/+$/, "")}/api/v1`;
 
 export async function uploadInvoice(file: File): Promise<UploadResponse> {
+  const authHeaders = await getAuthHeaders();
   const formData = new FormData();
   formData.append("file", file);
 
   const res = await fetch(`${API_BASE}/invoices/upload`, {
     method: "POST",
+    headers: authHeaders,
     body: formData,
   });
 
@@ -436,7 +438,9 @@ export async function uploadInvoice(file: File): Promise<UploadResponse> {
 }
 
 export async function getInvoiceStatus(id: string): Promise<InvoiceStatus> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${id}/status`, {
+    headers: authHeaders,
     cache: "no-store",
   });
 
@@ -479,8 +483,10 @@ export async function getInvoice(id: string): Promise<Invoice> {
 }
 
 export async function triggerAccountingCategorization(id: string): Promise<InvoiceStatus> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${id}/categorize`, {
     method: "POST",
+    headers: authHeaders,
   });
 
   if (!res.ok) {
@@ -525,7 +531,9 @@ export function getInvoiceFileUrl(id: string): string {
 }
 
 export async function getInvoiceJournal(id: string): Promise<JournalEntry> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${id}/journal`, {
+    headers: authHeaders,
     cache: "no-store",
   });
 
@@ -609,14 +617,37 @@ export interface JournalPreviewResponse {
 
 let devToken: string | null = null;
 
+function isJwtExpired(tokenStr: string): boolean {
+  try {
+    const parts = tokenStr.split(".");
+    if (parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1]));
+    const nowSec = Math.floor(Date.now() / 1000);
+    // Refresh 30 seconds before expiration
+    return Boolean(payload.exp && payload.exp < nowSec + 30);
+  } catch (e) {
+    return true;
+  }
+}
+
 export async function getAuthHeaders(): Promise<Record<string, string>> {
   if (typeof window !== "undefined") {
-    const stored = localStorage.getItem("dev_auth_token");
-    if (stored) {
-      return { Authorization: `Bearer ${stored}` };
+    const stored =
+      localStorage.getItem("token") ||
+      localStorage.getItem("auth_token") ||
+      localStorage.getItem("dev_auth_token");
+    if (stored && stored !== "null" && stored !== "undefined") {
+      if (isJwtExpired(stored)) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("auth_token");
+        localStorage.removeItem("dev_auth_token");
+        devToken = null;
+      } else {
+        return { Authorization: `Bearer ${stored}` };
+      }
     }
   }
-  if (!devToken) {
+  if (!devToken || isJwtExpired(devToken)) {
     try {
       const res = await fetch(`${API_BASE}/auth/token`, {
         method: "POST",
@@ -632,6 +663,8 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
         const data = await res.json();
         devToken = data.access_token;
         if (typeof window !== "undefined" && devToken) {
+          localStorage.setItem("token", devToken);
+          localStorage.setItem("auth_token", devToken);
           localStorage.setItem("dev_auth_token", devToken);
         }
       }
@@ -1286,13 +1319,13 @@ export async function resolvePeriod(
   postingDate?: string | null,
   reason?: string | null
 ) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/period-resolution`, {
     method: "POST",
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+    },
     body: JSON.stringify({
       decision,
       posting_date: postingDate,
@@ -1307,23 +1340,23 @@ export async function resolvePeriod(
 }
 
 export async function getTenantClosedPeriod() {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = {};
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/tenants/closed-period`, { headers });
+  const headers = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/tenants/closed-period`, {
+    headers,
+    cache: "no-store",
+  });
   if (!res.ok) throw new Error("Failed to fetch tenant closed period");
   return res.json();
 }
 
 export async function updateTenantClosedPeriod(booksClosedThroughDate: string | null) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/tenants/closed-period`, {
     method: "PUT",
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+    },
     body: JSON.stringify({ books_closed_through_date: booksClosedThroughDate }),
   });
   if (!res.ok) {
@@ -1334,12 +1367,10 @@ export async function updateTenantClosedPeriod(booksClosedThroughDate: string | 
 }
 
 export async function getHitlFinal(invoiceId: string) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = {};
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
+  const headers = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/final`, {
     headers,
+    cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch final HITL data");
   return res.json();
@@ -1353,13 +1384,13 @@ export async function approveHitlFinal(
   periodResolution?: string | null,
   periodResolutionReason?: string | null
 ) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/final/approve`, {
     method: "POST",
-    headers,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+    },
     body: JSON.stringify({
       final_accounting: finalAccounting,
       final_journal: finalJournal,
@@ -1376,24 +1407,20 @@ export async function approveHitlFinal(
 }
 
 export async function getHitlHistory() {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = {};
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
+  const headers = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/hitl/history`, {
     headers,
+    cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch HITL history");
   return res.json();
 }
 
 export async function getInvoiceHitlHistory(invoiceId: string) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = {};
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
+  const headers = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/history`, {
     headers,
+    cache: "no-store",
   });
   if (!res.ok) throw new Error("Failed to fetch invoice HITL history");
   return res.json();

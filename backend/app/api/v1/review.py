@@ -157,7 +157,7 @@ async def get_journal_preview(
 @router.post("/invoices/{invoice_id}/review/journal/approve")
 async def approve_journal_entry(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -273,7 +273,7 @@ async def approve_journal_entry(
 @router.post("/invoices/{invoice_id}/review/tds/approve")
 async def approve_tds_assessment(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -362,7 +362,7 @@ async def approve_tds_assessment(
 @router.post("/invoices/{invoice_id}/review/approve")
 async def approve_invoice(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -608,7 +608,7 @@ async def approve_invoice(
 async def reject_invoice(
     invoice_id: UUID,
     req: RejectRequest,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -655,7 +655,7 @@ async def reject_invoice(
 @router.post("/review/invoices/{invoice_id}/export")
 async def export_invoice(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -760,7 +760,7 @@ async def get_invoice_vendor_status(
 @router.post("/review/invoices/{invoice_id}/vendor/add-to-zoho")
 async def add_vendor_to_zoho(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """

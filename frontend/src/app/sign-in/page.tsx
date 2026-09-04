@@ -7,6 +7,8 @@ import PublicNavbar from "@/components/PublicNavbar";
 import PublicFooter from "@/components/PublicFooter";
 import { ShieldCheck, ArrowRight, Lock, Mail, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 
+import { loginUser } from "@/lib/api";
+
 export default function SignInPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -40,30 +42,13 @@ export default function SignInPage() {
 
     try {
       setIsLoading(true);
-      // Request JWT token from backend auth endpoint
-      const res = await fetch("http://127.0.0.1:8000/api/v1/auth/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: email.trim().toLowerCase(),
-          dev_role: "ADMIN",
-          dev_tenant_id: "default-tenant-001",
-          dev_name: email.split("@")[0],
-        }),
+      await loginUser({
+        email: email.trim().toLowerCase(),
+        password,
       });
-
-      if (res.ok) {
-        const data = await res.json();
-        if (typeof window !== "undefined" && data.access_token) {
-          localStorage.setItem("dev_auth_token", data.access_token);
-        }
-      }
-      
-      // Navigate to dashboard
       window.location.href = "/dashboard";
     } catch (err: any) {
-      // Fallback navigation if network issue
-      window.location.href = "/dashboard";
+      setError(err.message || "Invalid email or password.");
     } finally {
       setIsLoading(false);
     }

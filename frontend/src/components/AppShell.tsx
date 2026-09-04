@@ -21,7 +21,7 @@ import {
   AlertTriangle,
   XCircle,
 } from "lucide-react";
-import { getHealth, HealthResponse } from "@/lib/api";
+import { getHealth, HealthResponse, getCurrentUser, logoutUser, UserProfile } from "@/lib/api";
 import SystemStatusModal, { getStatusBadge } from "./SystemStatusModal";
 
 interface AppShellProps {
@@ -42,6 +42,7 @@ export default function AppShell({
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   const [isRefreshingHealth, setIsRefreshingHealth] = useState(false);
 
@@ -59,9 +60,15 @@ export default function AppShell({
 
   useEffect(() => {
     fetchHealth();
+    getCurrentUser().then(setUserProfile).catch(() => {});
     const interval = setInterval(fetchHealth, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  const handleLogout = async () => {
+    await logoutUser();
+    window.location.href = "/sign-in";
+  };
 
   const navItems = [
     {
@@ -374,14 +381,15 @@ export default function AppShell({
               padding: "6px 4px 0",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", overflow: "hidden" }}>
               <div
                 style={{
                   width: "28px",
                   height: "28px",
+                  minWidth: "28px",
                   borderRadius: "50%",
-                  background: "var(--border-subtle)",
-                  color: "var(--text-primary)",
+                  background: "var(--accent-light, #e8f2ff)",
+                  color: "var(--accent, #0071e3)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
@@ -389,31 +397,35 @@ export default function AppShell({
                   fontWeight: "700",
                 }}
               >
-                FA
+                {userProfile?.full_name ? userProfile.full_name.substring(0, 2).toUpperCase() : (userProfile?.email ? userProfile.email.substring(0, 2).toUpperCase() : "U")}
               </div>
-              <div style={{ fontSize: "12px", lineHeight: "1.2" }}>
-                <div style={{ fontWeight: "600", color: "var(--text-primary)" }}>
-                  Finance Admin
+              <div style={{ fontSize: "12px", lineHeight: "1.2", overflow: "hidden" }}>
+                <div style={{ fontWeight: "600", color: "var(--text-primary)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", maxWidth: "130px" }} title={userProfile?.email || "User"}>
+                  {userProfile?.full_name || userProfile?.email || "User"}
                 </div>
-                <div style={{ fontSize: "10px", color: "var(--text-tertiary)" }}>
-                  Review Specialist
+                <div style={{ fontSize: "10px", color: "var(--text-tertiary)", textTransform: "capitalize" }}>
+                  {userProfile?.role?.replace("_", " ").toLowerCase() || "Reviewer"}
                 </div>
               </div>
             </div>
 
-            <Link
-              href="/"
-              title="Sign Out to Landing"
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Sign Out"
               style={{
                 color: "var(--text-secondary)",
                 padding: "6px",
                 borderRadius: "4px",
                 display: "flex",
                 alignItems: "center",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
               }}
             >
               <LogOut size={15} />
-            </Link>
+            </button>
           </div>
         </div>
       </aside>
