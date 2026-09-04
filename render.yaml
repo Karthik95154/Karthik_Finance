@@ -12,3 +12,14 @@ services:
         value: 3.12.3
       - key: ENVIRONMENT
         value: production
+
+  - type: web
+    name: sakshi-finance-frontend
+    runtime: node
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
