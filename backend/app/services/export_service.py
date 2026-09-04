@@ -137,13 +137,15 @@ class InvoiceExportService:
             if not acct_lines:
                 raise ValueError("Cannot export to Zoho: Invoice has no accounting line items.")
 
-            # Retrieve active synchronized Zoho accounts to validate and resolve if available in DB
+            # Retrieve active synchronized Zoho accounts strictly scoped to current organization_id
             valid_zoho_accounts = {}
             name_to_zoho_id = {}
             default_expense_id = None
+            current_org_id = str(connection.organization_id).strip()
             try:
                 coa_query = select(ChartOfAccount).where(
                     ChartOfAccount.tenant_id == tenant_id,
+                    ChartOfAccount.organization_id == current_org_id,
                     ChartOfAccount.is_active == True,
                 )
                 coa_res = await db.execute(coa_query)
@@ -232,6 +234,7 @@ class InvoiceExportService:
                     nature_of_payment=tds_nature,
                     rate=float(tds_rate),
                     db=db,
+                    organization_id=current_org_id,
                 )
                 if not zoho_tds_tax_id:
                     sec_label = f"Section {tds_section}" if tds_section else (tds_nature or "Statutory TDS")
@@ -383,11 +386,12 @@ class InvoiceExportService:
                             tax_percentage=line_tax_rate,
                             supply_type=supply_type,
                             db=db,
+                            organization_id=current_org_id,
                         )
                         if not tax_id:
                             raise ValueError(
                                 f"Cannot export to Zoho: Line item {idx} has a taxable GST rate of {line_tax_rate}% ({supply_type}), "
-                                f"but no matching tax or tax group was found in Zoho Books. Please sync taxes in Integrations."
+                                f"but no matching tax or tax group was found in Zoho Books for organization {current_org_id}. Please sync taxes in Integrations."
                             )
 
                     line_dict: Dict[str, Any] = {
@@ -406,6 +410,7 @@ class InvoiceExportService:
                             tax_percentage=0.0,
                             supply_type=supply_type,
                             db=db,
+                            organization_id=current_org_id,
                         )
                         if zero_tax_id:
                             line_dict["tax_id"] = zero_tax_id

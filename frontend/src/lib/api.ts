@@ -402,10 +402,17 @@ export interface HealthResponse {
   timestamp: string;
 }
 
-const rawApiBase =
-  process.env.NEXT_PUBLIC_API_URL ||
-  process.env.NEXT_PUBLIC_BACKEND_URL ||
-  "http://127.0.0.1:8000/api/v1";
+let rawApiBase = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
+
+if (typeof window !== "undefined") {
+  const hostname = window.location.hostname;
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    rawApiBase = "http://127.0.0.1:8000/api/v1";
+  } else if (hostname.includes("devtunnels.ms") || hostname.includes("github.dev")) {
+    const backendHost = window.location.host.replace("-3000", "-8000").replace("-3001", "-8000");
+    rawApiBase = `${window.location.protocol}//${backendHost}/api/v1`;
+  }
+}
 
 export const API_BASE = rawApiBase.endsWith("/api/v1")
   ? rawApiBase.replace(/\/+$/, "")
@@ -441,11 +448,12 @@ export async function getInvoiceStatus(id: string): Promise<InvoiceStatus> {
   return res.json();
 }
 
-export async function listInvoices(forceRefresh = false): Promise<InvoiceListItem[]> {
-  const now = Date.now();
-  if (!forceRefresh && inMemoryInvoices && now - inMemoryInvoicesTime < 15000) {
-    return inMemoryInvoices;
-  }
+export async function listInvoices(): Promise<InvoiceListItem[]> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
 
   if (!forceRefresh && !inMemoryInvoices && typeof window !== "undefined") {
     const cached = getCachedInvoices();
@@ -500,7 +508,9 @@ async function fetchFreshInvoices(): Promise<InvoiceListItem[]> {
 }
 
 export async function getInvoice(id: string): Promise<Invoice> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${id}`, {
+    headers: authHeaders,
     cache: "no-store",
   });
 
@@ -528,16 +538,20 @@ export async function triggerAccountingCategorization(id: string): Promise<Invoi
 export async function updateInvoiceExtraction(
   id: string,
   currentVlmOutput?: RawVlmOutput | null,
-  currentAccountingOutput?: AccountingOutput | null
+  currentAccountingOutput?: AccountingOutput | null,
+  journalEntry?: JournalEntry | null
 ): Promise<Invoice> {
+  const authHeaders = await getAuthHeaders();
   const body: Record<string, any> = {};
   if (currentVlmOutput !== undefined) body.current_vlm_output = currentVlmOutput;
   if (currentAccountingOutput !== undefined) body.current_accounting_output = currentAccountingOutput;
+  if (journalEntry !== undefined) body.journal_entry = journalEntry;
 
   const res = await fetch(`${API_BASE}/invoices/${id}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
+      ...authHeaders,
     },
     body: JSON.stringify(body),
   });
@@ -1425,3 +1439,55 @@ export async function addVendorToZoho(invoiceId: string): Promise<{
 
 
 
+
+export async function getHitlExtraction(invoiceId: string) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = {};
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/extraction`, {
+    headers,
+  });
+  if (!res.ok) throw new Error("Failed to fetch HITL extraction");
+  return res.json();
+}
+
+export async function approveHitlExtraction(invoiceId: string, correctedData: any) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/extraction/approve`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ corrected_data: correctedData }),
+  });
+  if (!res.ok) throw new Error("Failed to approve HITL extraction");
+  return res.json();
+}
+
+export async function getHitlFinal(invoiceId: string) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = {};
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/final`, {
+    headers,
+  });
+  if (!res.ok) throw new Error("Failed to fetch final HITL data");
+  return res.json();
+}
+
+export async function approveHitlFinal(invoiceId: string, finalAccounting: any, finalJournal: any) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/final/approve`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ final_accounting: finalAccounting, final_journal: finalJournal }),
+  });
+  if (!res.ok) throw new Error("Failed to approve final HITL");
+  return res.json();
+}

@@ -22,8 +22,7 @@ logger = logging.getLogger(__name__)
 def get_effective_invoice_data(invoice: Invoice) -> dict:
     """
     Returns complete invoice JSON data for Stage 3 & Stage 4, ensuring base VLM extraction
-    fields (line items, totals, vendor/customer, taxes) are fully preserved even if
-    current_vlm_output was partially edited.
+    fields (line items, totals, vendor/customer, taxes, raw_fields) are fully resolved and preserved.
     """
     raw = invoice.raw_vlm_output or {}
     raw_data = raw.get("data") if isinstance(raw, dict) and "data" in raw else raw
@@ -42,6 +41,71 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
             if k == "line_items" and isinstance(v, list) and len(v) == 0 and raw_data.get("line_items"):
                 continue
             merged[k] = v
+
+    # Fallback to raw_fields if top-level fields were cleared by post-processing
+    raw_f = raw_data.get("raw_fields") or {}
+    if isinstance(raw_f, dict):
+        if not merged.get("vendor_gstin") and raw_f.get("vendor_gstin"):
+            merged["vendor_gstin"] = raw_f.get("vendor_gstin")
+        if not merged.get("vendor_pan") and raw_f.get("vendor_pan"):
+            merged["vendor_pan"] = raw_f.get("vendor_pan")
+        elif not merged.get("vendor_pan") and merged.get("vendor_gstin") and len(str(merged.get("vendor_gstin"))) == 15:
+            merged["vendor_pan"] = str(merged.get("vendor_gstin"))[2:12]
+
+        if not merged.get("customer_gstin") and raw_f.get("customer_gstin"):
+            merged["customer_gstin"] = raw_f.get("customer_gstin")
+        if not merged.get("customer_pan") and raw_f.get("customer_pan"):
+            merged["customer_pan"] = raw_f.get("customer_pan")
+        elif not merged.get("customer_pan") and merged.get("customer_gstin") and len(str(merged.get("customer_gstin"))) == 15:
+            merged["customer_pan"] = str(merged.get("customer_gstin"))[2:12]
+
+        if not merged.get("invoice_number") and raw_f.get("invoice_number"):
+            merged["invoice_number"] = raw_f.get("invoice_number")
+        if not merged.get("vendor_name") and raw_f.get("vendor_name"):
+            merged["vendor_name"] = raw_f.get("vendor_name")
+        if not merged.get("customer_name") and raw_f.get("customer_name"):
+            merged["customer_name"] = raw_f.get("customer_name")
+        if not merged.get("payment_terms") and raw_f.get("payment_terms"):
+            merged["payment_terms"] = raw_f.get("payment_terms")
+        if not merged.get("vendor_address") and raw_f.get("vendor_address"):
+            merged["vendor_address"] = raw_f.get("vendor_address")
+        if not merged.get("customer_address") and raw_f.get("customer_address"):
+            merged["customer_address"] = raw_f.get("customer_address")
+
+    # Resolve line items from raw_fields if needed
+    items = merged.get("line_items") or []
+    resolved_items = []
+    for idx, item in enumerate(items, 1):
+        it = dict(item) if isinstance(item, dict) else {}
+        it_rf = it.get("raw_fields") or {}
+        if isinstance(it_rf, dict):
+            if not it.get("hsn_code") and it_rf.get("hsn_code"):
+                it["hsn_code"] = it_rf.get("hsn_code")
+            if not it.get("description") and it_rf.get("description"):
+                it["description"] = it_rf.get("description")
+            if (it.get("quantity") is None) and it_rf.get("quantity"):
+                try:
+                    it["quantity"] = float(str(it_rf.get("quantity")).replace(",", ""))
+                except Exception:
+                    pass
+            if (it.get("unit_price") is None) and it_rf.get("unit_price"):
+                try:
+                    it["unit_price"] = float(str(it_rf.get("unit_price")).replace(",", ""))
+                except Exception:
+                    pass
+            if (it.get("taxable_amount") is None) and it_rf.get("taxable_amount"):
+                try:
+                    it["taxable_amount"] = float(str(it_rf.get("taxable_amount")).replace(",", ""))
+                except Exception:
+                    pass
+
+        if it.get("taxable_amount") is None and it.get("quantity") and it.get("unit_price"):
+            it["taxable_amount"] = float(it["quantity"]) * float(it["unit_price"])
+        if it.get("total") is None and it.get("taxable_amount"):
+            it["total"] = it["taxable_amount"]
+
+        resolved_items.append(it)
+    merged["line_items"] = resolved_items
 
     # Normalize dates according to Indian & International date standards
     from app.core.date_utils import parse_and_normalize_date
@@ -188,7 +252,7 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             invoice.financial_validation_result = financial_validation_result
             invoice.journal_entry = journal_result
             invoice.accounting_status = "COMPLETED"
-            invoice.status = "COMPLETED"
+            invoice.status = "FINAL_HITL_REVIEW"
             invoice.error_message = None
             invoice.updated_at = datetime.now(timezone.utc)
 
@@ -316,11 +380,40 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             # 5. Persist complete raw VLM output & current working output (Zero data loss)
             invoice.raw_vlm_output = extraction_result
             invoice.current_vlm_output = extraction_result
-            invoice.status = "PROCESSING_ACCOUNTING"
-            invoice.accounting_status = "PROCESSING_ACCOUNTING"
+            invoice.status = "HITL_REVIEW"
             invoice.updated_at = datetime.now(timezone.utc)
             await session.commit()
-            logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Starting Stage 3 COA & TDS reasoning...")
+            logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Stopping for HITL_REVIEW.")
+            return
+
+        except Exception as exc:
+            logger.exception(f"Error processing invoice {invoice_id}: {exc}")
+            try:
+                invoice.status = "FAILED"
+                invoice.error_message = str(exc)
+                invoice.updated_at = datetime.now(timezone.utc)
+                await session.commit()
+            except Exception as commit_exc:
+                logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
+
+
+async def process_accounting_downstream_background(invoice_id) -> None:
+    logger.info(f"Starting downstream accounting processing for approved HITL invoice {invoice_id}")
+    async with AsyncSessionLocal() as session:
+        try:
+            query = select(Invoice).where(Invoice.id == invoice_id)
+            result = await session.execute(query)
+            invoice = result.scalar_one_or_none()
+
+            if not invoice:
+                logger.error(f"Invoice {invoice_id} not found.")
+                return
+
+            tenant_id = invoice.tenant_id or "default-tenant-001"
+            
+            # Use current_vlm_output which was edited and approved by HITL
+            extraction_result = invoice.current_vlm_output
+
 
             # 6. Fetch live tenant Chart of Accounts & Taxes
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
@@ -424,7 +517,7 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             invoice.financial_validation_result = financial_validation_result
             invoice.journal_entry = journal_result
             invoice.accounting_status = "COMPLETED"
-            invoice.status = "COMPLETED"
+            invoice.status = "FINAL_HITL_REVIEW"
             invoice.error_message = None
             invoice.updated_at = datetime.now(timezone.utc)
 

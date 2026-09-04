@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Inbox,
   FileSpreadsheet,
+  FileCheck,
   Layers,
   UploadCloud,
   ShieldCheck,
