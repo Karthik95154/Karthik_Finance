@@ -3,10 +3,10 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select, or_, true
+from sqlalchemy import select, or_, and_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
-from app.db.models import Invoice, Integration
+from app.db.models import Invoice, Integration, EmailConnection
 from app.core.config import settings
 from app.core.security import AuthenticatedUser, get_current_user
 from app.storage.supabase_storage import storage_service
@@ -39,7 +39,7 @@ async def get_staged_documents(
         user_uuid = uuid.UUID(current_user.id)
         user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
     except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
+        user_filter = true()
 
     query = (
         select(Invoice)
@@ -153,45 +153,55 @@ async def poll_email_inbox(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Triggers live polling of the configured IMAP mailbox to ingest new attachments."""
+    """Triggers live polling of the configured EmailConnection mailbox to ingest new attachments."""
     import time
     start_total = time.perf_counter()
     
     try:
         current_user_uuid = uuid.UUID(current_user.id)
-        user_integration_filter = or_(
-            Integration.user_id == current_user_uuid,
-            Integration.id == f"imap_email_{current_user.id}",
-            Integration.id == "imap_email",
+        user_conn_filter = or_(
+            EmailConnection.user_id == current_user_uuid,
+            EmailConnection.user_id_str == str(current_user.id),
         )
     except (ValueError, TypeError):
         current_user_uuid = None
-        user_integration_filter = or_(
-            Integration.id == f"imap_email_{current_user.id}",
-            Integration.id == "imap_email",
-        )
+        user_conn_filter = (EmailConnection.user_id_str == str(current_user.id))
 
-    # Find email config for this specific user
-    query = select(Integration).where(user_integration_filter).order_by(Integration.created_at.desc())
+    # Find EmailConnection record for this specific user strictly (NO cross-user global fallbacks)
+    query = select(EmailConnection).where(user_conn_filter, EmailConnection.is_active == True)
     result = await db.execute(query)
-    integration = result.scalars().first()
+    email_conn = result.scalars().first()
 
-    if not integration or integration.status != "connected" or not integration.config:
+    if not email_conn:
+        logger.warning(f"POLL DENIED: No active EmailConnection found for user_id={current_user.id}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Corporate email integration is not configured for your account. Please connect your inbox in Settings.",
+            detail="No email account is connected. Please connect an email account first in Settings.",
         )
+
+    configured_email = email_conn.email_address
+    masked_email = configured_email[0] + "***@" + configured_email.split("@")[-1] if "@" in configured_email else "***"
+    logger.info(f"POLL INITIATED | User ID: {current_user.id} | EmailConnection ID: {email_conn.id} | Mailbox: {masked_email}")
+
+    imap_config = {
+        "imap_server": email_conn.imap_host,
+        "imap_port": email_conn.imap_port,
+        "email_address": email_conn.email_address,
+        "password": email_conn.encrypted_password,
+    }
 
     try:
         # Perform IMAP polling
-        poll_res = await imap_service.poll_mailbox(integration.config, window_hours=window_hours)
+        poll_res = await imap_service.poll_mailbox(imap_config, window_hours=window_hours)
+        email_conn.last_synced_at = datetime.now(timezone.utc)
+        await db.commit()
     except Exception as e:
         err_msg = str(e)
-        logger.error(f"IMAP Polling failed: {err_msg}")
+        logger.error(f"IMAP Polling failed for user {current_user.id}: {err_msg}")
         if "AUTHENTICATIONFAILED" in err_msg or "Invalid credentials" in err_msg:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"IMAP Authentication failed: {err_msg}",
+                detail=f"Unable to authenticate with the connected email account: {err_msg}",
             )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -209,12 +219,17 @@ async def poll_email_inbox(
     failed_attachments = len(parser_errors)
     errors_list = list(parser_errors)
 
-    # 1. Batch duplicate check query
+    # 1. User-scoped duplicate check query (Ensures separate users can ingest the same file independently)
     start_dup = time.perf_counter()
     hashes = [att["file_hash"] for att in attachments]
     existing_invoices = {}
     if hashes:
-        dup_query = select(Invoice).where(Invoice.file_hash.in_(hashes))
+        if current_user_uuid:
+            user_inv_filter = or_(Invoice.user_id == current_user_uuid, Invoice.user_id.is_(None))
+        else:
+            user_inv_filter = true()
+        
+        dup_query = select(Invoice).where(user_inv_filter, Invoice.file_hash.in_(hashes))
         dup_result = await db.execute(dup_query)
         existing_invoices = {inv.file_hash: inv for inv in dup_result.scalars().all()}
     dup_time_ms = (time.perf_counter() - start_dup) * 1000.0
@@ -223,14 +238,14 @@ async def poll_email_inbox(
     unique_candidates = []
     for attachment in attachments:
         file_hash = attachment["file_hash"]
-        logger.info(f"SHA256 = {file_hash}")
+        logger.info(f"SHA256 = {file_hash} for User = {current_user.id}")
         
         existing_invoice = existing_invoices.get(file_hash)
         if existing_invoice:
-            logger.info(f"DUPLICATE = YES | Existing ID: {existing_invoice.id} | Filename: {existing_invoice.file_name} | Status: {existing_invoice.status}")
+            logger.info(f"DUPLICATE FOR USER = YES | Existing Invoice ID: {existing_invoice.id} | Filename: {existing_invoice.file_name}")
             duplicates += 1
         else:
-            logger.info("DUPLICATE = NO")
+            logger.info(f"DUPLICATE FOR USER = NO | Filename: {attachment['filename']}")
             unique_candidates.append(attachment)
 
     # 2. Classify and store unique candidate financial documents
@@ -255,9 +270,9 @@ async def poll_email_inbox(
             rel_val = classification_res.financial_relevance.value if hasattr(classification_res.financial_relevance, "value") else str(classification_res.financial_relevance)
             type_val = classification_res.document_type.value if hasattr(classification_res.document_type, "value") else str(classification_res.document_type)
 
-            # Accept ONLY INVOICE, CREDIT_NOTE, or DEBIT_NOTE (financial documents)
-            allowed_document_types = {"INVOICE", "CREDIT_NOTE", "DEBIT_NOTE"}
-            is_financial_doc = (type_val in allowed_document_types) or (rel_val == "FINANCIAL")
+            # Accept INVOICE, CREDIT_NOTE, DEBIT_NOTE, or UNKNOWN fallback (e.g. rate-limit fallback so user can still review)
+            allowed_document_types = {"INVOICE", "CREDIT_NOTE", "DEBIT_NOTE", "UNKNOWN"}
+            is_financial_doc = (type_val in allowed_document_types) or (rel_val in ("FINANCIAL", "UNKNOWN"))
 
             if not is_financial_doc:
                 logger.info(f"NON-FINANCIAL DOCUMENT DISCARDED | Type: {type_val} | Relevance: {rel_val} | Filename: {attachment['filename']}")
@@ -330,8 +345,8 @@ async def poll_email_inbox(
                     logger.error(f"Failed to clean up storage file {storage_path}: {cleanup_err}")
                 continue
 
-    # Update integration metadata
-    integration.last_synced_at = datetime.now(timezone.utc)
+    # Update EmailConnection metadata
+    email_conn.last_synced_at = datetime.now(timezone.utc)
     await db.commit()
     
     total_time_ms = (time.perf_counter() - start_total) * 1000.0

@@ -34,9 +34,10 @@ def decrypt_data(cipher_text: str) -> str:
     try:
         fernet = get_fernet()
         return fernet.decrypt(cipher_text.encode("utf-8")).decode("utf-8")
-    except Exception:
-        # Return as-is if decryption fails
-        return cipher_text
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Credential decryption failed: {e}")
+        raise ValueError("Decryption failed. Invalid or mismatched ENCRYPTION_KEY.")
 
 def encrypt_config(config: Dict[str, Any]) -> Dict[str, Any]:
     if not config:
