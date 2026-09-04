@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import PublicNavbar from "@/components/PublicNavbar";
 import PublicFooter from "@/components/PublicFooter";
+import { API_BASE } from "@/lib/api";
 import { ShieldCheck, ArrowRight, Lock, Mail, User, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
 
 export default function SignUpPage() {
@@ -45,7 +46,7 @@ export default function SignUpPage() {
     try {
       setIsLoading(true);
       // Request JWT token from backend auth endpoint
-      const res = await fetch("http://127.0.0.1:8000/api/v1/auth/token", {
+      const res = await fetch(`${API_BASE}/auth/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -60,6 +61,9 @@ export default function SignUpPage() {
         const data = await res.json();
         if (typeof window !== "undefined" && data.access_token) {
           localStorage.setItem("dev_auth_token", data.access_token);
+          if (data.user) {
+            localStorage.setItem("user_info", JSON.stringify(data.user));
+          }
         }
       }
 
@@ -95,35 +99,35 @@ export default function SignUpPage() {
         <div
           style={{
             width: "100%",
-            maxWidth: "440px",
+            maxWidth: "480px",
             background: "#ffffff",
             border: "1px solid var(--border-subtle)",
-            borderRadius: "var(--radius-md)",
-            padding: "36px 32px",
-            boxShadow: "var(--shadow-md)",
+            borderRadius: "20px",
+            padding: "40px 36px",
+            boxShadow: "0 20px 35px -5px rgba(0, 0, 0, 0.07), 0 10px 15px -5px rgba(0, 0, 0, 0.03)",
           }}
         >
           {/* Header */}
-          <div style={{ textAlign: "center", marginBottom: "28px" }}>
+          <div style={{ textAlign: "center", marginBottom: "30px" }}>
             <div
               style={{
-                width: "44px",
-                height: "44px",
-                borderRadius: "10px",
+                width: "50px",
+                height: "50px",
+                borderRadius: "14px",
                 background: "linear-gradient(135deg, #0071e3 0%, #005bb5 100%)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 color: "#ffffff",
                 margin: "0 auto 16px",
-                boxShadow: "0 4px 12px rgba(0, 113, 227, 0.25)",
+                boxShadow: "0 6px 16px rgba(0, 113, 227, 0.3)",
               }}
             >
-              <ShieldCheck size={24} />
+              <ShieldCheck size={26} />
             </div>
             <h1
               style={{
-                fontSize: "22px",
+                fontSize: "24px",
                 fontWeight: "700",
                 letterSpacing: "-0.02em",
                 color: "var(--text-primary)",
@@ -132,7 +136,7 @@ export default function SignUpPage() {
             >
               Create Finance Account
             </h1>
-            <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+            <p style={{ fontSize: "13.5px", color: "var(--text-secondary)" }}>
               Deploy autonomous invoice processing for your organization.
             </p>
           </div>
@@ -143,8 +147,8 @@ export default function SignUpPage() {
               style={{
                 background: "#fef2f2",
                 border: "1px solid #fecaca",
-                borderRadius: "var(--radius-sm)",
-                padding: "10px 14px",
+                borderRadius: "12px",
+                padding: "12px 16px",
                 marginBottom: "20px",
                 fontSize: "13px",
                 color: "#991b1b",
@@ -159,16 +163,16 @@ export default function SignUpPage() {
           )}
 
           {/* Form */}
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
             <div>
               <label
                 htmlFor="fullName"
                 style={{
                   display: "block",
-                  fontSize: "13px",
+                  fontSize: "13.5px",
                   fontWeight: "600",
                   color: "var(--text-primary)",
-                  marginBottom: "6px",
+                  marginBottom: "8px",
                 }}
               >
                 Full Name
@@ -183,16 +187,21 @@ export default function SignUpPage() {
                   onChange={(e) => setFullName(e.target.value)}
                   disabled={isLoading}
                   style={{
-                    paddingLeft: "36px",
+                    height: "46px",
+                    paddingLeft: "42px",
                     width: "100%",
+                    borderRadius: "12px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "14px",
+                    outline: "none",
                   }}
                   autoComplete="name"
                 />
                 <User
-                  size={16}
+                  size={18}
                   style={{
                     position: "absolute",
-                    left: "12px",
+                    left: "14px",
                     top: "50%",
                     transform: "translateY(-50%)",
                     color: "var(--text-secondary)",
@@ -206,10 +215,10 @@ export default function SignUpPage() {
                 htmlFor="email"
                 style={{
                   display: "block",
-                  fontSize: "13px",
+                  fontSize: "13.5px",
                   fontWeight: "600",
                   color: "var(--text-primary)",
-                  marginBottom: "6px",
+                  marginBottom: "8px",
                 }}
               >
                 Work Email
@@ -224,16 +233,21 @@ export default function SignUpPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   disabled={isLoading}
                   style={{
-                    paddingLeft: "36px",
+                    height: "46px",
+                    paddingLeft: "42px",
                     width: "100%",
+                    borderRadius: "12px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "14px",
+                    outline: "none",
                   }}
                   autoComplete="email"
                 />
                 <Mail
-                  size={16}
+                  size={18}
                   style={{
                     position: "absolute",
-                    left: "12px",
+                    left: "14px",
                     top: "50%",
                     transform: "translateY(-50%)",
                     color: "var(--text-secondary)",
@@ -247,10 +261,10 @@ export default function SignUpPage() {
                 htmlFor="password"
                 style={{
                   display: "block",
-                  fontSize: "13px",
+                  fontSize: "13.5px",
                   fontWeight: "600",
                   color: "var(--text-primary)",
-                  marginBottom: "6px",
+                  marginBottom: "8px",
                 }}
               >
                 Password
@@ -265,16 +279,21 @@ export default function SignUpPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={isLoading}
                   style={{
-                    paddingLeft: "36px",
+                    height: "46px",
+                    paddingLeft: "42px",
                     width: "100%",
+                    borderRadius: "12px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "14px",
+                    outline: "none",
                   }}
                   autoComplete="new-password"
                 />
                 <Lock
-                  size={16}
+                  size={18}
                   style={{
                     position: "absolute",
-                    left: "12px",
+                    left: "14px",
                     top: "50%",
                     transform: "translateY(-50%)",
                     color: "var(--text-secondary)",
@@ -288,10 +307,10 @@ export default function SignUpPage() {
                 htmlFor="confirmPassword"
                 style={{
                   display: "block",
-                  fontSize: "13px",
+                  fontSize: "13.5px",
                   fontWeight: "600",
                   color: "var(--text-primary)",
-                  marginBottom: "6px",
+                  marginBottom: "8px",
                 }}
               >
                 Confirm Password
@@ -306,16 +325,21 @@ export default function SignUpPage() {
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   disabled={isLoading}
                   style={{
-                    paddingLeft: "36px",
+                    height: "46px",
+                    paddingLeft: "42px",
                     width: "100%",
+                    borderRadius: "12px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "14px",
+                    outline: "none",
                   }}
                   autoComplete="new-password"
                 />
                 <Lock
-                  size={16}
+                  size={18}
                   style={{
                     position: "absolute",
-                    left: "12px",
+                    left: "14px",
                     top: "50%",
                     transform: "translateY(-50%)",
                     color: "var(--text-secondary)",
@@ -330,26 +354,26 @@ export default function SignUpPage() {
               disabled={isLoading}
               style={{
                 width: "100%",
-                padding: "11px",
-                fontSize: "14px",
+                height: "46px",
+                fontSize: "14.5px",
                 fontWeight: "600",
                 marginTop: "8px",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 gap: "8px",
-                borderRadius: "var(--radius-sm)",
+                borderRadius: "12px",
               }}
             >
               {isLoading ? (
                 <>
-                  <Loader2 size={16} className="animate-spin" />
+                  <Loader2 size={18} className="animate-spin" />
                   <span>Creating Account...</span>
                 </>
               ) : (
                 <>
                   <span>Create Account</span>
-                  <ArrowRight size={15} />
+                  <ArrowRight size={16} />
                 </>
               )}
             </button>

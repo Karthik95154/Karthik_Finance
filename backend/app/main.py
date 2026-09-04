@@ -31,6 +31,7 @@ async def lifespan(app: FastAPI):
             
             # Ensure newly added columns exist on invoices table
             migration_columns = [
+                ("user_id", "UUID REFERENCES users(id) ON DELETE SET NULL"),
                 ("financial_relevance", "VARCHAR(50)"),
                 ("document_type", "VARCHAR(50)"),
                 ("classification_confidence", "FLOAT"),
@@ -62,6 +63,17 @@ async def lifespan(app: FastAPI):
                     await conn.execute(text(f"ALTER TABLE invoices ADD COLUMN IF NOT EXISTS {col} {col_type};"))
                 except Exception:
                     pass
+            try:
+                await conn.execute(text("ALTER TABLE integrations ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;"))
+            except Exception:
+                pass
+            try:
+                await conn.execute(text("ALTER TABLE zoho_connections ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;"))
+                await conn.execute(text("ALTER TABLE zoho_connections DROP CONSTRAINT IF EXISTS zoho_connections_tenant_id_key;"))
+                await conn.execute(text("DROP INDEX IF EXISTS ix_zoho_connections_tenant_id;"))
+                await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_zoho_connections_tenant_id ON zoho_connections(tenant_id);"))
+            except Exception:
+                pass
         logger.info("Database tables and columns initialized / verified successfully.")
     except Exception as exc:
         logger.warning(f"Database table verification error: {exc}")

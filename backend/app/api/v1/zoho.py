@@ -74,8 +74,9 @@ async def get_zoho_connect_url(
         )
 
     chosen_redirect = redirect_uri or settings.ZOHO_REDIRECT_URI
+    state_val = f"{tenant_id}:{current_user.id}|{frontend_url}"
     auth_url = zoho_client_service.get_authorization_url(
-        tenant_id=state_param,
+        tenant_id=state_val,
         accounts_url=accounts_url,
         redirect_uri=chosen_redirect,
     )
@@ -91,7 +92,7 @@ async def zoho_oauth_callback(
     request: Request,
     code: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
-    state: Optional[str] = Query(None),  # tenant_id passed as state
+    state: Optional[str] = Query(None),  # tenant_id:user_id passed as state
     accounts_server: Optional[str] = Query(None),
     db: AsyncSession = Depends(get_db),
 ):
@@ -117,7 +118,27 @@ async def zoho_oauth_callback(
             status_code=302,
         )
 
-    logger.info(f"Processing Zoho OAuth callback for tenant {tenant_id}...")
+    # Parse state param (tenant_id:user_id or tenant_id|frontend_url or tenant_id:user_id|frontend_url)
+    tenant_id = settings.DEFAULT_TENANT_ID
+    user_id = None
+    if state:
+        state_unquoted = urllib.parse.unquote(state)
+        # Check if frontend_url was embedded with |
+        if "|" in state_unquoted:
+            tenant_part, custom_frontend = state_unquoted.split("|", 1)
+            if custom_frontend.startswith("http"):
+                frontend_base = f"{custom_frontend.rstrip('/')}/integrations"
+        else:
+            tenant_part = state_unquoted
+
+        if ":" in tenant_part:
+            parts = tenant_part.split(":", 1)
+            tenant_id = parts[0]
+            user_id = parts[1]
+        else:
+            tenant_id = tenant_part
+
+    logger.info(f"Processing Zoho OAuth callback for user {user_id} tenant {tenant_id}...")
 
     # Determine redirect URI dynamically matching how the browser was routed
     callback_redirect_uri = str(request.url).split("?")[0]
@@ -147,8 +168,8 @@ async def zoho_oauth_callback(
     expires_in = token_data.get("expires_in", 3600)
     api_domain = token_data.get("api_domain", settings.ZOHO_BOOKS_API_BASE_URL)
 
-    # Fetch or create ZohoConnection record
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    # Fetch or create ZohoConnection record bound to user_id
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
     connection.encrypted_access_token = encrypt_secret(access_token)
     if refresh_token:
         connection.encrypted_refresh_token = encrypt_secret(refresh_token)
@@ -198,7 +219,7 @@ async def list_zoho_organizations(
 ):
     """Lists accessible organizations for the connected Zoho account."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
     if connection.status != "CONNECTED":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -222,7 +243,7 @@ async def select_zoho_organization(
 ):
     """Sets the active Zoho Organization ID and triggers an initial COA, Tax, and Vendor sync."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
     if connection.status != "CONNECTED":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -275,7 +296,7 @@ async def get_zoho_status(
 ):
     """Returns the current Zoho connection, organization, and cache metrics."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
 
     # Count cached records
     acc_count = (
@@ -391,7 +412,7 @@ async def disconnect_zoho(
 ):
     """Disconnects Zoho integration and removes stored tokens for the tenant."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
     connection.status = "DISCONNECTED"
     connection.encrypted_access_token = None
     connection.encrypted_refresh_token = None

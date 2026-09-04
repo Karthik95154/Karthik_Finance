@@ -271,9 +271,9 @@ class InvoiceExportService:
                     vendor_name=vendor_name,
                     gstin=vendor_gstin,
                     pan=vendor_pan,
-                    email=vlm_data.get("vendor_email"),
-                    phone=vlm_data.get("vendor_phone"),
-                    address=vlm_data.get("vendor_address"),
+                    email=(vlm_data.get("vendor_email") or vlm_data.get("email") or "").strip() or None,
+                    phone=(str(vlm_data.get("vendor_phone") or vlm_data.get("phone") or vlm_data.get("mobile") or "")).strip() or None,
+                    address=(vlm_data.get("vendor_address") or vlm_data.get("address") or "").strip() or None,
                     state_name=supplier_state_name,
                 )
             elif vendor_contact.get("contact_id") and supplier_state_name:

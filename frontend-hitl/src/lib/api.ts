@@ -402,17 +402,10 @@ export interface HealthResponse {
   timestamp: string;
 }
 
-let rawApiBase = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api/v1";
-
-if (typeof window !== "undefined") {
-  const hostname = window.location.hostname;
-  if (hostname === "localhost" || hostname === "127.0.0.1") {
-    rawApiBase = "http://127.0.0.1:8000/api/v1";
-  } else if (hostname.includes("devtunnels.ms") || hostname.includes("github.dev")) {
-    const backendHost = window.location.host.replace("-3000", "-8000").replace("-3001", "-8000");
-    rawApiBase = `${window.location.protocol}//${backendHost}/api/v1`;
-  }
-}
+const rawApiBase =
+  process.env.NEXT_PUBLIC_API_URL ||
+  process.env.NEXT_PUBLIC_BACKEND_URL ||
+  "http://127.0.0.1:8000/api/v1";
 
 export const API_BASE = rawApiBase.endsWith("/api/v1")
   ? rawApiBase.replace(/\/+$/, "")
@@ -448,62 +441,19 @@ export async function getInvoiceStatus(id: string): Promise<InvoiceStatus> {
   return res.json();
 }
 
-export async function listInvoices(forceRefresh = false): Promise<InvoiceListItem[]> {
-  const now = Date.now();
-  if (!forceRefresh && inMemoryInvoices && now - inMemoryInvoicesTime < 15000) {
-    return inMemoryInvoices;
-  }
-
-  if (!forceRefresh && !inMemoryInvoices && typeof window !== "undefined") {
-    const cached = getCachedInvoices();
-    if (cached) {
-      fetchFreshInvoices().catch(() => {});
-      return cached;
-    }
-  }
-
-  return await fetchFreshInvoices();
-}
-
-const inFlightPromises = new Map<string, Promise<any>>();
-
-function fetchWithInFlightDeduplication<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
-  if (inFlightPromises.has(key)) {
-    return inFlightPromises.get(key) as Promise<T>;
-  }
-
-  const promise = fetcher().finally(() => {
-    inFlightPromises.delete(key);
+export async function listInvoices(): Promise<InvoiceListItem[]> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices`, {
+    headers: authHeaders,
+    cache: "no-store",
   });
 
-  inFlightPromises.set(key, promise);
-  return promise;
-}
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to fetch invoices list");
+  }
 
-async function fetchFreshInvoices(): Promise<InvoiceListItem[]> {
-  return fetchWithInFlightDeduplication("invoices", async () => {
-    const authHeaders = await getAuthHeaders();
-    const res = await fetch(`${API_BASE}/invoices`, {
-      headers: authHeaders,
-      cache: "no-store",
-    });
-
-    if (!res.ok) {
-      if (inMemoryInvoices) return inMemoryInvoices;
-      const errorData = await res.json().catch(() => ({}));
-      throw new Error(errorData.detail || "Failed to fetch invoices list");
-    }
-
-    const data: InvoiceListItem[] = await res.json();
-    inMemoryInvoices = data;
-    inMemoryInvoicesTime = Date.now();
-    if (typeof window !== "undefined") {
-      try {
-        sessionStorage.setItem(INVOICES_CACHE_KEY, JSON.stringify(data));
-      } catch (_) {}
-    }
-    return data;
-  });
+  return res.json();
 }
 
 export async function getInvoice(id: string): Promise<Invoice> {
@@ -600,7 +550,6 @@ export interface UserProfile {
   email: string;
   role: string;
   tenant_id: string;
-  full_name?: string | null;
 }
 
 export type ZohoConnectionState = "DISCONNECTED" | "CONNECTED" | "ERROR" | "CONNECTING" | "SYNCING" | "ORGANIZATION_REQUIRED";
@@ -727,93 +676,10 @@ export async function switchDevRole(role: string): Promise<UserProfile> {
 // Cache storage keys & in-memory caches for seamless page navigations
 const ZOHO_STATUS_CACHE_KEY = "sakshi_zoho_status_cache";
 const ZOHO_MASTER_DATA_CACHE_KEY = "sakshi_zoho_md_cache";
-const IMAP_SETTINGS_CACHE_KEY = "sakshi_imap_settings_cache";
 let inMemoryZohoStatus: ZohoStatusResponse | null = null;
 let inMemoryZohoStatusTime = 0;
 let inMemoryMasterData: ZohoMasterDataSummary | null = null;
 let inMemoryMasterDataTime = 0;
-let inMemoryImapSettings: IMAPSettings | null = null;
-let inMemoryImapSettingsTime = 0;
-
-export function getCachedIMAPSettings(): IMAPSettings | null {
-  if (inMemoryImapSettings) return inMemoryImapSettings;
-  if (typeof window !== "undefined") {
-    try {
-      const raw = sessionStorage.getItem(IMAP_SETTINGS_CACHE_KEY);
-      if (raw) {
-        inMemoryImapSettings = JSON.parse(raw);
-        return inMemoryImapSettings;
-      }
-    } catch (_) {}
-  }
-  return null;
-}
-
-export function invalidateIMAPCache() {
-  inMemoryImapSettings = null;
-  inMemoryImapSettingsTime = 0;
-  if (typeof window !== "undefined") {
-    try {
-      sessionStorage.removeItem(IMAP_SETTINGS_CACHE_KEY);
-    } catch (_) {}
-  }
-}
-
-const INVOICES_CACHE_KEY = "sakshi_invoices_cache";
-const STAGED_DOCS_CACHE_KEY = "sakshi_staged_docs_cache";
-
-let inMemoryInvoices: InvoiceListItem[] | null = null;
-let inMemoryInvoicesTime = 0;
-let inMemoryStagedDocs: StagedDocument[] | null = null;
-let inMemoryStagedDocsTime = 0;
-
-export function getCachedInvoices(): InvoiceListItem[] | null {
-  if (inMemoryInvoices) return inMemoryInvoices;
-  if (typeof window !== "undefined") {
-    try {
-      const raw = sessionStorage.getItem(INVOICES_CACHE_KEY);
-      if (raw) {
-        inMemoryInvoices = JSON.parse(raw);
-        return inMemoryInvoices;
-      }
-    } catch (_) {}
-  }
-  return null;
-}
-
-export function invalidateInvoicesCache() {
-  inMemoryInvoices = null;
-  inMemoryInvoicesTime = 0;
-  if (typeof window !== "undefined") {
-    try {
-      sessionStorage.removeItem(INVOICES_CACHE_KEY);
-    } catch (_) {}
-  }
-}
-
-export function getCachedStagedDocuments(): StagedDocument[] | null {
-  if (inMemoryStagedDocs) return inMemoryStagedDocs;
-  if (typeof window !== "undefined") {
-    try {
-      const raw = sessionStorage.getItem(STAGED_DOCS_CACHE_KEY);
-      if (raw) {
-        inMemoryStagedDocs = JSON.parse(raw);
-        return inMemoryStagedDocs;
-      }
-    } catch (_) {}
-  }
-  return null;
-}
-
-export function invalidateStagedDocumentsCache() {
-  inMemoryStagedDocs = null;
-  inMemoryStagedDocsTime = 0;
-  if (typeof window !== "undefined") {
-    try {
-      sessionStorage.removeItem(STAGED_DOCS_CACHE_KEY);
-    } catch (_) {}
-  }
-}
 
 export function getCachedZohoStatus(): ZohoStatusResponse | null {
   if (inMemoryZohoStatus) return inMemoryZohoStatus;
@@ -1202,45 +1068,17 @@ export interface IMAPSettings {
   email_address?: string;
 }
 
-export async function listStagedDocuments(forceRefresh = false): Promise<StagedDocument[]> {
-  const now = Date.now();
-  if (!forceRefresh && inMemoryStagedDocs && now - inMemoryStagedDocsTime < 15000) {
-    return inMemoryStagedDocs;
-  }
-
-  if (!forceRefresh && !inMemoryStagedDocs && typeof window !== "undefined") {
-    const cached = getCachedStagedDocuments();
-    if (cached) {
-      fetchFreshStagedDocuments().catch(() => {});
-      return cached;
-    }
-  }
-
-  return await fetchFreshStagedDocuments();
-}
-
-async function fetchFreshStagedDocuments(): Promise<StagedDocument[]> {
-  return fetchWithInFlightDeduplication("staged_docs", async () => {
-    const authHeaders = await getAuthHeaders();
-    const res = await fetch(`${API_BASE}/inbox/staged`, {
-      headers: authHeaders,
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      if (inMemoryStagedDocs) return inMemoryStagedDocs;
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to list staged documents");
-    }
-    const data: StagedDocument[] = await res.json();
-    inMemoryStagedDocs = data;
-    inMemoryStagedDocsTime = Date.now();
-    if (typeof window !== "undefined") {
-      try {
-        sessionStorage.setItem(STAGED_DOCS_CACHE_KEY, JSON.stringify(data));
-      } catch (_) {}
-    }
-    return data;
+export async function listStagedDocuments(): Promise<StagedDocument[]> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/inbox/staged`, {
+    headers: authHeaders,
+    cache: "no-store",
   });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || "Failed to list staged documents");
+  }
+  return res.json();
 }
 
 export async function processStagedDocument(id: string): Promise<any> {
@@ -1253,10 +1091,7 @@ export async function processStagedDocument(id: string): Promise<any> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to process staged document");
   }
-  const result = await res.json();
-  invalidateStagedDocumentsCache();
-  invalidateInvoicesCache();
-  return result;
+  return res.json();
 }
 
 export async function deleteStagedDocument(id: string): Promise<any> {
@@ -1269,9 +1104,7 @@ export async function deleteStagedDocument(id: string): Promise<any> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to delete staged document");
   }
-  const result = await res.json();
-  invalidateStagedDocumentsCache();
-  return result;
+  return res.json();
 }
 
 export async function pollEmails(): Promise<{
@@ -1293,53 +1126,19 @@ export async function pollEmails(): Promise<{
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to poll emails");
   }
-  const result = await res.json();
-  invalidateStagedDocumentsCache();
-  await listStagedDocuments(true);
-  return result;
+  return res.json();
 }
 
-export async function getIMAPSettings(forceRefresh = false): Promise<IMAPSettings> {
-  const now = Date.now();
-  if (!forceRefresh && inMemoryImapSettings && now - inMemoryImapSettingsTime < 20000) {
-    return inMemoryImapSettings;
-  }
-
-  if (!forceRefresh && !inMemoryImapSettings && typeof window !== "undefined") {
-    const cached = getCachedIMAPSettings();
-    if (cached) {
-      fetchFreshIMAPSettings().catch(() => {});
-      return cached;
-    }
-  }
-
-  return await fetchFreshIMAPSettings();
-}
-
-async function fetchFreshIMAPSettings(): Promise<IMAPSettings> {
+export async function getIMAPSettings(): Promise<IMAPSettings> {
   const authHeaders = await getAuthHeaders();
-  try {
-    const res = await fetch(`${API_BASE}/settings/integrations/imap_email`, {
-      headers: authHeaders,
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      const fallback: IMAPSettings = { imap_server: "imap.gmail.com", imap_port: 993, email_address: "", is_connected: false, status: "disconnected" };
-      return fallback;
-    }
-    const data: IMAPSettings = await res.json();
-    inMemoryImapSettings = data;
-    inMemoryImapSettingsTime = Date.now();
-    if (typeof window !== "undefined") {
-      try {
-        sessionStorage.setItem(IMAP_SETTINGS_CACHE_KEY, JSON.stringify(data));
-      } catch (_) {}
-    }
-    return data;
-  } catch (err) {
-    if (inMemoryImapSettings) return inMemoryImapSettings;
-    return { imap_server: "imap.gmail.com", imap_port: 993, email_address: "", is_connected: false, status: "disconnected" };
+  const res = await fetch(`${API_BASE}/settings/integrations/imap_email`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    return { imap_server: "imap.gmail.com", imap_port: 993, email_address: "", is_connected: false };
   }
+  return res.json();
 }
 
 export async function configureIMAPSettings(data: {
@@ -1361,10 +1160,7 @@ export async function configureIMAPSettings(data: {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to configure IMAP settings");
   }
-  const result = await res.json();
-  invalidateIMAPCache();
-  await getIMAPSettings(true);
-  return result;
+  return res.json();
 }
 
 export async function disconnectIMAP(): Promise<any> {
@@ -1377,10 +1173,7 @@ export async function disconnectIMAP(): Promise<any> {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Failed to disconnect IMAP");
   }
-  const result = await res.json();
-  invalidateIMAPCache();
-  await getIMAPSettings(true);
-  return result;
+  return res.json();
 }
 
 export interface InvoiceVendorStatusResponse {
@@ -1439,55 +1232,3 @@ export async function addVendorToZoho(invoiceId: string): Promise<{
 
 
 
-
-export async function getHitlExtraction(invoiceId: string) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = {};
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/extraction`, {
-    headers,
-  });
-  if (!res.ok) throw new Error("Failed to fetch HITL extraction");
-  return res.json();
-}
-
-export async function approveHitlExtraction(invoiceId: string, correctedData: any) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/extraction/approve`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ corrected_data: correctedData }),
-  });
-  if (!res.ok) throw new Error("Failed to approve HITL extraction");
-  return res.json();
-}
-
-export async function getHitlFinal(invoiceId: string) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = {};
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/final`, {
-    headers,
-  });
-  if (!res.ok) throw new Error("Failed to fetch final HITL data");
-  return res.json();
-}
-
-export async function approveHitlFinal(invoiceId: string, finalAccounting: any, finalJournal: any) {
-  const token = localStorage.getItem("token");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/hitl/final/approve`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ final_accounting: finalAccounting, final_journal: finalJournal }),
-  });
-  if (!res.ok) throw new Error("Failed to approve final HITL");
-  return res.json();
-}
