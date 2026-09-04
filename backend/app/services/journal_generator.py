@@ -724,19 +724,20 @@ class JournalGenerator:
         if is_approved is None:
             is_approved = tds_data.get("approved")
 
-        if not tds_applicable:
+        tds_base_amount = tds_engine.determine_tds_base_amount(inv, tds_data)
+        if not tds_applicable or tds_base_amount <= 0:
             tds_amount = 0.0
             tds_rate = 0.0
-        elif subtotal is not None and subtotal > 0:
+        else:
             if tds_rate is not None and tds_rate > 0:
-                tds_amount = round((subtotal * float(tds_rate)) / 100.0, 2)
+                tds_amount = round((tds_base_amount * float(tds_rate)) / 100.0, 2)
             elif tds_amount <= 0:
                 calc = tds_engine.calculate_tds(
                     applicable=True,
                     section=tds_section,
                     provision=tds_provision,
                     nature_of_payment=tds_nature,
-                    base_amount=subtotal,
+                    base_amount=tds_base_amount,
                     rate=tds_rate,
                 )
                 tds_amount = calc.get("tds_amount", 0.0)

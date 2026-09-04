@@ -215,12 +215,12 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
         # 4. Call Deterministic Stage 5 Financial Validator
         financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-        # 5. Deterministic Final TDS (Authoritative statutory calculation on subtotal)
+        # 5. Deterministic Final TDS (Authoritative statutory calculation on resolved base amount)
         from app.services.tds_engine import get_effective_tds_data
         effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
         tds_applicable = bool(effective_tds.get("applicable"))
 
-        subtotal = float(invoice_payload.get("subtotal") or 0.0)
+        tds_base_amt = tds_engine.determine_tds_base_amount(invoice_payload, effective_tds)
         tds_rate = effective_tds.get("rate")
         tds_section = effective_tds.get("section")
         tds_provision = effective_tds.get("provision")
@@ -232,7 +232,7 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             section=tds_section,
             provision=tds_provision,
             nature_of_payment=tds_nature,
-            base_amount=subtotal,
+            base_amount=tds_base_amt,
             rate=float(tds_rate) if tds_rate is not None else None,
             vendor_pan=vendor_pan,
         )
@@ -553,12 +553,12 @@ async def process_accounting_downstream_background(invoice_id) -> None:
         # Deterministic Stage 5 Financial Validator
         financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-        # Deterministic Final TDS (Authoritative calculation)
+        # Deterministic Final TDS (Authoritative statutory calculation on resolved base amount)
         from app.services.tds_engine import get_effective_tds_data
         effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
         tds_applicable = bool(effective_tds.get("applicable"))
 
-        subtotal = float(invoice_payload.get("subtotal") or 0.0)
+        tds_base_amt = tds_engine.determine_tds_base_amount(invoice_payload, effective_tds)
         tds_rate = effective_tds.get("rate")
         tds_section = effective_tds.get("section")
         tds_provision = effective_tds.get("provision")
@@ -570,7 +570,7 @@ async def process_accounting_downstream_background(invoice_id) -> None:
             section=tds_section,
             provision=tds_provision,
             nature_of_payment=tds_nature,
-            base_amount=subtotal,
+            base_amount=tds_base_amt,
             rate=float(tds_rate) if tds_rate is not None else None,
             vendor_pan=vendor_pan,
         )

@@ -71,7 +71,15 @@ async def test_master_data_exact_tds_resolution_and_zero_fallback():
         TaxRate(id=uuid4(), tenant_id=tenant_id, zoho_tax_id="ZOHO_TDS_COMM_2", tax_name="Commission or Brokerage (2%)", tax_percentage=2.0, tax_type="TDS", is_active=True),
         TaxRate(id=uuid4(), tenant_id=tenant_id, zoho_tax_id="ZOHO_TDS_PROF_10", tax_name="Professional Fees (10%)", tax_percentage=10.0, tax_type="TDS", is_active=True),
     ]
-    mock_db.execute = AsyncMock(return_value=MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_tds_taxes)))))
+    mock_conn = ZohoConnection(id=uuid4(), tenant_id=tenant_id, organization_id="org_123", status="CONNECTED")
+    def mock_exec(query):
+        # If querying ZohoConnection
+        if "zoho_connections" in str(query):
+            return MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[mock_conn]))))
+        # If querying TaxRate
+        return MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=mock_tds_taxes))))
+
+    mock_db.execute = AsyncMock(side_effect=mock_exec)
 
     # TEST 3: Exact match for 10% Professional
     res_10 = await master_data_service.get_zoho_tds_tax(
@@ -153,7 +161,7 @@ async def test_export_service_tds_not_applicable_never_sends_tds_tax_id():
     )
 
     mock_conn = ZohoConnection(id=uuid4(), tenant_id=tenant_id, organization_id="org_123", status="CONNECTED")
-    mock_journal = MagicMock(is_balanced=True, status="APPROVED")
+    mock_journal = MagicMock(is_balanced=True, status="APPROVED", total_debit=178416.0)
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
@@ -227,7 +235,7 @@ async def test_export_service_missing_tds_tax_raises_blocking_error():
     )
 
     mock_conn = ZohoConnection(id=uuid4(), tenant_id=tenant_id, organization_id="org_123", status="CONNECTED")
-    mock_journal = MagicMock(is_balanced=True, status="APPROVED")
+    mock_journal = MagicMock(is_balanced=True, status="APPROVED", total_debit=178416.0)
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),

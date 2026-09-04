@@ -2533,8 +2533,8 @@ export default function InvoiceWorkspace({
                         <input
                           type="number"
                           step="0.01"
-                          placeholder="Subtotal"
-                          value={tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined ? tdsResult.tds_base_amount : (formData.subtotal || "")}
+                          placeholder="0.00"
+                          value={tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined ? tdsResult.tds_base_amount : ""}
                           onChange={(e) => {
                             const val = e.target.value === "" ? null : parseFloat(e.target.value);
                             setAccountingData((prev: any) => {

@@ -1461,7 +1461,7 @@ export default function InvoiceWorkspace({
     tds_provision: "Section 194C",
     nature_of_payment: "Payment to Contractors / Suppliers",
     tds_rate: 0,
-    tds_base_amount: formData.subtotal || 0,
+    tds_base_amount: 0,
     proposed_tds_amount: 0,
     reason: "Standard contractor payment below statutory withholding threshold",
     tds_reasoning: "Standard contractor payment below statutory withholding threshold",
@@ -3094,8 +3094,8 @@ export default function InvoiceWorkspace({
                         <input
                           type="number"
                           step="0.01"
-                          placeholder="Subtotal"
-                          value={tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined ? tdsResult.tds_base_amount : (formData.subtotal || "")}
+                          placeholder="0.00"
+                          value={tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined ? tdsResult.tds_base_amount : ""}
                           onChange={(e) => {
                             const val = e.target.value === "" ? null : parseFloat(e.target.value);
                             setAccountingData((prev: any) => {

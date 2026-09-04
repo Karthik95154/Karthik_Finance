@@ -448,12 +448,12 @@ async def update_invoice_extraction(
             # 3. Stage 5 Financial Validator
             financial_validation_result = financial_validator.validate_invoice(working_payload, gst_result)
 
-            # 4. Stage 5 Statutory TDS Recalculation on authoritative subtotal (Single Source of Truth)
+            # 4. Stage 5 Statutory TDS Recalculation on authoritative base amount (Single Source of Truth)
             from app.services.tds_engine import get_effective_tds_data
             effective_tds = get_effective_tds_data(accounting_dict)
             tds_applicable = bool(effective_tds.get("applicable"))
 
-            subtotal = float(working_payload.get("subtotal") or 0.0)
+            tds_base_amt = tds_engine.determine_tds_base_amount(working_payload, effective_tds)
             tds_rate = effective_tds.get("rate")
             tds_section = effective_tds.get("section")
             tds_provision = effective_tds.get("provision")
@@ -465,7 +465,7 @@ async def update_invoice_extraction(
                 section=tds_section,
                 provision=tds_provision,
                 nature_of_payment=tds_nature,
-                base_amount=subtotal,
+                base_amount=tds_base_amt,
                 rate=float(tds_rate) if tds_rate is not None else None,
                 vendor_pan=vendor_pan,
             )

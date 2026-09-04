@@ -79,6 +79,7 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
             "nature_of_payment": tds_assessment.get("approved_nature_of_payment") or tds_assessment.get("nature_of_payment") or tds_assessment.get("nature"),
             "rate": rate_float if is_app else None,
             "base_amount": base_float if is_app else None,
+            "tds_base_amount": base_float if is_app else None,
             "tds_amount": tds_amt_float if is_app else None,
             "reasoning": tds_assessment.get("tds_reasoning") or tds_assessment.get("reason"),
             "is_approved": is_appr,
@@ -181,6 +182,98 @@ class TDSEngine:
         fourth_char = pan.strip().upper()[3]
         return fourth_char in ("P", "H")
 
+    @staticmethod
+    def determine_tds_base_amount(
+        invoice_data: Optional[Dict[str, Any]] = None,
+        tds_proposal: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """
+        Determines the authoritative statutory TDS Base Amount from available transaction values.
+        Does NOT blindly map to invoice subtotal.
+        Hierarchy:
+        1. Explicit valid proposal/user base_amount if positive and supported by transaction
+        2. Sum of taxable line items (pretax services/goods amount)
+        3. Document subtotal (pre-tax amount)
+        4. Total amount less tax total if available
+        5. Zero if non-applicable or unavailable
+        """
+        inv = invoice_data if isinstance(invoice_data, dict) else {}
+        tds = tds_proposal if isinstance(tds_proposal, dict) else {}
+
+        # Check explicit proposed base amount
+        prop_base = (
+            tds.get("approved_tds_base_amount")
+            or tds.get("tds_base_amount")
+            or tds.get("base_amount")
+        )
+        try:
+            prop_float = float(prop_base) if prop_base is not None else None
+        except (ValueError, TypeError):
+            prop_float = None
+
+        if prop_float is not None and prop_float > 0:
+            return round(prop_float, 2)
+
+        # Check sum of line items taxable amounts
+        line_items = inv.get("line_items") or []
+        if isinstance(line_items, list) and len(line_items) > 0:
+            taxable_sum = 0.0
+            has_taxable = False
+            for item in line_items:
+                if isinstance(item, dict):
+                    t_amt = (
+                        item.get("taxable_amount")
+                        or item.get("taxable")
+                        or item.get("pretax_amount")
+                        or item.get("amount")
+                    )
+                    try:
+                        val = float(t_amt) if t_amt is not None else None
+                    except (ValueError, TypeError):
+                        val = None
+
+                    if val is None:
+                        qty = item.get("quantity")
+                        u_price = item.get("unit_price")
+                        try:
+                            if qty is not None and u_price is not None:
+                                val = float(qty) * float(u_price)
+                        except (ValueError, TypeError):
+                            val = None
+
+                    if val is not None and val > 0:
+                        taxable_sum += val
+                        has_taxable = True
+
+            if has_taxable and taxable_sum > 0:
+                return round(taxable_sum, 2)
+
+        # Pretax Subtotal fallback
+        subtotal = inv.get("subtotal")
+        try:
+            subtotal_float = float(subtotal) if subtotal is not None else None
+        except (ValueError, TypeError):
+            subtotal_float = None
+
+        if subtotal_float is not None and subtotal_float > 0:
+            return round(subtotal_float, 2)
+
+        # Fallback: total_amount minus tax_total
+        total_amt = inv.get("total_amount")
+        tax_tot = inv.get("tax_total") or 0.0
+        try:
+            tot_float = float(total_amt) if total_amt is not None else None
+            tax_float = float(tax_tot) if tax_tot is not None else 0.0
+            if tot_float is not None and tot_float > 0:
+                calc_base = tot_float - tax_float
+                if calc_base > 0:
+                    return round(calc_base, 2)
+                return round(tot_float, 2)
+        except (ValueError, TypeError):
+            pass
+
+        return 0.0
+
     @classmethod
     def calculate_tds(
         cls,
@@ -233,7 +326,7 @@ class TDSEngine:
         if rate is not None and float(rate) > 0:
             computed_rate = float(rate)
             label = nature_of_payment or section or provision or "TDS"
-            reason = f"Authoritative TDS rate ({computed_rate}%) applied to subtotal for {label}."
+            reason = f"Authoritative TDS rate ({computed_rate}%) applied to base amount (₹{base_amount:,.2f}) for {label}."
         else:
             sec_str = (f"{provision or ''} {section or ''} {nature_of_payment or ''}").upper()
             if vendor_pan and not pan_valid:
