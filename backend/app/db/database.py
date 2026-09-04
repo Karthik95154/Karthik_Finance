@@ -7,13 +7,19 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import declarative_base
 from app.core.config import settings
 
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
+# Configure bounded connection pool to prevent Supabase pooler connection exhaustion (EMAXCONNSESSION)
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     future=True,
-    poolclass=NullPool,
+    poolclass=AsyncAdaptedQueuePool,
+    pool_size=5,
+    max_overflow=5,
+    pool_timeout=30.0,
+    pool_recycle=300,
+    pool_pre_ping=True,
     connect_args={
         "statement_cache_size": 0,
         "prepared_statement_cache_size": 0,

@@ -240,15 +240,25 @@ async def get_all_hitl_history(
     result = await db.execute(query)
     all_invoices = result.scalars().all()
 
+    # Batch fetch hitl reviews to avoid N+1 queries and connection thrashing
+    invoice_ids = [inv.id for inv in all_invoices]
+    reviews_by_invoice = {}
+    if invoice_ids:
+        r_query = (
+            select(HitlReview)
+            .where(HitlReview.invoice_id.in_(invoice_ids))
+            .order_by(HitlReview.created_at.desc())
+        )
+        r_res = await db.execute(r_query)
+        all_reviews = r_res.scalars().all()
+        for r in all_reviews:
+            reviews_by_invoice.setdefault(r.invoice_id, []).append(r)
+
     # Filter invoices that reached HITL_COMPLETED or have review records
     history_invoices = []
     for inv in all_invoices:
         vlm_data = inv.current_vlm_output.get("data") if isinstance(inv.current_vlm_output, dict) and isinstance(inv.current_vlm_output.get("data"), dict) else (inv.raw_vlm_output.get("data") if isinstance(inv.raw_vlm_output, dict) and isinstance(inv.raw_vlm_output.get("data"), dict) else {})
-        
-        # Get hitl reviews
-        r_query = select(HitlReview).where(HitlReview.invoice_id == inv.id).order_by(HitlReview.created_at.desc())
-        r_res = await db.execute(r_query)
-        reviews = r_res.scalars().all()
+        reviews = reviews_by_invoice.get(inv.id, [])
 
         if reviews or inv.status in ("HITL_COMPLETED", "COMPLETED", "EXPORTED"):
             history_invoices.append({
