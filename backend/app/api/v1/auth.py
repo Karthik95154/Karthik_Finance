@@ -59,11 +59,40 @@ async def login_for_access_token(
         user = res.scalar_one_or_none()
 
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid credentials: User not found or inactive.",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+            # Auto-provision user in database if missing (e.g. newly registered via Supabase)
+            try:
+                tenant_id = payload.dev_tenant_id or settings.DEFAULT_TENANT_ID
+                role = payload.dev_role.upper() if payload.dev_role else "FINANCE"
+                full_name = payload.dev_name or clean_email.split("@")[0].capitalize()
+                
+                tenant_res = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
+                tenant = tenant_res.scalar_one_or_none()
+                if not tenant:
+                    tenant = Tenant(id=tenant_id, name="Default Tenant", slug=f"tenant-{tenant_id}")
+                    db.add(tenant)
+                    await db.flush()
+
+                new_user_uuid = uuid.uuid4()
+                user = User(
+                    id=new_user_uuid,
+                    tenant_id=tenant_id,
+                    email=clean_email,
+                    full_name=full_name,
+                    role=role,
+                    is_active=True,
+                )
+                db.add(user)
+                await db.commit()
+                await db.refresh(user)
+                logger.info(f"Auto-provisioned new user {clean_email} in database (ID: {user.id}).")
+            except Exception as auto_err:
+                logger.error(f"Failed to auto-provision user {clean_email}: {auto_err}")
+                await db.rollback()
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid credentials: User not found or inactive.",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
 
         token = create_access_token(
             user_id=str(user.id),

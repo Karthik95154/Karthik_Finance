@@ -74,6 +74,10 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_zoho_connections_tenant_id ON zoho_connections(tenant_id);"))
             except Exception:
                 pass
+            try:
+                await conn.execute(text("ALTER TABLE email_connections ADD COLUMN IF NOT EXISTS user_id_str VARCHAR(100);"))
+            except Exception:
+                pass
         logger.info("Database tables and columns initialized / verified successfully.")
     except Exception as exc:
         logger.warning(f"Database table verification error: {exc}")

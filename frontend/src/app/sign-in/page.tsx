@@ -53,22 +53,24 @@ export default function SignInPage() {
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        if (typeof window !== "undefined" && data.access_token) {
-          localStorage.setItem("dev_auth_token", data.access_token);
-          if (data.user) {
-            localStorage.setItem("user_info", JSON.stringify(data.user));
-          }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setError(errData.detail || "Sign in failed. Please check your credentials.");
+        setIsLoading(false);
+        return;
+      }
+
+      const data = await res.json();
+      if (typeof window !== "undefined" && data.access_token) {
+        localStorage.setItem("dev_auth_token", data.access_token);
+        sessionStorage.removeItem("sakshi_imap_settings_cache");
+        if (data.user) {
+          localStorage.setItem("user_info", JSON.stringify(data.user));
         }
       }
-      
-      // Navigate to dashboard
       window.location.href = "/dashboard";
     } catch (err: any) {
-      // Fallback navigation if network issue
-      window.location.href = "/dashboard";
-    } finally {
+      setError(err.message || "Network error during authentication.");
       setIsLoading(false);
     }
   };

@@ -45,7 +45,6 @@ export default function SignUpPage() {
 
     try {
       setIsLoading(true);
-      // Request JWT token from backend auth endpoint
       const res = await fetch(`${API_BASE}/auth/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -57,21 +56,24 @@ export default function SignUpPage() {
         }),
       });
 
-      if (res.ok) {
-        const data = await res.json();
-        if (typeof window !== "undefined" && data.access_token) {
-          localStorage.setItem("dev_auth_token", data.access_token);
-          if (data.user) {
-            localStorage.setItem("user_info", JSON.stringify(data.user));
-          }
-        }
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        setError(errData.detail || "Sign up failed. Please try again.");
+        setIsLoading(false);
+        return;
       }
 
-      // Navigate to dashboard
+      const data = await res.json();
+      if (typeof window !== "undefined" && data.access_token) {
+        localStorage.setItem("dev_auth_token", data.access_token);
+        sessionStorage.removeItem("sakshi_imap_settings_cache");
+        if (data.user) {
+          localStorage.setItem("user_info", JSON.stringify(data.user));
+        }
+      }
       window.location.href = "/dashboard";
     } catch (err: any) {
-      window.location.href = "/dashboard";
-    } finally {
+      setError(err.message || "Network error during account creation.");
       setIsLoading(false);
     }
   };
