@@ -40,6 +40,13 @@ router = APIRouter(prefix="/invoices", tags=["Invoices"])
 
 
 def get_user_filter(current_user: AuthenticatedUser):
+    """
+    Returns an SQLAlchemy filter condition based on the user's role and identity.
+    Admins, finance reviewers, and dev default users can see all tenant invoices,
+    while individual customer users are filtered to their own user_id or legacy unassigned records.
+    """
+    if current_user.role in ("ADMIN", "FINANCE", "DATA_REVIEWER", "FINANCE_REVIEWER"):
+        return true()
     try:
         user_uuid = uuid.UUID(current_user.id)
         return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
@@ -248,12 +255,7 @@ async def list_invoices(
     Lists all invoices belonging to the authenticated user (or legacy unassigned records).
     Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
-    try:
-        user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
-    except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
-
+    user_filter = get_user_filter(current_user)
     query = select(Invoice).where(user_filter)
 
     # Strictly restrict CUSTOMER role to approved invoices only
@@ -304,12 +306,7 @@ async def get_invoice_status(
     Polling endpoint for tracking invoice processing, approval, and export status.
     Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
-    try:
-        user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
-    except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
-
+    user_filter = get_user_filter(current_user)
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
@@ -344,12 +341,7 @@ async def get_invoice(
     Accessible to ADMIN, FINANCE, VIEWER, and CUSTOMER roles.
     For CUSTOMER / VIEWER roles, invoice is only exposed after passing internal HITL approval.
     """
-    try:
-        user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
-    except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
-
+    user_filter = get_user_filter(current_user)
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
