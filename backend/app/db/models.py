@@ -281,6 +281,31 @@ class Integration(Base):
     )
 
 
+class EmailConnection(Base):
+    __tablename__ = "email_connections"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, unique=True, index=True)
+    user_id_str = Column(String(100), nullable=True, unique=True, index=True)
+    email_address = Column(String(255), nullable=False)
+    encrypted_password = Column(Text, nullable=False)
+    imap_host = Column(String(255), nullable=False, default="imap.gmail.com")
+    imap_port = Column(Integer, nullable=False, default=993)
+    is_active = Column(Boolean, nullable=False, default=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 class JournalEntry(Base):
     __tablename__ = "journal_entries"
 

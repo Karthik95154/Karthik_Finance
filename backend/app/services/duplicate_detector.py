@@ -52,15 +52,9 @@ class DuplicateDetector:
         res = await db.execute(query)
         invoices = res.scalars().all()
 
+        from app.services.invoice_processing import get_effective_invoice_data
         for inv in invoices:
-            vlm_data = (
-                (inv.current_vlm_output or {}).get("data")
-                if isinstance(inv.current_vlm_output, dict)
-                else {}
-            )
-            if not vlm_data and isinstance(inv.raw_vlm_output, dict):
-                vlm_data = inv.raw_vlm_output.get("data") or {}
-
+            vlm_data = get_effective_invoice_data(inv)
             if not vlm_data:
                 continue
 

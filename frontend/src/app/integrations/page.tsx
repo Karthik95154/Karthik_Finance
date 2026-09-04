@@ -1509,7 +1509,7 @@ function IntegrationsContent() {
                   style={{ display: "flex", alignItems: "center", gap: "8px" }}
                 >
                   <Server size={15} />
-                  {isEmailConnected ? "Edit Credentials" : "Configure IMAP"}
+                  {isEmailConnected ? "Change Email / Edit Connection" : "Connect Email"}
                 </button>
 
                 {isEmailConnected && (

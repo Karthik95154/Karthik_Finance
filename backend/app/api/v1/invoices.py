@@ -497,9 +497,14 @@ async def update_invoice_extraction(
             }
 
             # 5. Stage 6 Double-Entry Journal Generator
-            # Check if the user passed explicit manual journal edits with lines
-            if update_data.journal_entry and isinstance(update_data.journal_entry, dict) and update_data.journal_entry.get("lines"):
-                raw_lines = update_data.journal_entry.get("lines") or []
+            # If invoice extraction/amounts were updated, OR if passed journal total doesn't match working_payload total_amount, regenerate journal from latest effective payload
+            target_total = float(working_payload.get("total_amount") or working_payload.get("subtotal") or 0.0)
+            
+            passed_journal_lines = update_data.journal_entry.get("lines") if (update_data.journal_entry and isinstance(update_data.journal_entry, dict)) else None
+            passed_journal_total = sum(float(l.get("debit") or 0.0) for l in passed_journal_lines) if passed_journal_lines else 0.0
+
+            if passed_journal_lines and (target_total == 0 or abs(passed_journal_total - target_total) < 0.05):
+                raw_lines = passed_journal_lines
                 parsed_lines = []
                 dr_total = 0.0
                 cr_total = 0.0
