@@ -1,5 +1,5 @@
 import os
-from typing import Any, List
+from typing import Any, List, Union
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     ENCRYPTION_KEY: str = ""
 
-    CORS_ORIGINS: List[str] = [
+    CORS_ORIGINS: Union[str, List[str]] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3002",
@@ -29,16 +29,21 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, v: Any) -> List[str]:
         if isinstance(v, str):
-            if v.strip().startswith("[") and v.strip().endswith("]"):
+            val = v.strip()
+            if not val:
+                return ["*"]
+            if val.startswith("[") and val.endswith("]"):
                 import json
                 try:
-                    return json.loads(v)
+                    parsed = json.loads(val)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
                 except Exception:
                     pass
-            return [x.strip() for x in v.split(",") if x.strip()]
+            return [x.strip() for x in val.split(",") if x.strip()]
         elif isinstance(v, list):
             return [str(x).strip() for x in v if str(x).strip()]
-        return v
+        return ["*"]
 
     # Supabase Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/postgres"
@@ -133,12 +138,32 @@ class Settings(BaseSettings):
 
     # File Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB
-    ALLOWED_MIME_TYPES: List[str] = [
+    ALLOWED_MIME_TYPES: Union[str, List[str]] = [
         "application/pdf",
         "image/png",
         "image/jpeg",
         "image/jpg",
     ]
+
+    @field_validator("ALLOWED_MIME_TYPES", mode="before")
+    @classmethod
+    def parse_allowed_mime_types(cls, v: Any) -> List[str]:
+        if isinstance(v, str):
+            val = v.strip()
+            if not val:
+                return ["application/pdf", "image/png", "image/jpeg", "image/jpg"]
+            if val.startswith("[") and val.endswith("]"):
+                import json
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
+                except Exception:
+                    pass
+            return [x.strip() for x in val.split(",") if x.strip()]
+        elif isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return ["application/pdf", "image/png", "image/jpeg", "image/jpg"]
 
 
 settings = Settings()
