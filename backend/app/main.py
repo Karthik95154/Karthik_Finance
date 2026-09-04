@@ -98,7 +98,7 @@ app.include_router(hitl_router, prefix=settings.API_V1_STR)
 app.include_router(review_router, prefix=settings.API_V1_STR)
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {
         "message": f"Welcome to {settings.PROJECT_NAME} API",
