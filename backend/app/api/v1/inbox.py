@@ -166,7 +166,10 @@ async def poll_email_inbox(
         )
     except (ValueError, TypeError):
         current_user_uuid = None
-        user_integration_filter = (Integration.id == "imap_email")
+        user_integration_filter = or_(
+            Integration.id == f"imap_email_{current_user.id}",
+            Integration.id == "imap_email",
+        )
 
     # Find email config for this specific user
     query = select(Integration).where(user_integration_filter).order_by(Integration.created_at.desc())
