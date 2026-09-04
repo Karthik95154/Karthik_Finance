@@ -11,7 +11,7 @@ test_auth_headers = {"Authorization": f"Bearer {create_access_token(user_id='tes
 from app.storage.supabase_storage import storage_service
 from app.services.imap_service import imap_service
 from app.db.database import get_db
-from app.db.models import Invoice, Integration
+from app.db.models import Invoice, Integration, EmailConnection
 from app.services.groq_classifier import DocumentClassificationResult, FinancialRelevance, DocumentType
 
 
@@ -56,18 +56,18 @@ async def test_settings_api_flow():
                 assert res.json()["status"] == "connected"
                 assert res.json()["config"]["password"] == "••••••••••••••••"
 
-                # Setup DB mock to return the integration we just configured
-                mock_integration = Integration(
-                    id="imap_email",
-                    status="connected",
-                    config={
-                        "imap_server": "imap.gmail.com",
-                        "imap_port": 993,
-                        "email_address": "finance@company.com",
-                        "password": encrypt_data("my_google_app_password")
-                    }
+                # Setup DB mock to return the email connection we just configured
+                mock_conn = EmailConnection(
+                    id=uuid.uuid4(),
+                    user_id=None,
+                    user_id_str="test-user-id",
+                    email_address="finance@company.com",
+                    encrypted_password=encrypt_data("my_google_app_password"),
+                    imap_host="imap.gmail.com",
+                    imap_port=993,
+                    is_active=True,
                 )
-                mock_result.scalars.return_value.first.return_value = mock_integration
+                mock_result.scalars.return_value.first.return_value = mock_conn
 
                 # 2. Get settings (verify masked password)
                 res = await client.get("/api/v1/settings/integrations/imap_email", headers=test_auth_headers)
@@ -90,19 +90,20 @@ async def test_email_polling_and_inbox_lifecycle():
     mock_db = AsyncMock()
     mock_result = MagicMock()
     
-    # Mocking select(Integration) to return active configuration
-    mock_integration = Integration(
-        id="imap_email",
-        status="connected",
-        config={
-            "imap_server": "imap.gmail.com",
-            "imap_port": 993,
-            "email_address": "finance@company.com",
-            "password": encrypt_data("my_google_app_password")
-        }
+    # Mocking select(EmailConnection) to return active configuration
+    mock_conn = EmailConnection(
+        id=uuid.uuid4(),
+        user_id=None,
+        user_id_str="test-user-id",
+        email_address="finance@company.com",
+        encrypted_password=encrypt_data("my_google_app_password"),
+        imap_host="imap.gmail.com",
+        imap_port=993,
+        is_active=True,
     )
     
-    mock_result.scalar_one_or_none.return_value = mock_integration
+    mock_result.scalar_one_or_none.return_value = mock_conn
+    mock_result.scalars.return_value.first.return_value = mock_conn
     mock_db.execute.return_value = mock_result
 
     async def override_get_db():
@@ -141,7 +142,7 @@ async def test_email_polling_and_inbox_lifecycle():
                  patch.object(storage_service, "upload_file", return_value="uploads/test_path.pdf"), \
                  patch("app.api.v1.inbox.classify_document", return_value=mock_class_result):
                 
-                mock_result.scalars.return_value.first.side_effect = [mock_integration, None]
+                mock_result.scalars.return_value.first.side_effect = [mock_conn, None]
 
                 res = await client.post("/api/v1/email/poll", headers=test_auth_headers)
                 assert res.status_code == 200
@@ -175,7 +176,7 @@ async def test_email_polling_and_inbox_lifecycle():
 
             # 3. Trigger email poll again (verify SHA-256 duplicate handling)
             with patch.object(imap_service, "poll_mailbox", return_value=poll_return_val):
-                mock_result.scalars.return_value.first.side_effect = [mock_integration, mock_invoice]
+                mock_result.scalars.return_value.first.side_effect = [mock_conn, mock_invoice]
 
                 res = await client.post("/api/v1/email/poll", headers=test_auth_headers)
                 assert res.status_code == 200
@@ -255,18 +256,20 @@ async def test_non_financial_documents_discarded():
     mock_db = AsyncMock()
     mock_result = MagicMock()
 
-    mock_integration = Integration(
-        id="imap_email",
-        status="connected",
-        config={
-            "imap_server": "imap.gmail.com",
-            "imap_port": 993,
-            "email_address": "finance@company.com",
-            "password": encrypt_data("my_google_app_password")
-        }
+    # Mocking select(EmailConnection) to return active configuration
+    mock_conn = EmailConnection(
+        id=uuid.uuid4(),
+        user_id=None,
+        user_id_str="test-user-id",
+        email_address="finance@company.com",
+        encrypted_password=encrypt_data("my_google_app_password"),
+        imap_host="imap.gmail.com",
+        imap_port=993,
+        is_active=True,
     )
 
-    mock_result.scalar_one_or_none.return_value = mock_integration
+    mock_result.scalar_one_or_none.return_value = mock_conn
+    mock_result.scalars.return_value.first.return_value = mock_conn
     mock_db.execute.return_value = mock_result
 
     async def override_get_db():
@@ -307,7 +310,7 @@ async def test_non_financial_documents_discarded():
                  patch.object(storage_service, "upload_file", mock_upload), \
                  patch("app.api.v1.inbox.classify_document", return_value=non_financial_result):
 
-                mock_result.scalars.return_value.first.side_effect = [mock_integration, None]
+                mock_result.scalars.return_value.first.side_effect = [mock_conn, None]
 
                 res = await client.post("/api/v1/email/poll", headers=test_auth_headers)
                 assert res.status_code == 200

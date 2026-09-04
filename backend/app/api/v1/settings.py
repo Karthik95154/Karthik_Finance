@@ -4,9 +4,10 @@ from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
-from app.db.models import Integration, EmailConnection
+from app.db.models import Integration, EmailConnection, User, Tenant
 from app.core.security import AuthenticatedUser, get_current_user
 from app.core.security_util import encrypt_data
 from app.services.imap_service import imap_service
@@ -155,6 +156,43 @@ async def configure_imap_settings(
             detail="Unable to authenticate with the email server. Please verify the IMAP server, port, email address, and App Password.",
         )
 
+    # Ensure user exists in users table to satisfy foreign key constraint email_connections_user_id_fkey
+    if user_uuid:
+        user_record = await db.get(User, user_uuid)
+        if not user_record:
+            # Look up existing user by email
+            clean_email = current_user.email.strip().lower()
+            query_user_by_email = select(User).where(User.email == clean_email)
+            res_user = await db.execute(query_user_by_email)
+            user_record = res_user.scalar_one_or_none()
+
+            if user_record:
+                # Reuse existing user and align user_uuid
+                user_uuid = user_record.id
+            else:
+                # Provision the user using existing auth/provisioning logic
+                tenant_id = current_user.tenant_id or "default-tenant-001"
+                tenant_record = await db.get(Tenant, tenant_id)
+                if not tenant_record:
+                    tenant_record = Tenant(
+                        id=tenant_id,
+                        name="Default Organization",
+                        slug=f"tenant-{tenant_id}",
+                    )
+                    db.add(tenant_record)
+                    await db.flush()
+
+                user_record = User(
+                    id=user_uuid,
+                    tenant_id=tenant_id,
+                    email=clean_email,
+                    full_name=current_user.full_name or clean_email.split("@")[0],
+                    role=current_user.role or "FINANCE",
+                    is_active=True,
+                )
+                db.add(user_record)
+                await db.flush()
+
     # Update existing user connection or create new EmailConnection record
     if existing_conn:
         existing_conn.user_id = user_uuid
@@ -177,8 +215,16 @@ async def configure_imap_settings(
         )
         db.add(conn_record)
 
-    await db.commit()
-    await db.refresh(conn_record)
+    try:
+        await db.commit()
+        await db.refresh(conn_record)
+    except IntegrityError as ie:
+        await db.rollback()
+        logger.error(f"IntegrityError saving email connection for user {current_user.id}: {ie}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to link email connection: authenticated user could not be verified in the database.",
+        )
 
     return {
         "success": True,
