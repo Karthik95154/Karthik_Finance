@@ -78,7 +78,7 @@ class InvoiceExportService:
                 "attachment_status": "attached",
             }
 
-        # 3. Check Balanced Journal Entry Existence
+        # 3. Check Balanced Journal Entry Existence & Consistency
         journal_query = select(JournalEntry).where(
             JournalEntry.invoice_id == invoice_id,
             JournalEntry.tenant_id == tenant_id,
@@ -97,6 +97,12 @@ class InvoiceExportService:
         from app.services.invoice_processing import get_effective_invoice_data
         
         vlm_data_check = get_effective_invoice_data(invoice)
+        inv_eff_total = float(vlm_data_check.get("total_amount") or vlm_data_check.get("subtotal") or 0.0)
+        j_total = float(journal_entry.total_debit or 0.0)
+        if inv_eff_total > 0 and j_total > 0 and abs(inv_eff_total - j_total) > 0.05:
+            raise ValueError(
+                f"Cannot export to Zoho: Approved journal total (₹{j_total:,.2f}) does not match current invoice total (₹{inv_eff_total:,.2f}). Please re-approve journal."
+            )
 
         raw_inv_date = vlm_data_check.get("invoice_date")
         raw_due_date = vlm_data_check.get("due_date")

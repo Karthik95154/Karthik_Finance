@@ -234,6 +234,11 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
                 "tds": final_tds_calc,
             }
 
+            # Re-read effective invoice payload in case user edited fields while AI calls were in-flight
+            latest_payload = get_effective_invoice_data(invoice)
+            if latest_payload:
+                invoice_payload = latest_payload
+
             # 6. Call Deterministic Stage 6 Journal Generator (Double-Entry General Ledger Preview)
             journal_result = journal_generator.generate_journal(
                 invoice_data=invoice_payload,

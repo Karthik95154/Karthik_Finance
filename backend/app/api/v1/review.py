@@ -148,7 +148,10 @@ async def approve_journal_entry(
     )
 
     journal = invoice.journal_entry
-    if not journal or not isinstance(journal, dict):
+    target_invoice_total = float(vlm_data.get("total_amount") or vlm_data.get("subtotal") or 0.0)
+    current_journal_debit = float(journal.get("total_debit") or 0.0) if (journal and isinstance(journal, dict)) else 0.0
+
+    if not journal or not isinstance(journal, dict) or (target_invoice_total > 0 and current_journal_debit > 0 and abs(target_invoice_total - current_journal_debit) > 0.05):
         journal = journal_generator.generate_journal(
             invoice_data=vlm_data,
             accounting_classification=accounting_data,
@@ -158,11 +161,17 @@ async def approve_journal_entry(
             financial_validation_result=invoice.financial_validation_result,
         )
 
-    # 3. Check Balance
+    # 3. Check Balance & Invoice Total Consistency
     total_debit = float(journal.get("total_debit") or 0.0)
     total_credit = float(journal.get("total_credit") or 0.0)
     difference = float(journal.get("difference") or 0.0)
     is_balanced = bool(journal.get("is_balanced") or journal.get("validation", {}).get("balanced") or (abs(total_debit - total_credit) < 0.01 and total_debit > 0))
+
+    if target_invoice_total > 0 and abs(total_debit - target_invoice_total) > 0.05:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot approve journal: Journal total debits (₹{total_debit:,.2f}) do not match current effective invoice total (₹{target_invoice_total:,.2f}). Please re-evaluate invoice.",
+        )
 
     if not is_balanced or difference != 0.0 or total_debit <= 0:
         raise HTTPException(
