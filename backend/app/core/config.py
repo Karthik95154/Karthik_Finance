@@ -24,6 +24,18 @@ class Settings(BaseSettings):
         "http://127.0.0.1:3003",
     ]
     FRONTEND_URL: str = "http://localhost:3000"
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+
+    @field_validator("PORT", mode="before")
+    @classmethod
+    def parse_port(cls, v: Any) -> int:
+        if v is None or v == "":
+            return 8000
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return 8000
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
