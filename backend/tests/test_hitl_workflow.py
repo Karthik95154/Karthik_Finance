@@ -117,5 +117,6 @@ async def test_hitl_extraction_workflow(client: AsyncClient, db_session, admin_t
     assert resp_f.status_code == 200
 
     await db_session.refresh(invoice)
-    assert invoice.status == "APPROVED"
+    assert invoice.approval_status == "APPROVED"
+    assert invoice.status in ("COMPLETED", "APPROVED")
     assert invoice.current_accounting_output["corrected"] is True

@@ -2,8 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { getInvoiceStatus, InvoiceStatus } from "@/lib/api";
-import { CheckCircle2, Loader2, AlertCircle, ArrowLeft, Sparkles, FileText, Database, Layers, Send } from "lucide-react";
+import { getInvoiceStatus, InvoiceStatus, invalidateInvoicesCache } from "@/lib/api";
+import { CheckCircle2, Loader2, AlertCircle, ArrowLeft, Sparkles, Clock, ShieldCheck, FileCheck2 } from "lucide-react";
 
 export default function InvoiceProcessingPage() {
   const params = useParams();
@@ -28,15 +28,21 @@ export default function InvoiceProcessingPage() {
         setStatusData(data);
         setPollCount((prev) => prev + 1);
 
-        if (data.status === "COMPLETED" || data.status === "APPROVED") {
-          // Final extraction, COA and journal generation complete -> navigate to invoice workspace
+        const isApproved =
+          data.status === "APPROVED" ||
+          data.approval_status === "APPROVED" ||
+          (data.status === "COMPLETED" && data.approval_status === "APPROVED");
+
+        if (isApproved) {
+          // Both HITL approvals completed -> invoice is officially released to customer
+          invalidateInvoicesCache();
           setTimeout(() => {
             router.push(`/finance/invoices/${invoiceId}`);
           }, 1200);
         } else if (data.status === "FAILED" || data.accounting_status === "FAILED") {
           setError(data.error_message || "Invoice processing encountered an issue.");
         } else {
-          // Continuously poll every 2.5s across all stages (VLM -> COA -> Final Generation)
+          // Continuously poll every 2.5s across all stages (VLM -> HITL 1 -> COA -> HITL 2)
           timer = setTimeout(checkStatus, 2500);
         }
       } catch (err: any) {
@@ -55,48 +61,48 @@ export default function InvoiceProcessingPage() {
   }, [invoiceId, router]);
 
   const currentStatus = statusData?.status || "PROCESSING_VLM";
+  const approvalStatus = statusData?.approval_status;
 
-  // Step 1: Upload (Always complete upon hitting this screen)
-  const isUploadDone = true;
+  // 5 Explicit Lifecycle States:
+  // State 1: PROCESSING_VLM
+  const isVlmRunning = currentStatus === "UPLOADED" || currentStatus === "PROCESSING_VLM" || currentStatus === "PENDING";
 
-  // Step 2: Qwen-VL Model
-  const isVlmRunning = currentStatus === "UPLOADED" || currentStatus === "PROCESSING_VLM";
-  const isVlmDone =
-    currentStatus === "HITL_REVIEW" ||
-    currentStatus === "PROCESSING_ACCOUNTING" ||
-    currentStatus === "FINAL_HITL_REVIEW" ||
-    currentStatus === "COMPLETED" ||
-    currentStatus === "APPROVED";
+  // State 2: HITL_REVIEW (Waiting for HITL Approval #1)
+  const isWaitingHitl1 = currentStatus === "HITL_REVIEW";
 
-  // Step 3: COA & Accounting Reasoning
-  const isCoaRunning =
-    currentStatus === "HITL_REVIEW" ||
-    currentStatus === "PROCESSING_ACCOUNTING";
-  const isCoaDone =
-    currentStatus === "FINAL_HITL_REVIEW" ||
-    currentStatus === "COMPLETED" ||
-    currentStatus === "APPROVED";
+  // State 3: ACCOUNTING_PROCESSING (Running downstream COA/TDS after Approval #1)
+  const isAccountingRunning = currentStatus === "ACCOUNTING_PROCESSING";
 
-  // Step 4: Final Generation (GST verification & Double-Entry Journal)
-  const isFinalRunning = currentStatus === "FINAL_HITL_REVIEW";
-  const isFinalDone = currentStatus === "COMPLETED" || currentStatus === "APPROVED";
+  // State 4: FINAL_HITL_REVIEW (Waiting for HITL Approval #2)
+  const isWaitingHitl2 = currentStatus === "FINAL_HITL_REVIEW" || currentStatus === "PENDING_FINANCE_APPROVAL";
 
-  // Step 5: Complete & Ready
-  const isAllComplete = currentStatus === "COMPLETED" || currentStatus === "APPROVED";
+  // State 5: APPROVED (Completed after HITL Approval #2)
+  const isApproved =
+    currentStatus === "APPROVED" ||
+    approvalStatus === "APPROVED" ||
+    (currentStatus === "COMPLETED" && approvalStatus === "APPROVED");
 
-  // Dynamic header text based on active step
+  // Step milestones for visual timeline:
+  const isVlmDone = !isVlmRunning;
+  const isHitl1Done = isAccountingRunning || isWaitingHitl2 || isApproved;
+  const isAccountingDone = isWaitingHitl2 || isApproved;
+  const isHitl2Done = isApproved;
+
+  // Dynamic header text based on exact active stage
   const getHeaderTitle = () => {
-    if (isAllComplete) return "Processing Complete!";
-    if (isFinalRunning) return "Generating Final Journal & Taxes";
-    if (isCoaRunning) return "COA Classification & TDS Analysis";
+    if (isApproved) return "Invoice Approved & Ready!";
+    if (isWaitingHitl2) return "Awaiting Final Finance Approval";
+    if (isAccountingRunning) return "Classifying Accounting & Taxes";
+    if (isWaitingHitl1) return "Extraction Complete — In Review";
     if (isVlmRunning) return "Qwen3-VL Model Running";
     return "Processing Invoice";
   };
 
   const getHeaderSubtitle = () => {
-    if (isAllComplete) return "All fields extracted, verified & reconciled. Redirecting to invoice workspace...";
-    if (isFinalRunning) return "Computing deterministic GST tax reconciliation and balancing double-entry journal entries.";
-    if (isCoaRunning) return "Classifying line items against Chart of Accounts (COA) and evaluating TDS rules.";
+    if (isApproved) return "Final accounting review approved. Opening invoice workspace...";
+    if (isWaitingHitl2) return "Accounting, TDS & double-entry journal verified. Waiting for final finance approval.";
+    if (isAccountingRunning) return "Classifying line items against Chart of Accounts (COA) and evaluating TDS rules.";
+    if (isWaitingHitl1) return "AI extraction completed. Internal finance team is reviewing extracted invoice data.";
     if (isVlmRunning) return "Qwen3-VL is extracting semantic tables, vendor details, header fields and line items.";
     return "Extracting and analyzing invoice details.";
   };
@@ -163,8 +169,8 @@ export default function InvoiceProcessingPage() {
                 width: "64px",
                 height: "64px",
                 borderRadius: "50%",
-                background: isAllComplete ? "#f0fdf4" : "#f0f7ff",
-                color: isAllComplete ? "var(--success)" : "var(--accent)",
+                background: isApproved ? "#f0fdf4" : (isWaitingHitl1 || isWaitingHitl2) ? "#fef3c7" : "#f0f7ff",
+                color: isApproved ? "var(--success)" : (isWaitingHitl1 || isWaitingHitl2) ? "#b45309" : "var(--accent)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -172,8 +178,10 @@ export default function InvoiceProcessingPage() {
                 transition: "all 0.3s ease",
               }}
             >
-              {isAllComplete ? (
+              {isApproved ? (
                 <CheckCircle2 size={36} color="#16a34a" />
+              ) : (isWaitingHitl1 || isWaitingHitl2) ? (
+                <Clock size={32} color="#b45309" />
               ) : (
                 <Loader2 size={36} className="animate-spin" style={{ animation: "spin 1.5s linear infinite" }} />
               )}
@@ -185,8 +193,7 @@ export default function InvoiceProcessingPage() {
             <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "32px", minHeight: "42px" }}>
               {getHeaderSubtitle()}
             </p>
-
-            {/* Step Progress Timeline */}
+              {/* Step Progress Timeline */}
             <div
               style={{
                 background: "var(--bg-main)",
@@ -213,7 +220,7 @@ export default function InvoiceProcessingPage() {
                 </div>
               </div>
 
-              {/* Step 2: Qwen3-VL Model Running */}
+              {/* Step 2: Qwen3-VL Extraction */}
               <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isVlmDone || isVlmRunning ? 1 : 0.4 }}>
                 {isVlmDone ? (
                   <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
@@ -237,16 +244,49 @@ export default function InvoiceProcessingPage() {
                     2. Qwen3-VL Extraction {isVlmRunning && <span style={{ fontSize: "12px", fontWeight: "400" }}>(Running...)</span>}
                   </div>
                   <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    Extracting vendor details, line items & amounts
+                    Extracting semantic fields, vendor details & line items
                   </div>
                 </div>
               </div>
 
-              {/* Step 3: COA & Accounting Reasoning */}
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isCoaDone || isCoaRunning ? 1 : 0.4 }}>
-                {isCoaDone ? (
+              {/* Step 3: HITL Review #1 */}
+              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isHitl1Done || isWaitingHitl1 ? 1 : 0.4 }}>
+                {isHitl1Done ? (
                   <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
-                ) : isCoaRunning ? (
+                ) : isWaitingHitl1 ? (
+                  <div
+                    style={{
+                      width: "22px",
+                      height: "22px",
+                      borderRadius: "50%",
+                      background: "#fef3c7",
+                      color: "#b45309",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      flexShrink: 0,
+                    }}
+                  >
+                    <Clock size={15} />
+                  </div>
+                ) : (
+                  <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: "2px solid var(--border-strong)", flexShrink: 0 }} />
+                )}
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: "14px", fontWeight: "600", color: isWaitingHitl1 ? "#b45309" : "var(--text-primary)" }}>
+                    3. Extraction Review (HITL #1) {isWaitingHitl1 && <span style={{ fontSize: "12px", fontWeight: "600" }}>(In Review)</span>}
+                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
+                    Internal verification of extracted header, vendor and line items
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 4: Accounting & Taxes */}
+              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isAccountingDone || isAccountingRunning ? 1 : 0.4 }}>
+                {isAccountingDone ? (
+                  <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
+                ) : isAccountingRunning ? (
                   <div
                     style={{
                       width: "22px",
@@ -262,53 +302,44 @@ export default function InvoiceProcessingPage() {
                   <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: "2px solid var(--border-strong)", flexShrink: 0 }} />
                 )}
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: isCoaRunning ? "var(--accent)" : "var(--text-primary)" }}>
-                    3. COA & Accounting Reasoning {isCoaRunning && <span style={{ fontSize: "12px", fontWeight: "400" }}>(Classifying...)</span>}
+                  <div style={{ fontSize: "14px", fontWeight: "600", color: isAccountingRunning ? "var(--accent)" : "var(--text-primary)" }}>
+                    4. Accounting & Tax Reasoning {isAccountingRunning && <span style={{ fontSize: "12px", fontWeight: "400" }}>(Classifying...)</span>}
                   </div>
                   <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    Chart of Accounts mapping, TDS rules & GST analysis
+                    COA classification, TDS assessment, GST verification & GL balancing
                   </div>
                 </div>
               </div>
 
-              {/* Step 4: Final Generation */}
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isFinalDone || isFinalRunning ? 1 : 0.4 }}>
-                {isFinalDone ? (
+              {/* Step 5: Final Finance Approval */}
+              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isApproved || isWaitingHitl2 ? 1 : 0.4 }}>
+                {isApproved ? (
                   <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
-                ) : isFinalRunning ? (
+                ) : isWaitingHitl2 ? (
                   <div
                     style={{
                       width: "22px",
                       height: "22px",
                       borderRadius: "50%",
-                      border: "2.5px solid var(--accent)",
-                      borderTopColor: "transparent",
-                      animation: "spin 1s linear infinite",
+                      background: "#fef3c7",
+                      color: "#b45309",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
                       flexShrink: 0,
                     }}
-                  />
+                  >
+                    <Clock size={15} />
+                  </div>
                 ) : (
                   <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: "2px solid var(--border-strong)", flexShrink: 0 }} />
                 )}
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: isFinalRunning ? "var(--accent)" : "var(--text-primary)" }}>
-                    4. Final Generation & Journal Balancing {isFinalRunning && <span style={{ fontSize: "12px", fontWeight: "400" }}>(Generating...)</span>}
+                  <div style={{ fontSize: "14px", fontWeight: "600", color: isWaitingHitl2 ? "#b45309" : isApproved ? "#16a34a" : "var(--text-primary)" }}>
+                    5. Final Finance Approval (HITL #2) {isWaitingHitl2 && <span style={{ fontSize: "12px", fontWeight: "600" }}>(Awaiting Approval)</span>}
                   </div>
                   <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    Deterministic GST verification & double-entry journal creation
-                  </div>
-                </div>
-              </div>
-
-              {/* Step 5: Complete & Review */}
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isAllComplete ? 1 : 0.4 }}>
-                <CheckCircle2 size={22} color={isAllComplete ? "#16a34a" : "var(--border-strong)"} style={{ flexShrink: 0 }} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: isAllComplete ? "#16a34a" : "var(--text-primary)" }}>
-                    5. Complete — Invoice Workspace Ready
-                  </div>
-                  <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    Review extracted fields, edit data & sync to Zoho Books
+                    Final finance approval releases invoice to workspace
                   </div>
                 </div>
               </div>
@@ -328,8 +359,10 @@ export default function InvoiceProcessingPage() {
             >
               <Sparkles size={16} color="var(--accent)" />
               <span>
-                {isAllComplete
+                {isApproved
                   ? "Opening invoice workspace..."
+                  : isWaitingHitl1 || isWaitingHitl2
+                  ? "Invoice is awaiting internal finance review. It will become available as soon as approved."
                   : "Continuous automated pipeline active. Do not close this window."}
               </span>
             </div>

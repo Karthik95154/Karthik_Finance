@@ -366,6 +366,8 @@ export interface InvoiceStatus {
   invoice_id: string;
   status: "PENDING" | "PROCESSING_VLM" | "PROCESSING_ACCOUNTING" | "COMPLETED" | "FAILED" | string;
   accounting_status?: string | null;
+  approval_status?: "PENDING_REVIEW" | "APPROVED" | "REJECTED" | string | null;
+  export_status?: "NOT_EXPORTED" | "EXPORTED" | "FAILED" | string | null;
   error_message?: string | null;
   confidence_score?: number | null;
   accounting_confidence?: number | null;
