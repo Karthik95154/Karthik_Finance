@@ -29,14 +29,27 @@ class Settings(BaseSettings):
     @classmethod
     def parse_cors_origins(cls, v: Any) -> List[str]:
         if isinstance(v, str):
-            if v.strip().startswith("[") and v.strip().endswith("]"):
+            val = v.strip()
+            # If wrapped in quotes, strip them
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                val = val[1:-1].strip()
+            if val.startswith("[") and val.endswith("]"):
                 import json
                 try:
-                    return json.loads(v)
+                    parsed = json.loads(val)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
                 except Exception:
-                    pass
-            return [x.strip() for x in v.split(",") if x.strip()]
-        elif isinstance(v, list):
+                    # Fallback: strip brackets and split by comma
+                    val = val[1:-1]
+            # Split comma-separated values and clean extra quotes
+            items = []
+            for item in val.split(","):
+                cleaned = item.strip().strip("'\"").strip()
+                if cleaned:
+                    items.append(cleaned)
+            return items
+        elif isinstance(v, (list, tuple, set)):
             return [str(x).strip() for x in v if str(x).strip()]
         return v
 
