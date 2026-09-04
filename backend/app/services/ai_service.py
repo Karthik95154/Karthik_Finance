@@ -98,7 +98,7 @@ class AIService:
 
         logger.info(f"Sending extraction request to Colab Qwen3-VL ({endpoint}) with timeout={self.timeout}s")
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             try:
                 response = await client.post(
                     endpoint,
@@ -114,15 +114,15 @@ class AIService:
                     f"Colab Qwen3-VL server unreachable at {self.colab_url}. Please ensure the Colab notebook and ngrok tunnel are running."
                 ) from e
             except httpx.TimeoutException as e:
-                logger.error(f"Colab Qwen3-VL request timed out after {self.timeout}s: {e}")
+                logger.error(f"Colab Qwen3-VL initial submission timed out after 60s: {e}")
                 raise TimeoutError(
-                    f"Inference timed out after {int(self.timeout)}s. The model may be under heavy load."
+                    f"Initial job submission timed out after 60s. The Colab server may be unreachable."
                 ) from e
             except Exception as e:
                 logger.error(f"Unexpected error communicating with Colab Qwen3-VL: {e}")
                 raise RuntimeError(f"Colab communication error: {str(e)}") from e
 
-            if response.status_code != 200:
+            if response.status_code not in (200, 202):
                 resp_text = response.text
                 if "ERR_NGROK" in resp_text or "<!DOCTYPE html>" in resp_text or response.status_code == 404:
                     err_msg = (
@@ -130,17 +130,58 @@ class AIService:
                         f"(Status {response.status_code}). Please start your Google Colab notebook and update COLAB_API_URL in backend/.env."
                     )
                 else:
-                    err_msg = f"Qwen3-VL extraction failed [{response.status_code}]: {resp_text[:300]}"
+                    err_msg = f"Qwen3-VL extraction request failed [{response.status_code}]: {resp_text[:300]}"
                 logger.error(err_msg)
                 raise RuntimeError(err_msg)
 
             try:
-                result = response.json()
+                init_data = response.json()
             except Exception as e:
                 logger.error(f"Failed to decode JSON from Colab response: {response.text[:300]}")
                 raise ValueError(f"Malformed JSON returned from Qwen3-VL: {str(e)}") from e
 
-            return result
+        # If server accepted as an asynchronous job, poll status until completed (Supports 15+ minutes without proxy drops)
+        if isinstance(init_data, dict) and "job_id" in init_data:
+            job_id = init_data["job_id"]
+            poll_endpoint = f"{self.colab_url}/api/infer/jobs/{job_id}"
+            logger.info(f"VLM Async Job '{job_id}' registered on Colab. Polling status (max timeout={self.timeout}s)...")
+            
+            import asyncio
+            import time
+            start_time = time.time()
+            poll_interval = 4.0
+            
+            while time.time() - start_time < self.timeout:
+                await asyncio.sleep(poll_interval)
+                try:
+                    async with httpx.AsyncClient(timeout=15.0) as poll_client:
+                        poll_resp = await poll_client.get(
+                            poll_endpoint,
+                            headers={"ngrok-skip-browser-warning": "1"},
+                        )
+                    if poll_resp.status_code == 200:
+                        poll_data = poll_resp.json()
+                        job_status = poll_data.get("status")
+                        if job_status == "completed":
+                            elapsed = round(time.time() - start_time, 1)
+                            logger.info(f"VLM Async Job '{job_id}' completed successfully in {elapsed}s.")
+                            return poll_data.get("result") or poll_data
+                        elif job_status == "failed":
+                            err_detail = poll_data.get("error") or "Unknown GPU inference failure on Colab."
+                            logger.error(f"VLM Async Job '{job_id}' failed: {err_detail}")
+                            raise RuntimeError(f"Qwen3-VL extraction failed on Colab: {err_detail}")
+                        else:
+                            elapsed = round(time.time() - start_time, 1)
+                            logger.info(f"VLM Async Job '{job_id}' running on GPU... ({elapsed}s / {int(self.timeout)}s)")
+                    elif poll_resp.status_code == 404:
+                        logger.warning(f"VLM Job '{job_id}' not found yet on server, retrying in {poll_interval}s...")
+                except (httpx.ConnectError, httpx.TimeoutException) as transient_err:
+                    logger.warning(f"Transient network glitch during job '{job_id}' polling (will retry in {poll_interval}s): {transient_err}")
+                    continue
+            
+            raise TimeoutError(f"Inference timed out after {int(self.timeout)}s on Colab GPU.")
+
+        return init_data
 
 
 ai_service = AIService()

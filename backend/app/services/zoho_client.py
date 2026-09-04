@@ -457,10 +457,28 @@ class ZohoClientService:
             clean_pan = re.sub(r"[^A-Za-z0-9]", "", pan).upper().strip()
             if len(clean_pan) == 10:
                 payload["pan_no"] = clean_pan
-        if email:
-            payload["email"] = email
-        if phone:
-            payload["phone"] = phone
+
+        clean_email = (email or "").strip() or None
+        clean_phone = (str(phone) if phone is not None else "").strip() or None
+
+        if clean_email:
+            payload["email"] = clean_email
+        if clean_phone:
+            payload["phone"] = clean_phone
+            payload["work_phone"] = clean_phone
+
+        # Populate primary contact person so Zoho Books displays Email and Work Phone in the UI table
+        if clean_email or clean_phone:
+            contact_person: Dict[str, Any] = {
+                "first_name": vendor_name[:100],
+                "is_primary_contact": True,
+            }
+            if clean_email:
+                contact_person["email"] = clean_email
+            if clean_phone:
+                contact_person["phone"] = clean_phone
+                contact_person["mobile"] = clean_phone
+            payload["contact_persons"] = [contact_person]
 
         billing_addr: Dict[str, Any] = {"country": "India"}
         if address:

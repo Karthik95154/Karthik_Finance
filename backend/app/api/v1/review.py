@@ -719,9 +719,9 @@ async def add_vendor_to_zoho(
 
     vendor_gstin = (vlm_data.get("vendor_gstin") or "").strip() or None
     vendor_pan = (vlm_data.get("vendor_pan") or "").strip() or None
-    vendor_email = vlm_data.get("vendor_email")
-    vendor_phone = vlm_data.get("vendor_phone")
-    vendor_address = vlm_data.get("vendor_address")
+    vendor_email = (vlm_data.get("vendor_email") or vlm_data.get("email") or "").strip() or None
+    vendor_phone = (str(vlm_data.get("vendor_phone") or vlm_data.get("phone") or vlm_data.get("mobile") or "")).strip() or None
+    vendor_address = (vlm_data.get("vendor_address") or vlm_data.get("address") or "").strip() or None
     supplier_state_name = gst_eval.get("supplier_state_name")
 
     try:
