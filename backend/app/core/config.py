@@ -62,11 +62,17 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             val = v.strip()
             if val.startswith("postgresql+psycopg2://"):
-                return val.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+                val = val.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
             elif val.startswith("postgresql://"):
-                return val.replace("postgresql://", "postgresql+asyncpg://", 1)
+                val = val.replace("postgresql://", "postgresql+asyncpg://", 1)
             elif val.startswith("postgres://"):
-                return val.replace("postgres://", "postgresql+asyncpg://", 1)
+                val = val.replace("postgres://", "postgresql+asyncpg://", 1)
+
+            # Supabase pooler: port 5432 is session mode (strictly capped at 15 clients).
+            # Switch to port 6543 (transaction pooler) which safely supports thousands of concurrent connections.
+            if "pooler.supabase.com:5432" in val:
+                val = val.replace("pooler.supabase.com:5432", "pooler.supabase.com:6543", 1)
+
             return val
         return v
 

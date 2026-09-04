@@ -298,9 +298,9 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
     """
     logger.info(f"Starting full background processing for invoice {invoice_id}")
 
+    # 1. Update status to PROCESSING_VLM in a short-lived session
     async with AsyncSessionLocal() as session:
         try:
-            # 1. Fetch invoice record
             query = select(Invoice).where(Invoice.id == invoice_id)
             result = await session.execute(query)
             invoice = result.scalar_one_or_none()
@@ -310,94 +310,120 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 return
 
             tenant_id = invoice.tenant_id or "default-tenant-001"
+            file_path = invoice.file_path
+            file_name = invoice.file_name
 
-            # 2. Update status to PROCESSING_VLM (Stage 2)
             invoice.status = "PROCESSING_VLM"
             invoice.accounting_status = "PENDING"
             invoice.error_message = None
             invoice.updated_at = datetime.now(timezone.utc)
             await session.commit()
             logger.info(f"Invoice {invoice_id} status updated to PROCESSING_VLM")
-
-            # 3. Retrieve binary from Supabase Storage
-            file_bytes = await storage_service.download_file(invoice.file_path)
-
-            # 4. Call Qwen3-VL on Colab with graceful fallback if Colab is offline
-            extraction_result = None
-            try:
-                extraction_result = await ai_service.extract_invoice_vlm(file_bytes)
-            except Exception as vlm_err:
-                logger.warning(
-                    f"Colab Qwen3-VL extraction unavailable for invoice {invoice_id} ({vlm_err}). "
-                    f"Initializing structured draft workspace for manual review & editing."
-                )
-                clean_inv_num = f"INV-{str(invoice.id)[:8].upper()}"
-                today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                base_fname = (invoice.file_name or "Vendor").replace("_", " ").replace("-", " ")
-                vendor_candidate = base_fname.split(".")[0].strip()
-                if len(vendor_candidate) > 40:
-                    vendor_candidate = vendor_candidate[:40]
-
-                extraction_result = {
-                    "confidence_score": 0.5,
-                    "data": {
-                        "invoice_number": clean_inv_num,
-                        "invoice_date": today_str,
-                        "due_date": today_str,
-                        "vendor_name": vendor_candidate or "Vendor Invoice",
-                        "vendor_gstin": "36AABCU9603R1ZM",
-                        "vendor_pan": "AABCU9603R",
-                        "place_of_supply": "36-Telangana",
-                        "buyer_name": "Sakshi Finance",
-                        "buyer_gstin": "36AAACH7409R1ZZ",
-                        "subtotal": 1000.0,
-                        "tax_total": 180.0,
-                        "total_amount": 1180.0,
-                        "cgst_amount": 90.0,
-                        "sgst_amount": 90.0,
-                        "igst_amount": 0.0,
-                        "line_items": [
-                            {
-                                "line_index": 1,
-                                "description": f"Invoice items ({invoice.file_name})",
-                                "quantity": 1.0,
-                                "unit_price": 1000.0,
-                                "taxable_amount": 1000.0,
-                                "cgst_rate": 9.0,
-                                "cgst_amount": 90.0,
-                                "sgst_rate": 9.0,
-                                "sgst_amount": 90.0,
-                                "total": 1180.0,
-                            }
-                        ],
-                    },
-                }
-
-            # Normalize extracted dates (Indian/ISO format) in extraction_result
-            from app.core.date_utils import parse_and_normalize_date
-            if isinstance(extraction_result, dict):
-                data_sub = extraction_result.get("data") if isinstance(extraction_result.get("data"), dict) else extraction_result
-                if data_sub.get("invoice_date"):
-                    data_sub["invoice_date"] = parse_and_normalize_date(data_sub["invoice_date"])
-                if data_sub.get("due_date"):
-                    data_sub["due_date"] = parse_and_normalize_date(data_sub["due_date"])
-
-            # 5. Persist complete raw VLM output & current working output (Zero data loss)
-            invoice.raw_vlm_output = extraction_result
-            invoice.current_vlm_output = extraction_result
-            invoice.status = "HITL_REVIEW"
-            invoice.updated_at = datetime.now(timezone.utc)
-            await session.commit()
-            logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Stopping for HITL_REVIEW.")
+        except Exception as exc:
+            logger.exception(f"Error marking invoice {invoice_id} as PROCESSING_VLM: {exc}")
             return
 
-        except Exception as exc:
-            logger.exception(f"Error processing invoice {invoice_id}: {exc}")
+    # 2. Retrieve binary from Supabase Storage (no DB connection held)
+    try:
+        file_bytes = await storage_service.download_file(file_path)
+    except Exception as exc:
+        logger.exception(f"Error downloading file for invoice {invoice_id}: {exc}")
+        async with AsyncSessionLocal() as session:
             try:
-                invoice.status = "FAILED"
-                invoice.error_message = str(exc)
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.status = "FAILED"
+                    inv.error_message = f"Failed to download invoice file: {str(exc)}"
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+            except Exception:
+                pass
+        return
+
+    # 3. Call Qwen3-VL on Colab with graceful fallback (no DB connection held during HTTP/polling)
+    extraction_result = None
+    try:
+        extraction_result = await ai_service.extract_invoice_vlm(file_bytes)
+    except Exception as vlm_err:
+        logger.warning(
+            f"Colab Qwen3-VL extraction unavailable for invoice {invoice_id} ({vlm_err}). "
+            f"Initializing structured draft workspace for manual review & editing."
+        )
+        clean_inv_num = f"INV-{str(invoice_id)[:8].upper()}"
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        base_fname = (file_name or "Vendor").replace("_", " ").replace("-", " ")
+        vendor_candidate = base_fname.split(".")[0].strip()
+        if len(vendor_candidate) > 40:
+            vendor_candidate = vendor_candidate[:40]
+
+        extraction_result = {
+            "confidence_score": 0.5,
+            "data": {
+                "invoice_number": clean_inv_num,
+                "invoice_date": today_str,
+                "due_date": today_str,
+                "vendor_name": vendor_candidate or "Vendor Invoice",
+                "vendor_gstin": "36AABCU9603R1ZM",
+                "vendor_pan": "AABCU9603R",
+                "place_of_supply": "36-Telangana",
+                "buyer_name": "Sakshi Finance",
+                "buyer_gstin": "36AAACH7409R1ZZ",
+                "subtotal": 1000.0,
+                "tax_total": 180.0,
+                "total_amount": 1180.0,
+                "cgst_amount": 90.0,
+                "sgst_amount": 90.0,
+                "igst_amount": 0.0,
+                "line_items": [
+                    {
+                        "line_index": 1,
+                        "description": f"Invoice items ({file_name})",
+                        "quantity": 1.0,
+                        "unit_price": 1000.0,
+                        "taxable_amount": 1000.0,
+                        "cgst_rate": 9.0,
+                        "cgst_amount": 90.0,
+                        "sgst_rate": 9.0,
+                        "sgst_amount": 90.0,
+                        "total": 1180.0,
+                    }
+                ],
+            },
+        }
+
+    # Normalize extracted dates (Indian/ISO format) in extraction_result
+    from app.core.date_utils import parse_and_normalize_date
+    if isinstance(extraction_result, dict):
+        data_sub = extraction_result.get("data") if isinstance(extraction_result.get("data"), dict) else extraction_result
+        if data_sub.get("invoice_date"):
+            data_sub["invoice_date"] = parse_and_normalize_date(data_sub["invoice_date"])
+        if data_sub.get("due_date"):
+            data_sub["due_date"] = parse_and_normalize_date(data_sub["due_date"])
+
+    # 4. Persist extraction result into invoice record in a clean session
+    async with AsyncSessionLocal() as session:
+        try:
+            query = select(Invoice).where(Invoice.id == invoice_id)
+            result = await session.execute(query)
+            invoice = result.scalar_one_or_none()
+            if invoice:
+                invoice.raw_vlm_output = extraction_result
+                invoice.current_vlm_output = extraction_result
+                invoice.status = "HITL_REVIEW"
                 invoice.updated_at = datetime.now(timezone.utc)
                 await session.commit()
+                logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Stopping for HITL_REVIEW.")
+        except Exception as exc:
+            logger.exception(f"Error persisting extraction result for invoice {invoice_id}: {exc}")
+            try:
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.status = "FAILED"
+                    inv.error_message = str(exc)
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
             except Exception as commit_exc:
                 logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
 

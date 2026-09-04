@@ -9,14 +9,14 @@ from app.core.config import settings
 
 from sqlalchemy.pool import AsyncAdaptedQueuePool, NullPool
 
-# Configure bounded connection pool to prevent Supabase pooler connection exhaustion (EMAXCONNSESSION)
+# Configure robust connection pool leveraging Supabase transaction pooler (port 6543)
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
     future=True,
     poolclass=AsyncAdaptedQueuePool,
-    pool_size=5,
-    max_overflow=5,
+    pool_size=10,
+    max_overflow=20,
     pool_timeout=30.0,
     pool_recycle=300,
     pool_pre_ping=True,
