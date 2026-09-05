@@ -87,12 +87,12 @@ class FinancialValidator:
         errors = []
 
         subtotal = float(data.get("subtotal") or 0.0)
-        discount_total = float(data.get("discount_total") or 0.0)
-        tax_total = float(data.get("tax_total") or 0.0)
-        shipping = float(data.get("shipping_charges") or 0.0)
-        other_charges = float(data.get("other_charges") or 0.0)
-        round_off = float(data.get("round_off") or 0.0)
-        total_amount = float(data.get("total_amount") or 0.0)
+        discount_total = float(data.get("discount_total") or data.get("discount") or 0.0)
+        tax_total = float(data.get("tax_total") or data.get("total_tax") or 0.0)
+        shipping = float(data.get("shipping_charges") or data.get("shipping") or 0.0)
+        other_charges = float(data.get("other_charges") or data.get("additional_charges") or 0.0)
+        round_off = float(data.get("round_off") or data.get("roundoff") or 0.0)
+        total_amount = float(data.get("total_amount") or data.get("invoice_total") or 0.0)
 
         line_items = data.get("line_items") or []
         line_taxable_sum = 0.0
@@ -101,8 +101,24 @@ class FinancialValidator:
 
         for idx, item in enumerate(line_items, 1):
             qty = float(item.get("quantity") or 1.0)
-            unit_price = float(item.get("unit_price") or 0.0)
-            taxable = float(item.get("taxable_amount") or (qty * unit_price))
+            unit_price = float(item.get("unit_price") or item.get("rate") or item.get("price") or 0.0)
+            l_disc = float(item.get("discount") or item.get("line_discount") or item.get("discount_percent") or item.get("discount_rate") or 0.0)
+            
+            calc_flat = round((qty * unit_price) - l_disc, 2)
+            calc_pct = round((qty * unit_price) * (1.0 - (l_disc / 100.0)), 2) if 0 <= l_disc <= 100 else calc_flat
+            
+            ext_taxable = item.get("taxable_amount")
+            if ext_taxable is not None:
+                ext_f = float(ext_taxable)
+                if abs(ext_f - calc_pct) <= tolerance:
+                    taxable = calc_pct
+                elif abs(ext_f - calc_flat) <= tolerance:
+                    taxable = calc_flat
+                else:
+                    taxable = ext_f
+            else:
+                taxable = calc_pct if (0 < l_disc <= 100) else calc_flat
+
             cgst = float(item.get("cgst_amount") or 0.0)
             sgst = float(item.get("sgst_amount") or 0.0)
             igst = float(item.get("igst_amount") or 0.0)
@@ -117,14 +133,28 @@ class FinancialValidator:
                 f"Line taxable sum (₹{line_taxable_sum:.2f}) does not match header subtotal (₹{subtotal:.2f})"
             )
 
-        expected_grand_total = round(
+        expected_grand_total_hdr = round(
             subtotal + tax_total - discount_total + shipping + other_charges + round_off, 2
         )
+        expected_grand_total_line = round(
+            subtotal + tax_total + shipping + other_charges + round_off, 2
+        )
 
-        if total_amount > 0 and abs(expected_grand_total - total_amount) > tolerance:
-            errors.append(
-                f"Computed total (₹{expected_grand_total:.2f}) does not match invoice total (₹{total_amount:.2f})"
-            )
+        expected_grand_total = expected_grand_total_hdr
+        if total_amount > 0:
+            diff_hdr = abs(expected_grand_total_hdr - total_amount)
+            diff_line = abs(expected_grand_total_line - total_amount)
+            if diff_line <= tolerance and (discount_total == 0.0 or diff_line <= diff_hdr):
+                expected_grand_total = expected_grand_total_line
+            elif diff_hdr <= tolerance:
+                expected_grand_total = expected_grand_total_hdr
+            else:
+                expected_grand_total = expected_grand_total_line if diff_line < diff_hdr else expected_grand_total_hdr
+
+            if abs(expected_grand_total - total_amount) > tolerance:
+                errors.append(
+                    f"Computed total (₹{expected_grand_total:.2f}) does not match invoice total (₹{total_amount:.2f})"
+                )
 
         is_valid = len(errors) == 0
         computed_values = {
@@ -207,7 +237,7 @@ class FinancialValidator:
                 desc = str(item.get("description") or f"Line {idx}")
                 qty = parse_clean_numeric(item.get("quantity"))
                 price = parse_clean_numeric(item.get("unit_price") or item.get("rate") or item.get("price"))
-                l_disc = parse_clean_numeric(item.get("discount") or item.get("line_discount")) or 0.0
+                l_disc = parse_clean_numeric(item.get("discount") or item.get("line_discount") or item.get("discount_percent") or item.get("discount_rate")) or 0.0
                 ext_taxable = parse_clean_numeric(item.get("taxable_amount") or item.get("total") or item.get("amount"))
 
                 l_check: Dict[str, Any] = {
@@ -223,12 +253,42 @@ class FinancialValidator:
                 }
 
                 if qty is not None and price is not None:
-                    calc_taxable = round((qty * price) - l_disc, 2)
-                    l_check["calculated_taxable"] = calc_taxable
+                    # 1. Flat discount: (qty * price) - l_disc
+                    calc_flat = round((qty * price) - l_disc, 2)
+                    
+                    # 2. Percentage discount: (qty * price) * (1 - l_disc / 100)
+                    calc_pct = round((qty * price) * (1.0 - (l_disc / 100.0)), 2) if (0 <= l_disc <= 100) else calc_flat
+
+                    calc_taxable = calc_flat
+                    diff = round(abs(ext_taxable - calc_flat), 2) if ext_taxable is not None else 0.0
+                    disc_type = "FLAT"
 
                     if ext_taxable is not None:
-                        diff = round(abs(ext_taxable - calc_taxable), 2)
+                        diff_flat = round(abs(ext_taxable - calc_flat), 2)
+                        diff_pct = round(abs(ext_taxable - calc_pct), 2) if (0 <= l_disc <= 100) else 999999.0
+
+                        if diff_pct <= tol:
+                            calc_taxable = calc_pct
+                            diff = diff_pct
+                            disc_type = "PERCENTAGE"
+                        elif diff_flat <= tol:
+                            calc_taxable = calc_flat
+                            diff = diff_flat
+                            disc_type = "FLAT"
+                        else:
+                            if diff_pct < diff_flat and 0 <= l_disc <= 100:
+                                calc_taxable = calc_pct
+                                diff = diff_pct
+                                disc_type = "PERCENTAGE"
+                            else:
+                                calc_taxable = calc_flat
+                                diff = diff_flat
+                                disc_type = "FLAT"
+
+                        l_check["calculated_taxable"] = calc_taxable
                         l_check["difference"] = diff
+                        l_check["discount_type"] = disc_type
+
                         if diff <= tol:
                             l_check["status"] = "PASSED"
                             calc_line_taxables.append(calc_taxable)
@@ -236,9 +296,12 @@ class FinancialValidator:
                             l_check["status"] = "MISMATCH"
                             all_lines_valid = False
                             has_mismatch = True
-                            errors.append(f"Line {idx} math mismatch: {qty} × ₹{price:,.2f} - ₹{l_disc:,.2f} = ₹{calc_taxable:,.2f}, but extracted amount is ₹{ext_taxable:,.2f} (diff: ₹{diff:,.2f}).")
+                            disc_repr = f"{l_disc}%" if disc_type == "PERCENTAGE" else f"₹{l_disc:,.2f}"
+                            errors.append(f"Line {idx} math mismatch: {qty} × ₹{price:,.2f} - discount ({disc_repr}) = ₹{calc_taxable:,.2f}, but extracted amount is ₹{ext_taxable:,.2f} (diff: ₹{diff:,.2f}).")
                             calc_line_taxables.append(ext_taxable)
                     else:
+                        calc_taxable = calc_pct if (0 < l_disc <= 100) else calc_flat
+                        l_check["calculated_taxable"] = calc_taxable
                         l_check["status"] = "PASSED"
                         calc_line_taxables.append(calc_taxable)
                 elif ext_taxable is not None:
@@ -380,33 +443,63 @@ class FinancialValidator:
         calculated_grand_total: Optional[float] = None
         if effective_subtotal is not None:
             round_off_val = src_round_off if src_round_off is not None else 0.0
-            calculated_grand_total = round(
-                effective_subtotal
-                - src_discount
-                + effective_tax
-                + src_shipping
-                + src_other
-                + round_off_val,
+            
+            # Scenario A: Header discount deducted from gross subtotal
+            grand_total_hdr_disc = round(
+                effective_subtotal - src_discount + effective_tax + src_shipping + src_other + round_off_val,
+                2,
+            )
+            # Scenario B: Line discounts were already subtracted in subtotal (standard GST invoice)
+            grand_total_line_disc = round(
+                effective_subtotal + effective_tax + src_shipping + src_other + round_off_val,
                 2,
             )
 
-        if calculated_grand_total is not None and src_total_amount is not None:
-            total_diff = round(abs(src_total_amount - calculated_grand_total), 2)
-            if total_diff <= tol:
-                total_status = "PASSED"
-            else:
-                total_status = "MISMATCH"
-                has_mismatch = True
-                errors.append(f"Grand Total mismatch: Expected ₹{calculated_grand_total:,.2f} (Subtotal ₹{effective_subtotal:,.2f} - Disc ₹{src_discount:,.2f} + Tax ₹{effective_tax:,.2f} + Ship ₹{src_shipping:,.2f} + Other ₹{src_other:,.2f} + Round ₹{src_round_off or 0.0:,.2f}), but extracted total is ₹{src_total_amount:,.2f} (diff: ₹{total_diff:,.2f}).")
+            if src_total_amount is not None:
+                diff_hdr = round(abs(src_total_amount - grand_total_hdr_disc), 2)
+                diff_line = round(abs(src_total_amount - grand_total_line_disc), 2)
 
-            checks.append({
-                "name": "extracted_total_vs_calculated_total",
-                "description": "Expected Grand Total equation (Subtotal - Discount + Tax + Shipping + Other +/- RoundOff) vs extracted Grand Total",
-                "status": total_status,
-                "source_value": src_total_amount,
-                "calculated_value": calculated_grand_total,
-                "difference": total_diff,
-            })
+                if diff_line <= tol and (src_discount == 0.0 or diff_line <= diff_hdr):
+                    calculated_grand_total = grand_total_line_disc
+                    total_diff = diff_line
+                elif diff_hdr <= tol:
+                    calculated_grand_total = grand_total_hdr_disc
+                    total_diff = diff_hdr
+                else:
+                    if diff_line < diff_hdr:
+                        calculated_grand_total = grand_total_line_disc
+                        total_diff = diff_line
+                    else:
+                        calculated_grand_total = grand_total_hdr_disc
+                        total_diff = diff_hdr
+
+                if total_diff <= tol:
+                    total_status = "PASSED"
+                else:
+                    total_status = "MISMATCH"
+                    has_mismatch = True
+                    errors.append(f"Grand Total mismatch: Expected ₹{calculated_grand_total:,.2f} (Subtotal ₹{effective_subtotal:,.2f} + Tax ₹{effective_tax:,.2f} + Ship ₹{src_shipping:,.2f} + Other ₹{src_other:,.2f} + Round ₹{round_off_val:,.2f}), but extracted total is ₹{src_total_amount:,.2f} (diff: ₹{total_diff:,.2f}).")
+
+                checks.append({
+                    "name": "extracted_total_vs_calculated_total",
+                    "description": "Expected Grand Total equation (Subtotal - Discount + Tax + Shipping + Other +/- RoundOff) vs extracted Grand Total",
+                    "status": total_status,
+                    "source_value": src_total_amount,
+                    "calculated_value": calculated_grand_total,
+                    "difference": total_diff,
+                })
+            else:
+                calculated_grand_total = grand_total_line_disc
+                checks.append({
+                    "name": "extracted_total_vs_calculated_total",
+                    "description": "Expected Grand Total equation vs extracted Grand Total",
+                    "status": "REVIEW_REQUIRED",
+                    "source_value": None,
+                    "calculated_value": calculated_grand_total,
+                    "difference": 0.0,
+                    "note": "Extracted Grand Total missing from invoice.",
+                })
+                has_review = True
         elif src_total_amount is not None:
             checks.append({
                 "name": "extracted_total_vs_calculated_total",

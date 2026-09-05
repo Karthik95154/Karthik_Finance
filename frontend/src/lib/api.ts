@@ -790,7 +790,7 @@ export function getCachedZohoStatus(): ZohoStatusResponse | null {
         inMemoryZohoStatus = JSON.parse(raw);
         return inMemoryZohoStatus;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return null;
 }
@@ -804,7 +804,7 @@ export function getCachedMasterData(): ZohoMasterDataSummary | null {
         inMemoryMasterData = JSON.parse(raw);
         return inMemoryMasterData;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return null;
 }
@@ -818,7 +818,7 @@ export function invalidateZohoCache() {
     try {
       sessionStorage.removeItem(ZOHO_STATUS_CACHE_KEY);
       sessionStorage.removeItem(ZOHO_MASTER_DATA_CACHE_KEY);
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -834,7 +834,7 @@ export async function getZohoStatus(forceRefresh = false): Promise<ZohoStatusRes
     const cached = getCachedZohoStatus();
     if (cached) {
       // Return cached immediately and refresh in background
-      fetchFreshZohoStatus().catch(() => {});
+      fetchFreshZohoStatus().catch(() => { });
       return cached;
     }
   }
@@ -860,7 +860,7 @@ async function fetchFreshZohoStatus(): Promise<ZohoStatusResponse> {
       try {
         sessionStorage.setItem(ZOHO_STATUS_CACHE_KEY, JSON.stringify(data));
         window.dispatchEvent(new CustomEvent("zoho-status-updated", { detail: data }));
-      } catch (_) {}
+      } catch (_) { }
     }
     return data;
   } catch (err) {
@@ -957,7 +957,7 @@ export async function getMasterDataSummary(forceRefresh = false): Promise<ZohoMa
   if (!forceRefresh && !inMemoryMasterData && typeof window !== "undefined") {
     const cached = getCachedMasterData();
     if (cached && (cached.chart_of_accounts_count > 0 || cached.tax_rates_count > 0 || cached.vendors_count > 0)) {
-      fetchFreshMasterData().catch(() => {});
+      fetchFreshMasterData().catch(() => { });
       return cached;
     }
   }
@@ -981,7 +981,7 @@ async function fetchFreshMasterData(): Promise<ZohoMasterDataSummary> {
     if (typeof window !== "undefined") {
       try {
         sessionStorage.setItem(ZOHO_MASTER_DATA_CACHE_KEY, JSON.stringify(data));
-      } catch (_) {}
+      } catch (_) { }
     }
     return data;
   } catch (err) {

@@ -1539,15 +1539,16 @@ function IntegrationsContent() {
 
               <div>
                 <label style={{ display: "block", fontSize: "13px", fontWeight: "600", marginBottom: "6px" }}>
-                  OAuth Redirect URI (Registered in Zoho Developer Console)
+                  Authorized OAuth Redirect URI
                 </label>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <input
                     type="text"
                     className="input-field"
                     value={customRedirectUri}
-                    readOnly
-                    style={{ background: "var(--bg-main)", fontSize: "12px", fontFamily: "monospace" }}
+                    onChange={(e) => setCustomRedirectUri(e.target.value)}
+                    style={{ fontSize: "12px", fontFamily: "monospace", background: "#ffffff" }}
+                    placeholder="https://<your-backend>.onrender.com/api/v1/zoho/callback"
                   />
                   <button
                     type="button"
@@ -1557,10 +1558,23 @@ function IntegrationsContent() {
                       setCopiedUri(true);
                       setTimeout(() => setCopiedUri(false), 2000);
                     }}
+                    title="Copy Redirect URI"
                   >
-                    {copiedUri ? <Check size={14} /> : <KeyRound size={14} />}
+                    {copiedUri ? <Check size={14} color="#10b981" /> : <KeyRound size={14} />}
                   </button>
                 </div>
+                <p style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "6px", lineHeight: "1.4" }}>
+                  <strong>Important:</strong> This URI must <strong>EXACTLY match</strong> what is entered in your{" "}
+                  <a
+                    href="https://api-console.zoho.in"
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ color: "var(--accent)", textDecoration: "underline", fontWeight: "600" }}
+                  >
+                    Zoho API Console
+                  </a>{" "}
+                  under <strong>Authorized Redirect URIs</strong> for your Client ID.
+                </p>
               </div>
 
               <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "10px" }}>

@@ -118,6 +118,7 @@ def verify_signed_zoho_state(signed_state: Optional[str]) -> Dict[str, Any]:
 async def get_zoho_connect_url(
     request: Request,
     accounts_url: Optional[str] = None,
+    accounts_server: Optional[str] = None,
     redirect_uri: Optional[str] = None,
     current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
 ):
@@ -127,7 +128,7 @@ async def get_zoho_connect_url(
     tenant_id = current_user.tenant_id
     user_id = current_user.id
 
-    # Extract dynamic frontend URL to support dev tunnels smoothly
+    # Extract dynamic frontend URL to support dev tunnels and production deployments smoothly
     origin = request.headers.get("origin") or request.headers.get("referer")
     if origin:
         from urllib.parse import urlparse
@@ -144,10 +145,11 @@ async def get_zoho_connect_url(
             detail="ZOHO_CLIENT_ID is not configured in backend environment.",
         )
 
-    chosen_redirect = redirect_uri or settings.ZOHO_REDIRECT_URI
+    chosen_accounts_url = accounts_url or accounts_server or settings.ZOHO_ACCOUNTS_URL
+    chosen_redirect = (redirect_uri.strip() if redirect_uri and redirect_uri.strip() else None) or settings.ZOHO_REDIRECT_URI
     auth_url = zoho_client_service.get_authorization_url(
         tenant_id=state_param,
-        accounts_url=accounts_url,
+        accounts_url=chosen_accounts_url,
         redirect_uri=chosen_redirect,
     )
     return {
@@ -206,18 +208,20 @@ async def zoho_oauth_callback(
 
     # Determine redirect URI dynamically matching how the browser was routed
     callback_redirect_uri = str(request.url).split("?")[0]
+    if (request.headers.get("x-forwarded-proto") == "https" or "render.com" in str(request.url)) and callback_redirect_uri.startswith("http://"):
+        callback_redirect_uri = "https://" + callback_redirect_uri[7:]
 
     try:
         try:
             token_data = await zoho_client_service.exchange_code_for_tokens(
                 code=code,
-                redirect_uri=callback_redirect_uri,
+                redirect_uri=settings.ZOHO_REDIRECT_URI,
                 accounts_url=accounts_server,
             )
         except Exception:
             token_data = await zoho_client_service.exchange_code_for_tokens(
                 code=code,
-                redirect_uri=settings.ZOHO_REDIRECT_URI,
+                redirect_uri=callback_redirect_uri,
                 accounts_url=accounts_server,
             )
     except Exception as e:
