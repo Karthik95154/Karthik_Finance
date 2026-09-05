@@ -23,3 +23,5 @@ services:
     envVars:
       - key: NODE_VERSION
         value: 20
+      - key: PORT
+        value: 10000
