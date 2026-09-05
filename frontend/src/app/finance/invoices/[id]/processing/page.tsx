@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { getInvoiceStatus, InvoiceStatus } from "@/lib/api";
-import { CheckCircle2, Loader2, AlertCircle, ArrowLeft, Sparkles, FileText, Database, Layers, Send } from "lucide-react";
+import { CheckCircle2, Loader2, AlertCircle, ArrowLeft, ArrowRight, Sparkles, FileText, Database, Layers, Send } from "lucide-react";
 
 export default function InvoiceProcessingPage() {
   const params = useParams();
