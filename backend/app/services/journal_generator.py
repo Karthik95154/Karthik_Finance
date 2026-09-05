@@ -239,19 +239,20 @@ class JournalGenerator:
                     line.get("taxable_amount")
                     or line.get("taxable")
                     or line.get("pretax_amount")
-                    or line.get("total")
-                    or line.get("amount")
                 )
                 if taxable is None:
                     qty = self._clean_num(line.get("quantity"))
                     price = self._clean_num(line.get("unit_price"))
                     line_disc = self._clean_num(line.get("discount") or line.get("discount_amount")) or 0.0
                     if qty is not None and price is not None:
-                        taxable = round((qty * price) - line_disc, 2)
+                        if 0 < line_disc <= 100:
+                            taxable = round((qty * price) * (1.0 - (line_disc / 100.0)), 2)
+                        else:
+                            taxable = round((qty * price) - line_disc, 2)
                     elif subtotal is not None and len(line_items) == 1:
                         taxable = subtotal
                     else:
-                        taxable = 0.0
+                        taxable = self._clean_num(line.get("amount") or line.get("total")) or 0.0
 
                 # Match line in accounting by line_index or sequential index
                 acc_info = {}

@@ -538,42 +538,39 @@ async def approve_invoice(
 
     accounting_data["accounting"] = acct_lines
 
-    # 3. Generate Authoritative Journal (require_approved=True) using single source of truth
-    try:
-        journal = journal_generator.generate_journal_entry(
-            invoice_data=vlm_data,
-            accounting_data=accounting_data,
-            gst_result=invoice.gst_result,
-            itc_result=invoice.itc_result,
-            tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
-            financial_validation_result=invoice.financial_validation_result,
-            require_approved=True,
-        )
-    except ValueError as val_err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Authoritative journal generation failed: {str(val_err)}",
-        )
+    # 3. Use pre-balanced approved journal if present, or generate authoritative balanced journal
+    if invoice.journal_entry and isinstance(invoice.journal_entry, dict) and (invoice.journal_entry.get("is_balanced") or invoice.journal_entry.get("validation", {}).get("balanced")):
+        authoritative_journal_dict = dict(invoice.journal_entry)
+        authoritative_journal_dict["status"] = "APPROVED"
+        authoritative_journal_dict["approval_status"] = "APPROVED"
+        authoritative_journal_dict["approved_by"] = user_email
+        authoritative_journal_dict["approved_at"] = now_iso
+    else:
+        try:
+            authoritative_journal_dict = journal_generator.generate_journal(
+                invoice_data=vlm_data,
+                accounting_classification=accounting_data,
+                gst_result=invoice.gst_result,
+                itc_result=invoice.itc_result,
+                tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
+                financial_validation_result=invoice.financial_validation_result,
+                require_approved=True,
+            )
+        except ValueError as val_err:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Authoritative journal generation failed: {str(val_err)}",
+            )
 
-    if not journal.get("is_balanced"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot approve invoice: Journal is unbalanced (Debits ₹{journal.get('total_debit')} != Credits ₹{journal.get('total_credit')}).",
-        )
+        is_bal = bool(authoritative_journal_dict.get("is_balanced") or authoritative_journal_dict.get("validation", {}).get("balanced"))
+        if not is_bal:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot approve invoice: Journal is unbalanced (Debits ₹{authoritative_journal_dict.get('total_debit')} != Credits ₹{authoritative_journal_dict.get('total_credit')}).",
+            )
 
     # 4. Atomic Database Mutations
     invoice.current_accounting_output = accounting_data
-
-    # Generate authoritative journal dict for persistence
-    authoritative_journal_dict = journal_generator.generate_journal(
-        invoice_data=vlm_data,
-        accounting_classification=accounting_data,
-        gst_result=invoice.gst_result,
-        itc_result=invoice.itc_result,
-        tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
-        financial_validation_result=invoice.financial_validation_result,
-        require_approved=True,
-    )
     invoice.journal_entry = authoritative_journal_dict
 
     # Sync relational tables with the authoritative journal
@@ -606,7 +603,7 @@ async def approve_invoice(
         "message": "Invoice approved and authoritative journal created successfully.",
         "approval_status": "APPROVED",
         "journal_entry_id": str(synced_entry.id) if synced_entry else str(invoice_id),
-        "is_balanced": journal["is_balanced"],
+        "is_balanced": bool(authoritative_journal_dict.get("is_balanced") or authoritative_journal_dict.get("validation", {}).get("balanced")),
     }
 
 
