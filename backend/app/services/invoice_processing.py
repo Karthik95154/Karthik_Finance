@@ -398,10 +398,6 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             await session.commit()
             logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Proceeding to Stage 3-6 downstream models.")
 
-        # Seamlessly execute Stage 3-6 models
-        await process_accounting_downstream_background(invoice_id)
-        return
-
         except Exception as exc:
             logger.exception(f"Error processing invoice {invoice_id}: {exc}")
             try:
@@ -411,6 +407,10 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 await session.commit()
             except Exception as commit_exc:
                 logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
+            return
+
+    # Seamlessly execute Stage 3-6 models
+    await process_accounting_downstream_background(invoice_id)
 
 
 async def process_accounting_downstream_background(invoice_id) -> None:
