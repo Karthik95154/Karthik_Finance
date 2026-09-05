@@ -28,21 +28,30 @@ export default function InvoiceProcessingPage() {
         setStatusData(data);
         setPollCount((prev) => prev + 1);
 
-        if (data.status === "COMPLETED" || data.status === "APPROVED") {
-          // Final extraction, COA and journal generation complete -> navigate to invoice workspace
+        const isFinished =
+          data.status === "COMPLETED" ||
+          data.status === "APPROVED" ||
+          data.status === "FINAL_HITL_REVIEW" ||
+          data.status === "HITL_REVIEW" ||
+          data.status === "PENDING_REVIEW" ||
+          data.accounting_status === "COMPLETED" ||
+          data.accounting_status === "SUCCESS";
+
+        if (isFinished) {
+          // Extraction, COA classification, and financial validation complete -> navigate to invoice workspace
           setTimeout(() => {
             router.push(`/finance/invoices/${invoiceId}`);
-          }, 1200);
+          }, 600);
         } else if (data.status === "FAILED" || data.accounting_status === "FAILED") {
           setError(data.error_message || "Invoice processing encountered an issue.");
         } else {
-          // Continuously poll every 2.5s across all stages (VLM -> COA -> Final Generation)
-          timer = setTimeout(checkStatus, 2500);
+          // Continuously poll every 2.0s across all stages (VLM -> COA -> Final Generation)
+          timer = setTimeout(checkStatus, 2000);
         }
       } catch (err: any) {
         if (!isMounted) return;
         console.warn("Status poll error:", err);
-        timer = setTimeout(checkStatus, 3000);
+        timer = setTimeout(checkStatus, 2500);
       }
     }
 
@@ -65,6 +74,7 @@ export default function InvoiceProcessingPage() {
     currentStatus === "HITL_REVIEW" ||
     currentStatus === "PROCESSING_ACCOUNTING" ||
     currentStatus === "FINAL_HITL_REVIEW" ||
+    currentStatus === "PENDING_REVIEW" ||
     currentStatus === "COMPLETED" ||
     currentStatus === "APPROVED";
 
@@ -74,15 +84,27 @@ export default function InvoiceProcessingPage() {
     currentStatus === "PROCESSING_ACCOUNTING";
   const isCoaDone =
     currentStatus === "FINAL_HITL_REVIEW" ||
+    currentStatus === "PENDING_REVIEW" ||
     currentStatus === "COMPLETED" ||
     currentStatus === "APPROVED";
 
   // Step 4: Final Generation (GST verification & Double-Entry Journal)
   const isFinalRunning = currentStatus === "FINAL_HITL_REVIEW";
-  const isFinalDone = currentStatus === "COMPLETED" || currentStatus === "APPROVED";
+  const isFinalDone =
+    currentStatus === "COMPLETED" ||
+    currentStatus === "APPROVED" ||
+    currentStatus === "FINAL_HITL_REVIEW" ||
+    currentStatus === "PENDING_REVIEW";
 
   // Step 5: Complete & Ready
-  const isAllComplete = currentStatus === "COMPLETED" || currentStatus === "APPROVED";
+  const isAllComplete =
+    currentStatus === "COMPLETED" ||
+    currentStatus === "APPROVED" ||
+    currentStatus === "FINAL_HITL_REVIEW" ||
+    currentStatus === "HITL_REVIEW" ||
+    currentStatus === "PENDING_REVIEW" ||
+    statusData?.accounting_status === "COMPLETED" ||
+    statusData?.accounting_status === "SUCCESS";
 
   // Dynamic header text based on active step
   const getHeaderTitle = () => {
@@ -329,10 +351,21 @@ export default function InvoiceProcessingPage() {
               <Sparkles size={16} color="var(--accent)" />
               <span>
                 {isAllComplete
-                  ? "Opening invoice workspace..."
+                  ? "Processing finished! Opening invoice workspace..."
                   : "Continuous automated pipeline active. Do not close this window."}
               </span>
             </div>
+
+            {isAllComplete && (
+              <button
+                onClick={() => router.push(`/finance/invoices/${invoiceId}`)}
+                className="btn btn-primary"
+                style={{ width: "100%", marginTop: "14px", padding: "12px", justifyContent: "center" }}
+              >
+                <span>Go to Invoice Workspace</span>
+                <ArrowRight size={16} />
+              </button>
+            )}
           </div>
         )}
       </div>
