@@ -178,17 +178,21 @@ async def approve_journal_entry(
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     # 1. Financial Validation Gate Check
+    from app.services.invoice_processing import get_effective_invoice_data
+    from app.services.financial_validator import financial_validator
+    vlm_data = get_effective_invoice_data(invoice)
+
     if invoice.financial_validation_result and isinstance(invoice.financial_validation_result, dict):
         fin_status = invoice.financial_validation_result.get("overall_status")
         if fin_status == "MISMATCH":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot approve journal: Stage 5 Financial Validation reported MISMATCH. Discrepancies must be resolved before approval.",
-            )
-
-    # 2. Extract / Generate Authoritative Journal
-    from app.services.invoice_processing import get_effective_invoice_data
-    vlm_data = get_effective_invoice_data(invoice)
+            re_fin = financial_validator.validate_invoice(vlm_data, invoice.gst_result)
+            if re_fin.get("overall_status") == "PASSED":
+                invoice.financial_validation_result = re_fin
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot approve journal: Stage 5 Financial Validation reported MISMATCH. Discrepancies must be resolved before approval.",
+                )
     accounting_data = (
         invoice.current_accounting_output
         if isinstance(invoice.current_accounting_output, dict)
@@ -391,17 +395,21 @@ async def approve_invoice(
         }
 
     # 1. Financial Validation Gate Check
+    from app.services.invoice_processing import get_effective_invoice_data
+    from app.services.financial_validator import financial_validator
+    vlm_data = get_effective_invoice_data(invoice)
+
     if invoice.financial_validation_result and isinstance(invoice.financial_validation_result, dict):
         fin_status = invoice.financial_validation_result.get("overall_status")
         if fin_status == "MISMATCH":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Cannot approve invoice: Stage 5 Financial Validation reported MISMATCH. Discrepancies must be resolved before approval.",
-            )
-
-    # 2. Extract Authoritative Working Payload and Accounting Classification
-    from app.services.invoice_processing import get_effective_invoice_data
-    vlm_data = get_effective_invoice_data(invoice)
+            re_fin = financial_validator.validate_invoice(vlm_data, invoice.gst_result)
+            if re_fin.get("overall_status") == "PASSED":
+                invoice.financial_validation_result = re_fin
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot approve invoice: Stage 5 Financial Validation reported MISMATCH. Discrepancies must be resolved before approval.",
+                )
 
     # GATE 2 ENFORCEMENT: Server-side Closed Accounting Period Validation
     t_query = select(Tenant).where(Tenant.id == tenant_id)
