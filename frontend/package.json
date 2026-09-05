@@ -4,8 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build && if [ -n \"$PORT\" ]; then exec next start -p \"$PORT\" -H 0.0.0.0; fi",
-    "start": "next start -p ${PORT:-3000} -H 0.0.0.0",
+    "build": "next build",
+    "start": "next start -H 0.0.0.0 -p $PORT",
     "lint": "next lint"
   },
   "dependencies": {

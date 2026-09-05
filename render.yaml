@@ -18,7 +18,7 @@ services:
     runtime: node
     rootDir: frontend
     buildCommand: npm install && npm run build
-    startCommand: npm run start
+    startCommand: npm start
     autoDeploy: true
     envVars:
       - key: NODE_VERSION
