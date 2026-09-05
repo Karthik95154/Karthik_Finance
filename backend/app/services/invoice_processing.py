@@ -393,11 +393,14 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             # 5. Persist complete raw VLM output & current working output (Zero data loss)
             invoice.raw_vlm_output = extraction_result
             invoice.current_vlm_output = extraction_result
-            invoice.status = "HITL_REVIEW"
+            invoice.status = "PROCESSING_ACCOUNTING"
             invoice.updated_at = datetime.now(timezone.utc)
             await session.commit()
-            logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Stopping for HITL_REVIEW.")
-            return
+            logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Proceeding to Stage 3-6 downstream models.")
+
+        # Seamlessly execute Stage 3-6 models
+        await process_accounting_downstream_background(invoice_id)
+        return
 
         except Exception as exc:
             logger.exception(f"Error processing invoice {invoice_id}: {exc}")

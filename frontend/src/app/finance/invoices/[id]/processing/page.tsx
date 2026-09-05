@@ -32,16 +32,14 @@ export default function InvoiceProcessingPage() {
           data.status === "COMPLETED" ||
           data.status === "APPROVED" ||
           data.status === "FINAL_HITL_REVIEW" ||
-          data.status === "HITL_REVIEW" ||
-          data.status === "PENDING_REVIEW" ||
           data.accounting_status === "COMPLETED" ||
           data.accounting_status === "SUCCESS";
 
         if (isFinished) {
-          // Extraction, COA classification, and financial validation complete -> navigate to invoice workspace
+          // All models (VLM, COA, TDS, GST/ITC, Financial Validation, Journal) complete -> navigate to invoice workspace
           setTimeout(() => {
             router.push(`/finance/invoices/${invoiceId}`);
-          }, 600);
+          }, 800);
         } else if (data.status === "FAILED" || data.accounting_status === "FAILED") {
           setError(data.error_message || "Invoice processing encountered an issue.");
         } else {
@@ -71,38 +69,33 @@ export default function InvoiceProcessingPage() {
   // Step 2: Qwen-VL Model
   const isVlmRunning = currentStatus === "UPLOADED" || currentStatus === "PROCESSING_VLM";
   const isVlmDone =
-    currentStatus === "HITL_REVIEW" ||
     currentStatus === "PROCESSING_ACCOUNTING" ||
+    currentStatus === "ACCOUNTING_PROCESSING" ||
     currentStatus === "FINAL_HITL_REVIEW" ||
-    currentStatus === "PENDING_REVIEW" ||
     currentStatus === "COMPLETED" ||
     currentStatus === "APPROVED";
 
   // Step 3: COA & Accounting Reasoning
   const isCoaRunning =
-    currentStatus === "HITL_REVIEW" ||
-    currentStatus === "PROCESSING_ACCOUNTING";
+    currentStatus === "PROCESSING_ACCOUNTING" ||
+    currentStatus === "ACCOUNTING_PROCESSING";
   const isCoaDone =
     currentStatus === "FINAL_HITL_REVIEW" ||
-    currentStatus === "PENDING_REVIEW" ||
     currentStatus === "COMPLETED" ||
     currentStatus === "APPROVED";
 
   // Step 4: Final Generation (GST verification & Double-Entry Journal)
-  const isFinalRunning = currentStatus === "FINAL_HITL_REVIEW";
+  const isFinalRunning = isCoaDone && currentStatus !== "COMPLETED" && currentStatus !== "APPROVED";
   const isFinalDone =
     currentStatus === "COMPLETED" ||
     currentStatus === "APPROVED" ||
-    currentStatus === "FINAL_HITL_REVIEW" ||
-    currentStatus === "PENDING_REVIEW";
+    currentStatus === "FINAL_HITL_REVIEW";
 
   // Step 5: Complete & Ready
   const isAllComplete =
     currentStatus === "COMPLETED" ||
     currentStatus === "APPROVED" ||
     currentStatus === "FINAL_HITL_REVIEW" ||
-    currentStatus === "HITL_REVIEW" ||
-    currentStatus === "PENDING_REVIEW" ||
     statusData?.accounting_status === "COMPLETED" ||
     statusData?.accounting_status === "SUCCESS";
 
