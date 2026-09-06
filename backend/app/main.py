@@ -65,6 +65,10 @@ async def lifespan(app: FastAPI):
                         await conn.execute(text(f"ALTER TABLE invoices ADD COLUMN IF NOT EXISTS {col} {col_type};"))
                     except Exception:
                         pass
+                try:
+                    await conn.execute(text("ALTER TABLE integrations ALTER COLUMN id TYPE VARCHAR(255);"))
+                except Exception:
+                    pass
             logger.info("Database tables and columns initialized / verified successfully.")
         except Exception as exc:
             logger.warning(f"Database table verification error: {exc}")

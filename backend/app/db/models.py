@@ -284,7 +284,7 @@ class Invoice(Base):
 class Integration(Base):
     __tablename__ = "integrations"
 
-    id = Column(String(100), primary_key=True, default="imap_email")
+    id = Column(String(255), primary_key=True, default="imap_email")
     tenant_id = Column(
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, default="default-tenant-001", index=True
     )
