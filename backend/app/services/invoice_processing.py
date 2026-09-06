@@ -43,7 +43,7 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
             merged[k] = v
 
     # Fallback to raw_fields if top-level fields were cleared by post-processing
-    raw_f = raw_data.get("raw_fields") or {}
+    raw_f = raw_data.get("raw_fields") if isinstance(raw_data, dict) and raw_data.get("raw_fields") else (raw.get("raw_fields") if isinstance(raw, dict) else {})
     if isinstance(raw_f, dict):
         if not merged.get("vendor_gstin") and raw_f.get("vendor_gstin"):
             merged["vendor_gstin"] = raw_f.get("vendor_gstin")
@@ -71,6 +71,12 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
             merged["vendor_address"] = raw_f.get("vendor_address")
         if not merged.get("customer_address") and raw_f.get("customer_address"):
             merged["customer_address"] = raw_f.get("customer_address")
+        if not merged.get("vendor_phone") and raw_f.get("vendor_phone"):
+            merged["vendor_phone"] = raw_f.get("vendor_phone")
+        if not merged.get("vendor_email") and raw_f.get("vendor_email"):
+            merged["vendor_email"] = raw_f.get("vendor_email")
+        if not merged.get("place_of_supply") and raw_f.get("place_of_supply"):
+            merged["place_of_supply"] = raw_f.get("place_of_supply")
 
     # Resolve line items from raw_fields if needed
     items = merged.get("line_items") or []
@@ -98,11 +104,59 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
                     it["taxable_amount"] = float(str(it_rf.get("taxable_amount")).replace(",", ""))
                 except Exception:
                     pass
+            if (it.get("discount") is None) and it_rf.get("discount") is not None:
+                it["discount"] = it_rf.get("discount")
+            if (it.get("discount_type") is None) and it_rf.get("discount_type"):
+                it["discount_type"] = it_rf.get("discount_type")
 
-        if it.get("taxable_amount") is None and it.get("quantity") and it.get("unit_price"):
-            it["taxable_amount"] = float(it["quantity"]) * float(it["unit_price"])
-        if it.get("total") is None and it.get("taxable_amount"):
-            it["total"] = it["taxable_amount"]
+        # Fallback to hsn_sac_code if canonical hsn_code is missing
+        if not it.get("hsn_code") and it.get("hsn_sac_code"):
+            it["hsn_code"] = str(it.get("hsn_sac_code")).strip()
+
+        # Deterministically resolve discount semantics for line item
+        from app.services.financial_validator import parse_discount_semantics
+        disc_val, disc_type, _ = parse_discount_semantics(it)
+        if disc_val is not None:
+            it["discount"] = disc_val
+            if disc_type:
+                it["discount_type"] = disc_type
+
+        # If taxable_amount is missing, derive from quantity * unit_price - discount, or fallback to line_amount - discount
+        if it.get("taxable_amount") is None:
+            if it.get("quantity") is not None and it.get("unit_price") is not None:
+                gross = float(it["quantity"]) * float(it["unit_price"])
+                d_amt = 0.0
+                if it.get("discount") is not None:
+                    d_val = float(it["discount"])
+                    if it.get("discount_type") == "percentage":
+                        d_amt = gross * d_val / 100.0
+                    else:
+                        d_amt = d_val
+                it["taxable_amount"] = round(gross - d_amt, 2)
+            elif it.get("line_amount") is not None:
+                # Safe fallback: generic line_amount minus discount if no qty/unit_price
+                l_amt = float(it["line_amount"])
+                d_amt = 0.0
+                if it.get("discount") is not None:
+                    d_val = float(it["discount"])
+                    if it.get("discount_type") == "percentage":
+                        d_amt = l_amt * d_val / 100.0
+                    else:
+                        d_amt = d_val
+                it["taxable_amount"] = round(l_amt - d_amt, 2)
+
+        # If total is missing, derive from taxable_amount + explicit line taxes
+        if it.get("total") is None and it.get("taxable_amount") is not None:
+            line_taxes = 0.0
+            has_explicit_tax = False
+            for tax_k in ["cgst_amount", "sgst_amount", "igst_amount", "cess_amount"]:
+                if it.get(tax_k) is not None:
+                    line_taxes += float(it[tax_k])
+                    has_explicit_tax = True
+            if has_explicit_tax:
+                it["total"] = round(float(it["taxable_amount"]) + line_taxes, 2)
+            else:
+                it["total"] = it["taxable_amount"]
 
         resolved_items.append(it)
     merged["line_items"] = resolved_items
@@ -445,6 +499,18 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
         if data_sub.get("due_date"):
             data_sub["due_date"] = parse_and_normalize_date(data_sub["due_date"])
 
+    # Calculate Indian Accounting Period category based on extracted invoice_date
+    from app.core.date_utils import calculate_invoice_accounting_period
+    period_category = None
+    period_decision = "NOT_REQUIRED"
+    if isinstance(extraction_result, dict):
+        data_sub = extraction_result.get("data") if isinstance(extraction_result.get("data"), dict) else extraction_result
+        inv_d_val = data_sub.get("invoice_date")
+        if inv_d_val:
+            period_category, _, _ = calculate_invoice_accounting_period(inv_d_val)
+            if period_category == "PREVIOUS_FINANCIAL_YEAR":
+                period_decision = "PENDING"
+
     # 4. Persist extraction result into invoice record in a clean session
     async with AsyncSessionLocal() as session:
         try:
@@ -455,9 +521,11 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 invoice.raw_vlm_output = extraction_result
                 invoice.current_vlm_output = extraction_result
                 invoice.status = "HITL_REVIEW"
+                invoice.period_category = period_category
+                invoice.period_decision = period_decision
                 invoice.updated_at = datetime.now(timezone.utc)
                 await session.commit()
-                logger.info(f"Invoice {invoice_id} Stage 2 VLM complete. Stopping for HITL_REVIEW.")
+                logger.info(f"Invoice {invoice_id} Stage 2 VLM complete (period: {period_category}, decision: {period_decision}). Stopping for HITL_REVIEW.")
         except Exception as exc:
             logger.exception(f"Error persisting extraction result for invoice {invoice_id}: {exc}")
             try:

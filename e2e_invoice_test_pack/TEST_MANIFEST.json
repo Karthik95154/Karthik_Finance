@@ -1,0 +1,37 @@
+[
+  {
+    "id": "PERFECT-01",
+    "pdf": "pdfs/PERFECT-01.pdf",
+    "expected_json": "expected_json/PERFECT-01.json",
+    "expected_status": "VALID",
+    "reason": ""
+  },
+  {
+    "id": "PERFECT-02",
+    "pdf": "pdfs/PERFECT-02.pdf",
+    "expected_json": "expected_json/PERFECT-02.json",
+    "expected_status": "VALID",
+    "reason": ""
+  },
+  {
+    "id": "EDGE-01-HEADER_LINE_IGST_MISMATCH",
+    "pdf": "pdfs/EDGE-01-HEADER_LINE_IGST_MISMATCH.pdf",
+    "expected_json": "expected_json/EDGE-01-HEADER_LINE_IGST_MISMATCH.json",
+    "expected_status": "REVIEW_REQUIRED_OR_MISMATCH",
+    "reason": "Header/line IGST reconciliation should detect contradiction: header IGST 25200 vs line sum 25200? Actually matches; use conflicting header 26200."
+  },
+  {
+    "id": "EDGE-02-CESS",
+    "pdf": "pdfs/EDGE-02-CESS.pdf",
+    "expected_json": "expected_json/EDGE-02-CESS.json",
+    "expected_status": "VALID",
+    "reason": "Cess must be preserved and reconciled at header/line level."
+  },
+  {
+    "id": "EDGE-03-PARTIAL_LINE_BREAKDOWN",
+    "pdf": "pdfs/EDGE-03-PARTIAL_LINE_BREAKDOWN.pdf",
+    "expected_json": "expected_json/EDGE-03-PARTIAL_LINE_BREAKDOWN.json",
+    "expected_status": "REVIEW_REQUIRED",
+    "reason": "A line has partial/missing GST breakdown while header contains GST. Do not silently invent component allocation."
+  }
+]

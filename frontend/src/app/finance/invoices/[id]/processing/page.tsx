@@ -2,8 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { getInvoiceStatus, InvoiceStatus, invalidateInvoicesCache } from "@/lib/api";
-import { CheckCircle2, Loader2, AlertCircle, ArrowLeft, Sparkles, Clock, ShieldCheck, FileCheck2 } from "lucide-react";
+import { getInvoiceStatus, submitPeriodDecision, InvoiceStatus, invalidateInvoicesCache } from "@/lib/api";
+import { CheckCircle2, Loader2, AlertCircle, ArrowLeft, Sparkles, Clock, Calendar, AlertTriangle } from "lucide-react";
 
 export default function InvoiceProcessingPage() {
   const params = useParams();
@@ -13,6 +13,8 @@ export default function InvoiceProcessingPage() {
   const [statusData, setStatusData] = useState<InvoiceStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pollCount, setPollCount] = useState(0);
+  const [isDeciding, setIsDeciding] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!invoiceId) return;
@@ -39,6 +41,9 @@ export default function InvoiceProcessingPage() {
           setTimeout(() => {
             router.push(`/finance/invoices/${invoiceId}`);
           }, 1200);
+        } else if (data.status === "CANCELLED" || data.period_decision === "CANCELLED") {
+          // Processing cancelled safely
+          setError(data.error_message || "Invoice processing cancelled by user (Previous Financial Year).");
         } else if (data.status === "FAILED" || data.accounting_status === "FAILED") {
           setError(data.error_message || "Invoice processing encountered an issue.");
         } else {
@@ -59,6 +64,25 @@ export default function InvoiceProcessingPage() {
       if (timer) clearTimeout(timer);
     };
   }, [invoiceId, router]);
+
+  const handlePeriodDecision = async (decision: "CONTINUE" | "CANCEL") => {
+    if (!invoiceId) return;
+    setIsDeciding(true);
+    setDecisionError(null);
+    try {
+      const res = await submitPeriodDecision(invoiceId, decision);
+      // Immediately refresh status
+      const updated = await getInvoiceStatus(invoiceId);
+      setStatusData(updated);
+      if (decision === "CANCEL") {
+        setError("Invoice processing cancelled by user (Previous Financial Year).");
+      }
+    } catch (err: any) {
+      setDecisionError(err?.message || "Failed to submit decision. Please try again.");
+    } finally {
+      setIsDeciding(false);
+    }
+  };
 
   const currentStatus = statusData?.status || "PROCESSING_VLM";
   const approvalStatus = statusData?.approval_status;
@@ -190,10 +214,134 @@ export default function InvoiceProcessingPage() {
             <h1 style={{ fontSize: "24px", fontWeight: "700", letterSpacing: "-0.03em", marginBottom: "8px" }}>
               {getHeaderTitle()}
             </h1>
-            <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "32px", minHeight: "42px" }}>
+            <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "20px", minHeight: "36px" }}>
               {getHeaderSubtitle()}
             </p>
-              {/* Step Progress Timeline */}
+
+            {/* Accounting Period Indicator Badge */}
+            {statusData?.period_message && (
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  padding: "4px 12px",
+                  borderRadius: "16px",
+                  fontSize: "12px",
+                  fontWeight: "500",
+                  marginBottom: "20px",
+                  background: statusData.period_category === "PREVIOUS_FINANCIAL_YEAR" ? "#fef2f2" : "#f1f5f9",
+                  color: statusData.period_category === "PREVIOUS_FINANCIAL_YEAR" ? "#b91c1c" : "#475569",
+                  border: `1px solid ${statusData.period_category === "PREVIOUS_FINANCIAL_YEAR" ? "#fecaca" : "#e2e8f0"}`,
+                }}
+              >
+                <Calendar size={13} />
+                <span>{statusData.period_message}</span>
+              </div>
+            )}
+
+            {/* Previous Financial Year Customer Confirmation Dialog */}
+            {statusData?.period_category === "PREVIOUS_FINANCIAL_YEAR" &&
+              statusData?.period_decision === "PENDING" && (
+                <div
+                  style={{
+                    background: "#fff1f2",
+                    border: "1px solid #fecdd3",
+                    borderRadius: "var(--radius-md)",
+                    padding: "20px",
+                    textAlign: "left",
+                    marginBottom: "24px",
+                    boxShadow: "0 2px 6px rgba(225, 29, 72, 0.08)",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "16px" }}>
+                    <div
+                      style={{
+                        background: "#ffe4e6",
+                        color: "#e11d48",
+                        borderRadius: "50%",
+                        width: "32px",
+                        height: "32px",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                        marginTop: "2px",
+                      }}
+                    >
+                      <AlertTriangle size={18} />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: "14px", fontWeight: "700", color: "#9f1239", marginBottom: "4px" }}>
+                        Previous Financial Year Invoice
+                      </div>
+                      <div style={{ fontSize: "13px", color: "#4c0519", lineHeight: "1.5" }}>
+                        This invoice belongs to a previous financial year. Do you want to continue processing?
+                      </div>
+                    </div>
+                  </div>
+
+                  {decisionError && (
+                    <div
+                      style={{
+                        background: "#fee2e2",
+                        color: "#991b1b",
+                        fontSize: "12px",
+                        padding: "8px 12px",
+                        borderRadius: "4px",
+                        marginBottom: "12px",
+                      }}
+                    >
+                      {decisionError}
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      disabled={isDeciding}
+                      onClick={() => handlePeriodDecision("CANCEL")}
+                      style={{
+                        padding: "8px 16px",
+                        borderRadius: "6px",
+                        border: "1px solid #cbd5e1",
+                        background: "#ffffff",
+                        color: "#475569",
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        cursor: isDeciding ? "not-allowed" : "pointer",
+                        opacity: isDeciding ? 0.6 : 1,
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDeciding}
+                      onClick={() => handlePeriodDecision("CONTINUE")}
+                      style={{
+                        padding: "8px 18px",
+                        borderRadius: "6px",
+                        border: "none",
+                        background: "#e11d48",
+                        color: "#ffffff",
+                        fontSize: "13px",
+                        fontWeight: "600",
+                        cursor: isDeciding ? "not-allowed" : "pointer",
+                        opacity: isDeciding ? 0.6 : 1,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                      }}
+                    >
+                      {isDeciding && <Loader2 size={14} className="animate-spin" />}
+                      <span>Continue Processing</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+            {/* Step Progress Timeline */}
             <div
               style={{
                 background: "var(--bg-main)",

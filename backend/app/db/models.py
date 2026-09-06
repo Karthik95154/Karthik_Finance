@@ -212,6 +212,10 @@ class Invoice(Base):
     exported_at = Column(DateTime(timezone=True), nullable=True)
     locked_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Accounting Period & Previous-FY Decision
+    period_category = Column(String(50), nullable=True)  # CURRENT_MONTH, PREVIOUS_MONTH_CURRENT_FY, PREVIOUS_FINANCIAL_YEAR, CURRENT_FINANCIAL_YEAR, FUTURE_PERIOD
+    period_decision = Column(String(50), nullable=False, default="NOT_REQUIRED")  # NOT_REQUIRED, PENDING, CONTINUE, CANCELLED
+
     # Errors & Metrics
     error_message = Column(Text, nullable=True)
     confidence_score = Column(Float, nullable=True)

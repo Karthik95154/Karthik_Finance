@@ -74,6 +74,11 @@ STANDARD_ACCOUNTS = {
         "account_name": "Round Off Adjustment",
         "account_type": "expense",
     },
+    "ADJUSTMENT": {
+        "account_id": "EXP_ADJUSTMENT",
+        "account_name": "Invoice Adjustments",
+        "account_type": "expense",
+    },
 }
 
 DEFAULT_TOLERANCE = 1.0  # 1 INR tolerance for monetary rounding
@@ -189,6 +194,7 @@ class JournalGenerator:
         discount = self._clean_num(inv.get("discount_total") or inv.get("discount")) or 0.0
         shipping = self._clean_num(inv.get("shipping_charges") or inv.get("shipping")) or 0.0
         other_charges = self._clean_num(inv.get("other_charges")) or 0.0
+        adjustment = self._clean_num(inv.get("adjustment")) or 0.0
         round_off = self._clean_num(inv.get("round_off")) or 0.0
         vendor_name = inv.get("vendor_name") or "Vendor"
 
@@ -243,9 +249,16 @@ class JournalGenerator:
                 if taxable is None:
                     qty = self._clean_num(line.get("quantity"))
                     price = self._clean_num(line.get("unit_price"))
-                    line_disc = self._clean_num(line.get("discount") or line.get("discount_amount")) or 0.0
+                    from app.services.financial_validator import parse_discount_semantics
+                    disc_val, disc_type, disc_issue = parse_discount_semantics(line)
+                    line_disc = disc_val or 0.0
                     if qty is not None and price is not None:
-                        taxable = round((qty * price) - line_disc, 2)
+                        gross = round(qty * price, 2)
+                        if disc_type == "percentage":
+                            d_amt = round(gross * line_disc / 100.0, 2)
+                        else:
+                            d_amt = round(line_disc, 2)
+                        taxable = round(gross - d_amt, 2)
                     elif subtotal is not None and len(line_items) == 1:
                         taxable = subtotal
                     else:
@@ -659,6 +672,40 @@ class JournalGenerator:
                 )
             )
 
+        if adjustment != 0.0:
+            if adjustment > 0:
+                lines.append(
+                    JournalLine(
+                        account_id=STANDARD_ACCOUNTS["ADJUSTMENT"]["account_id"],
+                        account_name=STANDARD_ACCOUNTS["ADJUSTMENT"]["account_name"],
+                        line_type="EXPENSE",
+                        debit=adjustment,
+                        credit=0.0,
+                        amount=adjustment,
+                        provenance="DETERMINISTIC",
+                        description="Invoice Adjustment (+)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                    )
+                )
+            else:
+                lines.append(
+                    JournalLine(
+                        account_id=STANDARD_ACCOUNTS["ADJUSTMENT"]["account_id"],
+                        account_name=STANDARD_ACCOUNTS["ADJUSTMENT"]["account_name"],
+                        line_type="EXPENSE",
+                        debit=0.0,
+                        credit=abs(adjustment),
+                        amount=abs(adjustment),
+                        provenance="DETERMINISTIC",
+                        description="Invoice Adjustment (-)",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                    )
+                )
+
         if round_off != 0.0:
             if round_off > 0:
                 lines.append(
@@ -778,6 +825,7 @@ class JournalGenerator:
                 + total_extracted_gst
                 + shipping
                 + other_charges
+                + adjustment
                 + round_off
             )
 

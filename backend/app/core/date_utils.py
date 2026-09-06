@@ -189,3 +189,57 @@ def validate_invoice_due_dates(invoice_date_str: Optional[str], due_date_str: Op
         return False, f"Due date ({due_disp}) cannot be earlier than invoice date ({inv_disp})."
 
     return True, None
+
+
+def get_indian_financial_year(d: date) -> tuple[int, int]:
+    """
+    Returns the Indian Financial Year (start_year, end_year) for date d.
+    Indian Financial Year runs from April 1 to March 31.
+    Example:
+      2026-09-06 -> (2026, 2027)
+      2026-03-31 -> (2025, 2026)
+      2026-04-01 -> (2026, 2027)
+    """
+    if d.month >= 4:
+        return (d.year, d.year + 1)
+    else:
+        return (d.year - 1, d.year)
+
+
+def calculate_invoice_accounting_period(
+    invoice_date_val: Union[str, date, datetime, None],
+    ref_date: Optional[date] = None,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Simplified Indian Accounting Period helper.
+    Returns: (period_category, period_message, invoice_month)
+      - period_category: 'PREVIOUS_FINANCIAL_YEAR' if belongs to previous Indian FY, else 'CURRENT_FINANCIAL_YEAR' (or None if missing/invalid)
+      - period_message: 'Invoice Month: <Month YYYY>' (or None if missing/invalid)
+      - invoice_month: '<Month YYYY>' (e.g. 'July 2026')
+    """
+    if not invoice_date_val:
+        return None, None, None
+
+    norm_str = parse_and_normalize_date(invoice_date_val)
+    if not norm_str:
+        return None, None, None
+
+    try:
+        inv_d = datetime.strptime(norm_str, "%Y-%m-%d").date()
+    except ValueError:
+        return None, None, None
+
+    ref = ref_date or date.today()
+
+    inv_fy = get_indian_financial_year(inv_d)
+    ref_fy = get_indian_financial_year(ref)
+
+    month_name = inv_d.strftime("%B %Y")
+    period_message = f"Invoice Month: {month_name}"
+
+    if inv_fy < ref_fy:
+        return "PREVIOUS_FINANCIAL_YEAR", period_message, month_name
+    else:
+        return "CURRENT_FINANCIAL_YEAR", period_message, month_name
+
+

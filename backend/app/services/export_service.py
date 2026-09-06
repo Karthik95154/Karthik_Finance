@@ -539,6 +539,15 @@ class InvoiceExportService:
             if notes:
                 bill_payload["notes"] = str(notes)
 
+            adjustment_val = vlm_data.get("adjustment")
+            if adjustment_val is not None:
+                try:
+                    adj_flt = float(adjustment_val)
+                    if adj_flt != 0.0:
+                        bill_payload["adjustment"] = adj_flt
+                except (ValueError, TypeError):
+                    pass
+
             # 10. RECONCILIATION & IDEMPOTENT BILL CREATION
             bill_id = invoice.zoho_bill_id
             bill_num = invoice.zoho_bill_number or invoice_num

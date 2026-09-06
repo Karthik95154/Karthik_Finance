@@ -57,6 +57,8 @@ async def lifespan(app: FastAPI):
                 ("itc_result", "JSONB"),
                 ("financial_validation_result", "JSONB"),
                 ("journal_entry", "JSONB"),
+                ("period_category", "VARCHAR(50)"),
+                ("period_decision", "VARCHAR(50) DEFAULT 'NOT_REQUIRED'"),
             ]
             for col, col_type in migration_columns:
                 try:

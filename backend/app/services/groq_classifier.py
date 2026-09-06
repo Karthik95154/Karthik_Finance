@@ -117,7 +117,8 @@ def classify_document(context: Dict[str, Any]) -> DocumentClassificationResult:
             ],
             model=model,
             response_format={"type": "json_object"},
-            temperature=0.0
+            temperature=0.0,
+            max_tokens=300,
         )
         
         content = chat_completion.choices[0].message.content

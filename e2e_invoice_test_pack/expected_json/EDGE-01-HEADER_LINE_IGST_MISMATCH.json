@@ -1,0 +1,61 @@
+{
+  "invoice_number": "NVS/26-27/3110",
+  "invoice_date": "2026-09-03",
+  "vendor": {
+    "name": "Nova Vision Components",
+    "address": "14 Peenya Industrial Area, Bengaluru, Karnataka - 560058",
+    "gstin": "29AABCN7788D1Z7",
+    "state": "Karnataka",
+    "state_code": "29"
+  },
+  "customer": {
+    "name": "Western Retail Systems",
+    "address": "16 Andheri East, Mumbai, Maharashtra - 400069",
+    "gstin": "27AABCW9900T1Z4",
+    "state": "Maharashtra",
+    "state_code": "27"
+  },
+  "line_items": [
+    {
+      "description": "Barcode Scanner NS-200",
+      "hsn": "84716050",
+      "qty": 5,
+      "unit_price": 18000.0,
+      "discount": 0.0,
+      "taxable": 90000.0,
+      "cgst_rate": 0.0,
+      "cgst": 0.0,
+      "sgst_rate": 0.0,
+      "sgst": 0.0,
+      "igst_rate": 18.0,
+      "igst": 16200.0,
+      "cess": 0.0,
+      "total": 106200.0
+    },
+    {
+      "description": "Receipt Printer RP-10",
+      "hsn": "84433260",
+      "qty": 5,
+      "unit_price": 12000.0,
+      "discount": 0.0,
+      "taxable": 60000.0,
+      "cgst_rate": 0.0,
+      "cgst": 0.0,
+      "sgst_rate": 0.0,
+      "sgst": 0.0,
+      "igst_rate": 18.0,
+      "igst": 9000.0,
+      "cess": 0.0,
+      "total": 69000.0
+    }
+  ],
+  "subtotal": 150000.0,
+  "discount": 0.0,
+  "taxes": {
+    "cgst": 0.0,
+    "sgst": 0.0,
+    "igst": 26200.0,
+    "cess": 0.0
+  },
+  "grand_total": 176200.0
+}

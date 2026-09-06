@@ -1,0 +1,59 @@
+{
+  "invoice_number": "SIS/26-27/5092",
+  "invoice_date": "2026-09-05",
+  "vendor": {
+    "name": "Southline IT Services",
+    "address": "31 Guindy Industrial Estate, Chennai, Tamil Nadu - 600032",
+    "gstin": "33AABCS1122M1Z3",
+    "state": "Tamil Nadu",
+    "state_code": "33"
+  },
+  "customer": {
+    "name": "Metro Infra Projects",
+    "address": "4 OMR Road, Chennai, Tamil Nadu - 600096",
+    "gstin": "33AABCM4455N1Z0",
+    "state": "Tamil Nadu",
+    "state_code": "33"
+  },
+  "line_items": [
+    {
+      "description": "Annual ERP Support Contract",
+      "hsn": "998313",
+      "qty": 1,
+      "unit_price": 90000.0,
+      "discount": 0.0,
+      "taxable": 90000.0,
+      "cgst_rate": 9.0,
+      "cgst": 8100.0,
+      "sgst_rate": 9.0,
+      "sgst": 8100.0,
+      "cess": 0.0,
+      "total": 106200.0
+    },
+    {
+      "description": "On-site Support Hours",
+      "hsn": "998313",
+      "qty": 20,
+      "unit_price": 1000.0,
+      "discount": 0.0,
+      "taxable": 20000.0,
+      "cgst_rate": null,
+      "cgst": null,
+      "sgst_rate": null,
+      "sgst": null,
+      "igst_rate": null,
+      "igst": null,
+      "cess": null,
+      "total": 23600.0
+    }
+  ],
+  "subtotal": 110000.0,
+  "discount": 0.0,
+  "taxes": {
+    "cgst": 9900.0,
+    "sgst": 9900.0,
+    "igst": 0.0,
+    "cess": 0.0
+  },
+  "grand_total": 129800.0
+}

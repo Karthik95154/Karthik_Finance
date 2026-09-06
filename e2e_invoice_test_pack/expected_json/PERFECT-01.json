@@ -1,0 +1,57 @@
+{
+  "invoice_number": "SV/26-27/1001",
+  "invoice_date": "2026-09-01",
+  "vendor": {
+    "name": "Kaveri Industrial Supplies Pvt Ltd",
+    "address": "12 Industrial Estate, Hyderabad, Telangana - 500018",
+    "gstin": "36AAECK1234Q1Z8",
+    "state": "Telangana",
+    "state_code": "36"
+  },
+  "customer": {
+    "name": "Ravi Tech Solutions",
+    "address": "45 Kukatpally, Hyderabad, Telangana - 500072",
+    "gstin": "36AABFR5678P1Z2",
+    "state": "Telangana",
+    "state_code": "36"
+  },
+  "line_items": [
+    {
+      "description": "Stainless Steel Fasteners M8",
+      "hsn": "73181500",
+      "qty": 100,
+      "unit_price": 250.0,
+      "discount": 0.0,
+      "taxable": 25000.0,
+      "cgst_rate": 9.0,
+      "cgst": 2250.0,
+      "sgst_rate": 9.0,
+      "sgst": 2250.0,
+      "cess": 0.0,
+      "total": 29500.0
+    },
+    {
+      "description": "Industrial Washers 10mm",
+      "hsn": "73182200",
+      "qty": 200,
+      "unit_price": 75.0,
+      "discount": 500.0,
+      "taxable": 14500.0,
+      "cgst_rate": 9.0,
+      "cgst": 1305.0,
+      "sgst_rate": 9.0,
+      "sgst": 1305.0,
+      "cess": 0.0,
+      "total": 17110.0
+    }
+  ],
+  "subtotal": 39500.0,
+  "discount": 500.0,
+  "taxes": {
+    "cgst": 3555.0,
+    "sgst": 3555.0,
+    "igst": 0.0,
+    "cess": 0.0
+  },
+  "grand_total": 46610.0
+}

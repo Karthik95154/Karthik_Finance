@@ -59,6 +59,7 @@ import {
   ShieldCheck,
   Landmark,
   Calculator,
+  Calendar,
 } from "lucide-react";
 
 // Helper to parse clean numeric values including currency strings like "Rupees 35,36,917.24" or "Rs. 248,417.88"
@@ -95,6 +96,79 @@ function formatToIndianDate(val: any): string {
     return `${d}/${m}/${y}`;
   }
   return s;
+}
+
+// Helper to derive Accounting Period month and financial year status from invoice date
+function getAccountingPeriodInfo(
+  dateVal: any,
+  storedCategory?: string | null
+): { monthYear: string; fyStatus: string; isPreviousFy: boolean } | null {
+  if (!dateVal || typeof dateVal !== "string") return null;
+  const s = dateVal.trim();
+  if (!s || s.toLowerCase() === "none" || s.toLowerCase() === "null") return null;
+
+  let invYear: number | null = null;
+  let invMonth: number | null = null;
+
+  // 1. ISO format: YYYY-MM-DD or YYYY/MM/DD
+  const iso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (iso) {
+    invYear = parseInt(iso[1], 10);
+    invMonth = parseInt(iso[2], 10);
+  }
+
+  // 2. Indian format: DD-MM-YYYY or DD/MM/YYYY
+  if (!invYear) {
+    const dmy = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (dmy) {
+      invMonth = parseInt(dmy[2], 10);
+      invYear = parseInt(dmy[3], 10);
+    }
+  }
+
+  // 3. Word month format: e.g. 31-Jul-2026, 31-Jul-26, July 31 2026
+  if (!invYear) {
+    const monthNames: Record<string, number> = {
+      jan: 1, january: 1, feb: 2, february: 2, mar: 3, march: 3,
+      apr: 4, april: 4, may: 5, jun: 6, june: 6, jul: 7, july: 7,
+      aug: 8, august: 8, sep: 9, sept: 9, september: 9,
+      oct: 10, october: 10, nov: 11, november: 11, dec: 12, december: 12,
+    };
+    const wordMatch = s.match(/([a-zA-Z]+)/);
+    if (wordMatch) {
+      const mStr = wordMatch[1].toLowerCase();
+      if (monthNames[mStr]) {
+        invMonth = monthNames[mStr];
+        const yrMatch = s.match(/\b(20\d{2}|\d{2})\b/);
+        if (yrMatch) {
+          invYear = yrMatch[1].length === 2 ? 2000 + parseInt(yrMatch[1], 10) : parseInt(yrMatch[1], 10);
+        }
+      }
+    }
+  }
+
+  if (!invYear || !invMonth || invMonth < 1 || invMonth > 12) return null;
+
+  const monthNamesList = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+  ];
+  const monthYear = `${monthNamesList[invMonth - 1]} ${invYear}`;
+
+  // Indian Financial Year: April 1 -> March 31
+  const invFyStart = invMonth >= 4 ? invYear : invYear - 1;
+  const now = new Date();
+  const currentMonth = now.getMonth() + 1;
+  const currentYear = now.getFullYear();
+  const currentFyStart = currentMonth >= 4 ? currentYear : currentYear - 1;
+
+  const isPreviousFy = storedCategory
+    ? storedCategory === "PREVIOUS_FINANCIAL_YEAR"
+    : invFyStart < currentFyStart;
+
+  const fyStatus = isPreviousFy ? "Previous Financial Year" : "Current Financial Year";
+
+  return { monthYear, fyStatus, isPreviousFy };
 }
 
 // Helper to extract or derive invoice-level CGST/SGST/IGST amounts from Qwen3-VL extraction
@@ -758,9 +832,12 @@ export default function InvoiceWorkspace({
       const qty = typeof item.quantity === "number" ? item.quantity : parseFloat(String(item.quantity || "1")) || 1;
       const price = typeof item.unit_price === "number" ? item.unit_price : parseFloat(String(item.unit_price ?? item.rate ?? "0")) || 0;
       const disc = typeof item.discount === "number" ? item.discount : parseFloat(String(item.discount || "0")) || 0;
+      const isPercentDisc = (item as any).discount_type === "percentage" || String((item as any).discount || "").includes("%");
       let taxable = typeof item.taxable_amount === "number" ? item.taxable_amount : parseFloat(String(item.taxable_amount || ""));
       if (isNaN(taxable) || taxable === 0) {
-        taxable = Math.max(0, Math.round((qty * price - disc) * 100) / 100);
+        const gross = qty * price;
+        const discAmt = isPercentDisc ? (gross * disc) / 100 : disc;
+        taxable = Math.max(0, Math.round((gross - discAmt) * 100) / 100);
       }
 
       let cgstAmt = typeof item.cgst_amount === "number" ? item.cgst_amount : parseFloat(String(item.cgst_amount || ""));
@@ -1810,8 +1887,9 @@ export default function InvoiceWorkspace({
                   zIndex: 10,
                 }}
               >
-                <div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px" }}>
+                {/* Left: AI Extraction Review Title & Badges */}
+                <div style={{ minWidth: "0" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "2px", flexWrap: "wrap" }}>
                     <span style={{ fontSize: "11px", fontWeight: "700", letterSpacing: "0.06em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
                       AI Extraction Review
                     </span>
@@ -1831,10 +1909,70 @@ export default function InvoiceWorkspace({
                       </span>
                     )}
                   </div>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)" }}>
+                  <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     Final Invoice & Accounting Workspace
                   </div>
                 </div>
+
+                {/* Right: Compact Accounting Period Block */}
+                {(() => {
+                  const invDate = formData.invoice_date || invoice?.invoice_date;
+                  const periodInfo = getAccountingPeriodInfo(invDate, invoice?.period_category);
+                  if (!periodInfo) return null;
+
+                  return (
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        padding: "6px 12px",
+                        borderRadius: "8px",
+                        background: periodInfo.isPreviousFy ? "#fef2f2" : "#f8fafc",
+                        border: `1px solid ${periodInfo.isPreviousFy ? "#fecaca" : "var(--border-subtle)"}`,
+                        flexShrink: 0,
+                        marginLeft: "16px",
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: "28px",
+                          height: "28px",
+                          borderRadius: "6px",
+                          background: periodInfo.isPreviousFy ? "#fee2e2" : "#e2e8f0",
+                          color: periodInfo.isPreviousFy ? "#dc2626" : "var(--text-secondary)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          flexShrink: 0,
+                        }}
+                      >
+                        <Calendar size={14} />
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", textAlign: "right" }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: "6px" }}>
+                          <span style={{ fontSize: "10px", fontWeight: "700", letterSpacing: "0.04em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                            Accounting Period
+                          </span>
+                        </div>
+                        <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--text-primary)", lineHeight: "1.2" }}>
+                          {periodInfo.monthYear}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: "500",
+                            color: periodInfo.isPreviousFy ? "#b91c1c" : "#16a34a",
+                            lineHeight: "1.2",
+                            marginTop: "1px",
+                          }}
+                        >
+                          {periodInfo.fyStatus}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Independently Scrollable Form Workspace */}

@@ -1,0 +1,61 @@
+{
+  "invoice_number": "AIS/26-27/2048",
+  "invoice_date": "2026-09-02",
+  "vendor": {
+    "name": "Apex Office Systems",
+    "address": "88 Nehru Place, New Delhi, Delhi - 110019",
+    "gstin": "07AABCA1122L1Z5",
+    "state": "Delhi",
+    "state_code": "07"
+  },
+  "customer": {
+    "name": "Maharashtra Data Labs Pvt Ltd",
+    "address": "21 Hinjewadi Phase 1, Pune, Maharashtra - 411057",
+    "gstin": "27AABCM3344R1Z1",
+    "state": "Maharashtra",
+    "state_code": "27"
+  },
+  "line_items": [
+    {
+      "description": "Laser Printer Model APX-420",
+      "hsn": "84433210",
+      "qty": 4,
+      "unit_price": 32000.0,
+      "discount": 2000.0,
+      "taxable": 126000.0,
+      "cgst_rate": 0.0,
+      "cgst": 0.0,
+      "sgst_rate": 0.0,
+      "sgst": 0.0,
+      "igst_rate": 18.0,
+      "igst": 22680.0,
+      "cess": 0.0,
+      "total": 148680.0
+    },
+    {
+      "description": "Printer Toner Cartridge APX-T1",
+      "hsn": "84439959",
+      "qty": 10,
+      "unit_price": 4500.0,
+      "discount": 0.0,
+      "taxable": 45000.0,
+      "cgst_rate": 0.0,
+      "cgst": 0.0,
+      "sgst_rate": 0.0,
+      "sgst": 0.0,
+      "igst_rate": 12.0,
+      "igst": 5400.0,
+      "cess": 0.0,
+      "total": 50400.0
+    }
+  ],
+  "subtotal": 171000.0,
+  "discount": 2000.0,
+  "taxes": {
+    "cgst": 0.0,
+    "sgst": 0.0,
+    "igst": 28080.0,
+    "cess": 0.0
+  },
+  "grand_total": 199080.0
+}

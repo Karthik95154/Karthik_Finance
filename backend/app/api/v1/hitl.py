@@ -84,6 +84,9 @@ async def approve_extraction_hitl(
     if invoice.status != "HITL_REVIEW":
         raise HTTPException(status_code=409, detail=f"Invoice is not in HITL_REVIEW state (current: {invoice.status})")
 
+    if invoice.period_decision == "CANCELLED" or invoice.status == "CANCELLED":
+        raise HTTPException(status_code=400, detail="Cannot approve an invoice that was cancelled.")
+
     # Create HitlReview Audit record
     hitl_review = HitlReview(
         invoice_id=invoice.id,
@@ -96,6 +99,17 @@ async def approve_extraction_hitl(
         approved_at=datetime.now(timezone.utc)
     )
     db.add(hitl_review)
+
+    # Recalculate authoritative period if corrected_data has invoice_date
+    from app.core.date_utils import calculate_invoice_accounting_period, parse_and_normalize_date
+    if isinstance(payload.corrected_data, dict):
+        sub = payload.corrected_data.get("data") if isinstance(payload.corrected_data.get("data"), dict) else payload.corrected_data
+        if sub.get("invoice_date"):
+            sub["invoice_date"] = parse_and_normalize_date(sub["invoice_date"])
+            cat, _, _ = calculate_invoice_accounting_period(sub["invoice_date"])
+            invoice.period_category = cat
+            if cat != "PREVIOUS_FINANCIAL_YEAR" and invoice.period_decision == "PENDING":
+                invoice.period_decision = "NOT_REQUIRED"
 
     # Update Invoice
     invoice.current_vlm_output = payload.corrected_data

@@ -345,6 +345,9 @@ export interface Invoice {
   accounting_status?: "PENDING" | "PROCESSING_ACCOUNTING" | "COMPLETED" | "FAILED" | string | null;
   approval_status?: "PENDING_REVIEW" | "APPROVED" | "REJECTED" | string | null;
   export_status?: "NOT_EXPORTED" | "EXPORTED" | "FAILED" | string | null;
+  period_category?: "PREVIOUS_FINANCIAL_YEAR" | "CURRENT_FINANCIAL_YEAR" | string | null;
+  period_decision?: "NOT_REQUIRED" | "PENDING" | "CONTINUE" | "CANCELLED" | string | null;
+  invoice_date?: string | null;
   zoho_bill_id?: string | null;
   zoho_bill_number?: string | null;
   error_message?: string | null;
@@ -364,13 +367,17 @@ export interface Invoice {
 
 export interface InvoiceStatus {
   invoice_id: string;
-  status: "PENDING" | "PROCESSING_VLM" | "PROCESSING_ACCOUNTING" | "COMPLETED" | "FAILED" | string;
+  status: "PENDING" | "PROCESSING_VLM" | "PROCESSING_ACCOUNTING" | "COMPLETED" | "FAILED" | "CANCELLED" | string;
   accounting_status?: string | null;
   approval_status?: "PENDING_REVIEW" | "APPROVED" | "REJECTED" | string | null;
   export_status?: "NOT_EXPORTED" | "EXPORTED" | "FAILED" | string | null;
   error_message?: string | null;
   confidence_score?: number | null;
   accounting_confidence?: number | null;
+  period_category?: "CURRENT_MONTH" | "PREVIOUS_MONTH_CURRENT_FY" | "PREVIOUS_FINANCIAL_YEAR" | "CURRENT_FINANCIAL_YEAR" | "FUTURE_PERIOD" | string | null;
+  period_decision?: "NOT_REQUIRED" | "PENDING" | "CONTINUE" | "CANCELLED" | string | null;
+  period_message?: string | null;
+  invoice_date?: string | null;
   updated_at: string;
 }
 
@@ -450,6 +457,29 @@ export async function getInvoiceStatus(id: string): Promise<InvoiceStatus> {
   return res.json();
 }
 
+export async function submitPeriodDecision(
+  id: string,
+  decision: "CONTINUE" | "CANCEL"
+): Promise<{ invoice_id: string; period_decision: string; status: string; message: string }> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices/${id}/period-decision`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+    },
+    body: JSON.stringify({ decision }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Failed to submit period decision for invoice ${id}`);
+  }
+
+  return res.json();
+}
+
+
 export async function listInvoices(forceRefresh = false): Promise<InvoiceListItem[]> {
   const now = Date.now();
   if (!forceRefresh && inMemoryInvoices && now - inMemoryInvoicesTime < 15000) {
@@ -459,7 +489,7 @@ export async function listInvoices(forceRefresh = false): Promise<InvoiceListIte
   if (!forceRefresh && !inMemoryInvoices && typeof window !== "undefined") {
     const cached = getCachedInvoices();
     if (cached) {
-      fetchFreshInvoices().catch(() => {});
+      fetchFreshInvoices().catch(() => { });
       return cached;
     }
   }
@@ -502,7 +532,7 @@ async function fetchFreshInvoices(): Promise<InvoiceListItem[]> {
     if (typeof window !== "undefined") {
       try {
         sessionStorage.setItem(INVOICES_CACHE_KEY, JSON.stringify(data));
-      } catch (_) {}
+      } catch (_) { }
     }
     return data;
   });
@@ -746,7 +776,7 @@ export function getCachedIMAPSettings(): IMAPSettings | null {
         inMemoryImapSettings = JSON.parse(raw);
         return inMemoryImapSettings;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return null;
 }
@@ -757,7 +787,7 @@ export function invalidateIMAPCache() {
   if (typeof window !== "undefined") {
     try {
       sessionStorage.removeItem(IMAP_SETTINGS_CACHE_KEY);
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -778,7 +808,7 @@ export function getCachedInvoices(): InvoiceListItem[] | null {
         inMemoryInvoices = JSON.parse(raw);
         return inMemoryInvoices;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return null;
 }
@@ -789,7 +819,7 @@ export function invalidateInvoicesCache() {
   if (typeof window !== "undefined") {
     try {
       sessionStorage.removeItem(INVOICES_CACHE_KEY);
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -802,7 +832,7 @@ export function getCachedStagedDocuments(): StagedDocument[] | null {
         inMemoryStagedDocs = JSON.parse(raw);
         return inMemoryStagedDocs;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return null;
 }
@@ -813,7 +843,7 @@ export function invalidateStagedDocumentsCache() {
   if (typeof window !== "undefined") {
     try {
       sessionStorage.removeItem(STAGED_DOCS_CACHE_KEY);
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -826,7 +856,7 @@ export function getCachedZohoStatus(): ZohoStatusResponse | null {
         inMemoryZohoStatus = JSON.parse(raw);
         return inMemoryZohoStatus;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return null;
 }
@@ -840,7 +870,7 @@ export function getCachedMasterData(): ZohoMasterDataSummary | null {
         inMemoryMasterData = JSON.parse(raw);
         return inMemoryMasterData;
       }
-    } catch (_) {}
+    } catch (_) { }
   }
   return null;
 }
@@ -854,7 +884,7 @@ export function invalidateZohoCache() {
     try {
       sessionStorage.removeItem(ZOHO_STATUS_CACHE_KEY);
       sessionStorage.removeItem(ZOHO_MASTER_DATA_CACHE_KEY);
-    } catch (_) {}
+    } catch (_) { }
   }
 }
 
@@ -870,7 +900,7 @@ export async function getZohoStatus(forceRefresh = false): Promise<ZohoStatusRes
     const cached = getCachedZohoStatus();
     if (cached) {
       // Return cached immediately and refresh in background
-      fetchFreshZohoStatus().catch(() => {});
+      fetchFreshZohoStatus().catch(() => { });
       return cached;
     }
   }
@@ -896,7 +926,7 @@ async function fetchFreshZohoStatus(): Promise<ZohoStatusResponse> {
       try {
         sessionStorage.setItem(ZOHO_STATUS_CACHE_KEY, JSON.stringify(data));
         window.dispatchEvent(new CustomEvent("zoho-status-updated", { detail: data }));
-      } catch (_) {}
+      } catch (_) { }
     }
     return data;
   } catch (err) {
@@ -993,7 +1023,7 @@ export async function getMasterDataSummary(forceRefresh = false): Promise<ZohoMa
   if (!forceRefresh && !inMemoryMasterData && typeof window !== "undefined") {
     const cached = getCachedMasterData();
     if (cached && (cached.chart_of_accounts_count > 0 || cached.tax_rates_count > 0 || cached.vendors_count > 0)) {
-      fetchFreshMasterData().catch(() => {});
+      fetchFreshMasterData().catch(() => { });
       return cached;
     }
   }
@@ -1017,7 +1047,7 @@ async function fetchFreshMasterData(): Promise<ZohoMasterDataSummary> {
     if (typeof window !== "undefined") {
       try {
         sessionStorage.setItem(ZOHO_MASTER_DATA_CACHE_KEY, JSON.stringify(data));
-      } catch (_) {}
+      } catch (_) { }
     }
     return data;
   } catch (err) {
@@ -1213,7 +1243,7 @@ export async function listStagedDocuments(forceRefresh = false): Promise<StagedD
   if (!forceRefresh && !inMemoryStagedDocs && typeof window !== "undefined") {
     const cached = getCachedStagedDocuments();
     if (cached) {
-      fetchFreshStagedDocuments().catch(() => {});
+      fetchFreshStagedDocuments().catch(() => { });
       return cached;
     }
   }
@@ -1239,7 +1269,7 @@ async function fetchFreshStagedDocuments(): Promise<StagedDocument[]> {
     if (typeof window !== "undefined") {
       try {
         sessionStorage.setItem(STAGED_DOCS_CACHE_KEY, JSON.stringify(data));
-      } catch (_) {}
+      } catch (_) { }
     }
     return data;
   });
@@ -1310,7 +1340,7 @@ export async function getIMAPSettings(forceRefresh = false): Promise<IMAPSetting
   if (!forceRefresh && !inMemoryImapSettings && typeof window !== "undefined") {
     const cached = getCachedIMAPSettings();
     if (cached) {
-      fetchFreshIMAPSettings().catch(() => {});
+      fetchFreshIMAPSettings().catch(() => { });
       return cached;
     }
   }
@@ -1335,7 +1365,7 @@ async function fetchFreshIMAPSettings(): Promise<IMAPSettings> {
     if (typeof window !== "undefined") {
       try {
         sessionStorage.setItem(IMAP_SETTINGS_CACHE_KEY, JSON.stringify(data));
-      } catch (_) {}
+      } catch (_) { }
     }
     return data;
   } catch (err) {

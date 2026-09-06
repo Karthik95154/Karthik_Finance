@@ -16,6 +16,10 @@ class InvoiceUploadResponse(BaseModel):
     created_at: datetime
 
 
+class PeriodDecisionRequest(BaseModel):
+    decision: str  # CONTINUE or CANCEL
+
+
 class InvoiceStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -27,6 +31,10 @@ class InvoiceStatusResponse(BaseModel):
     error_message: Optional[str] = None
     confidence_score: Optional[float] = None
     accounting_confidence: Optional[float] = None
+    period_category: Optional[str] = None
+    period_decision: Optional[str] = "NOT_REQUIRED"
+    period_message: Optional[str] = None
+    invoice_date: Optional[str] = None
     updated_at: datetime
 
 
@@ -44,6 +52,8 @@ class InvoiceResponse(BaseModel):
     accounting_status: Optional[str] = None
     approval_status: Optional[str] = "PENDING_REVIEW"
     export_status: Optional[str] = "NOT_EXPORTED"
+    period_category: Optional[str] = None
+    period_decision: Optional[str] = "NOT_REQUIRED"
     invoice_type: Optional[str] = "VENDOR_INVOICE"
     zoho_bill_id: Optional[str] = None
     zoho_bill_number: Optional[str] = None

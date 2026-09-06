@@ -28,6 +28,7 @@ from app.schemas.invoice import (
     InvoiceStatusResponse,
     InvoiceUpdateRequest,
     InvoiceUploadResponse,
+    PeriodDecisionRequest,
 )
 from app.storage.supabase_storage import storage_service
 from app.services.invoice_processing import (
@@ -317,6 +318,23 @@ async def get_invoice_status(
             detail=f"Invoice with ID {invoice_id} not found.",
         )
 
+    # Extract invoice_date if available and compute/fetch period_message
+    from app.core.date_utils import calculate_invoice_accounting_period
+    inv_date = None
+    period_msg = None
+    period_cat = invoice.period_category
+    period_dec = invoice.period_decision or "NOT_REQUIRED"
+
+    target_data = invoice.current_vlm_output or invoice.raw_vlm_output
+    if isinstance(target_data, dict):
+        sub = target_data.get("data") if isinstance(target_data.get("data"), dict) else target_data
+        inv_date = sub.get("invoice_date")
+        if inv_date:
+            calc_cat, calc_msg, _ = calculate_invoice_accounting_period(inv_date)
+            if not period_cat:
+                period_cat = calc_cat
+            period_msg = calc_msg
+
     return InvoiceStatusResponse(
         invoice_id=invoice.id,
         status=invoice.status,
@@ -326,6 +344,10 @@ async def get_invoice_status(
         error_message=invoice.error_message,
         confidence_score=invoice.confidence_score,
         accounting_confidence=invoice.accounting_confidence,
+        period_category=period_cat,
+        period_decision=period_dec,
+        period_message=period_msg,
+        invoice_date=inv_date,
         updated_at=invoice.updated_at,
     )
 
@@ -402,12 +424,19 @@ async def update_invoice_extraction(
         invoice.locked_at = None
 
     if update_data.current_vlm_output is not None:
-        from app.core.date_utils import parse_and_normalize_date
+        from app.core.date_utils import parse_and_normalize_date, calculate_invoice_accounting_period
         vlm_dict = update_data.current_vlm_output
         if isinstance(vlm_dict, dict):
             target = vlm_dict.get("data") if isinstance(vlm_dict.get("data"), dict) else vlm_dict
             if target.get("invoice_date"):
                 target["invoice_date"] = parse_and_normalize_date(target["invoice_date"])
+                p_cat, _, _ = calculate_invoice_accounting_period(target["invoice_date"])
+                invoice.period_category = p_cat
+                if p_cat == "PREVIOUS_FINANCIAL_YEAR":
+                    if invoice.period_decision not in ("CONTINUE", "CANCELLED"):
+                        invoice.period_decision = "PENDING"
+                else:
+                    invoice.period_decision = "NOT_REQUIRED"
             if target.get("due_date"):
                 target["due_date"] = parse_and_normalize_date(target["due_date"])
         invoice.current_vlm_output = vlm_dict
@@ -720,3 +749,89 @@ async def get_invoice_pages(
         b64_str = base64.b64encode(content).decode("utf-8")
         media_type = invoice.mime_type or "image/png"
         return {"invoice_id": str(invoice_id), "page_count": 1, "pages": [f"data:{media_type};base64,{b64_str}"]}
+
+
+@router.post("/{invoice_id}/period-decision")
+async def decide_invoice_period(
+    invoice_id: uuid.UUID,
+    payload: PeriodDecisionRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Authoritative decision handler for Previous Financial Year invoices.
+    Only allows 'CONTINUE' or 'CANCEL' for invoices that:
+    1. Exist and match user/tenant scope
+    2. Are in post-VLM state ('HITL_REVIEW')
+    3. Have period_category == 'PREVIOUS_FINANCIAL_YEAR'
+    4. Have period_decision == 'PENDING'
+    """
+    decision = (payload.decision or "").strip().upper()
+    if decision not in ("CONTINUE", "CANCEL"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid decision. Must be 'CONTINUE' or 'CANCEL'.",
+        )
+
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    # Re-verify period category authoritatively from stored invoice_date
+    from app.core.date_utils import calculate_invoice_accounting_period
+    target_data = invoice.current_vlm_output or invoice.raw_vlm_output
+    authoritative_category = invoice.period_category
+    if isinstance(target_data, dict):
+        sub = target_data.get("data") if isinstance(target_data.get("data"), dict) else target_data
+        inv_date = sub.get("invoice_date")
+        if inv_date:
+            authoritative_category, _, _ = calculate_invoice_accounting_period(inv_date)
+
+    if authoritative_category != "PREVIOUS_FINANCIAL_YEAR":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Period confirmation is not required for invoice period category: {authoritative_category}",
+        )
+
+    if invoice.status != "HITL_REVIEW":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Invoice is not in post-VLM review state (current status: {invoice.status}).",
+        )
+
+    if invoice.period_decision != "PENDING":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Period decision is not pending (current decision: {invoice.period_decision}).",
+        )
+
+    if decision == "CANCEL":
+        invoice.period_decision = "CANCELLED"
+        invoice.status = "CANCELLED"
+        invoice.error_message = "Invoice processing cancelled by user (Previous Financial Year)."
+        invoice.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {
+            "invoice_id": str(invoice.id),
+            "period_decision": "CANCELLED",
+            "status": "CANCELLED",
+            "message": "Invoice processing cancelled.",
+        }
+    else:  # CONTINUE
+        invoice.period_decision = "CONTINUE"
+        invoice.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {
+            "invoice_id": str(invoice.id),
+            "period_decision": "CONTINUE",
+            "status": invoice.status,
+            "message": "Invoice processing confirmed. Resuming workflow.",
+        }
+
