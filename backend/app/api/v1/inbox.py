@@ -305,7 +305,6 @@ async def poll_email_inbox(
                 id=invoice_id,
                 tenant_id=current_user.tenant_id,
                 user_id=current_user_uuid,
->>>>>>> target/updated_HITL
                 file_path=storage_path,
                 file_name=attachment["filename"],
                 file_size=len(attachment["file_bytes"]),

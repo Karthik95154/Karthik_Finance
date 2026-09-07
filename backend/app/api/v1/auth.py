@@ -206,6 +206,39 @@ async def login_for_access_token(
     role = payload.dev_role.upper() if payload.dev_role else (user.role if user else "FINANCE")
     tenant_id = payload.dev_tenant_id or (user.tenant_id if user else settings.DEFAULT_TENANT_ID)
     full_name = payload.dev_name or (user.full_name if user else "Development User")
+
+    if not user:
+        t_query = select(Tenant).where(Tenant.id == tenant_id)
+        t_res = await db.execute(t_query)
+        tenant_obj = t_res.scalar_one_or_none()
+        if not tenant_obj:
+            tenant_obj = Tenant(
+                id=tenant_id,
+                name=f"Org {tenant_id}",
+                slug=f"org-{tenant_id.lower()}",
+            )
+            db.add(tenant_obj)
+            await db.flush()
+
+        new_uuid = uuid.uuid4()
+        user = User(
+            id=new_uuid,
+            tenant_id=tenant_id,
+            email=clean_email,
+            full_name=full_name,
+            role=role,
+            is_active=True,
+        )
+        db.add(user)
+        try:
+            await db.commit()
+            await db.refresh(user)
+        except Exception:
+            await db.rollback()
+            query = select(User).where(User.email == clean_email)
+            res = await db.execute(query)
+            user = res.scalar_one_or_none()
+
     user_id = str(user.id) if user else str(uuid.uuid4())
 
     if role not in ALLOWED_ROLES:

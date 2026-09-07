@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional, List, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -13,7 +13,12 @@ from app.db.database import get_db
 from app.db.models import Invoice, HitlReview, Tenant, AuditLog, User
 from app.core.security import AuthenticatedUser, get_current_user, require_roles
 from app.services.invoice_processing import process_accounting_downstream_background, get_effective_invoice_data
-from app.core.date_utils import check_accounting_period, parse_and_normalize_date, is_date_in_closed_period
+from app.core.date_utils import (
+    check_accounting_period,
+    parse_and_normalize_date,
+    is_date_in_closed_period,
+    calculate_invoice_accounting_period,
+)
 from app.services.audit_service import audit_service
 import asyncio
 
@@ -158,7 +163,7 @@ async def approve_extraction_hitl(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Tenant organization '{user.tenant_id}' could not be loaded for closed period validation."
         )
-    lock_date = tenant.books_closed_through_date
+    lock_date = getattr(tenant, "books_closed_through_date", None)
 
     # Determine document date and posting date
     doc_date = parse_and_normalize_date(payload.corrected_data.get("invoice_date"))
@@ -166,9 +171,17 @@ async def approve_extraction_hitl(
         eff = get_effective_invoice_data(invoice)
         doc_date = parse_and_normalize_date(eff.get("invoice_date"))
 
-    res_decision = (payload.period_resolution or invoice.period_resolution or "NONE").upper()
+    res_decision_raw = payload.period_resolution or getattr(invoice, "period_resolution", None) or "NONE"
+    res_decision = res_decision_raw.upper() if isinstance(res_decision_raw, str) else "NONE"
     req_posting_str = payload.posting_date or (payload.corrected_data.get("posting_date") if isinstance(payload.corrected_data, dict) else None)
-    req_posting = parse_and_normalize_date(req_posting_str) or (invoice.posting_date.isoformat() if invoice.posting_date else None)
+    post_date_val = getattr(invoice, "posting_date", None)
+    if isinstance(post_date_val, (datetime, date)):
+        existing_post_str = post_date_val.isoformat()
+    elif isinstance(post_date_val, str):
+        existing_post_str = post_date_val
+    else:
+        existing_post_str = None
+    req_posting = parse_and_normalize_date(req_posting_str) or existing_post_str
 
     # GATE 1 Enforcement: Closed accounting period check
     is_doc_closed = is_date_in_closed_period(doc_date, lock_date)
@@ -269,7 +282,6 @@ async def approve_extraction_hitl(
     db.add(hitl_review)
 
     # Recalculate authoritative period if corrected_data has invoice_date
-    from app.core.date_utils import calculate_invoice_accounting_period, parse_and_normalize_date
     if isinstance(payload.corrected_data, dict):
         sub = payload.corrected_data.get("data") if isinstance(payload.corrected_data.get("data"), dict) else payload.corrected_data
         if sub.get("invoice_date"):
@@ -473,7 +485,14 @@ async def approve_final_hitl(
 
     eff_data = get_effective_invoice_data(invoice)
     doc_date = parse_and_normalize_date(eff_data.get("invoice_date"))
-    req_posting = parse_and_normalize_date(payload.posting_date) or (invoice.posting_date.isoformat() if invoice.posting_date else doc_date)
+    post_date_val = getattr(invoice, "posting_date", None)
+    if isinstance(post_date_val, (datetime, date)):
+        existing_post_str = post_date_val.isoformat()
+    elif isinstance(post_date_val, str):
+        existing_post_str = post_date_val
+    else:
+        existing_post_str = doc_date
+    req_posting = parse_and_normalize_date(payload.posting_date) or existing_post_str
 
     if payload.period_resolution:
         invoice.period_resolution = payload.period_resolution.upper()

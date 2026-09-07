@@ -176,7 +176,7 @@ class InvoiceExportService:
         if not tenant_obj:
             raise ValueError(f"Cannot export to Zoho: Tenant organization '{tenant_id}' could not be loaded for closed period validation.")
 
-        lock_date = tenant_obj.books_closed_through_date
+        lock_date = getattr(tenant_obj, "books_closed_through_date", None)
 
         if is_date_in_closed_period(effective_posting_date, lock_date):
             if invoice.period_resolution != "PRIOR_PERIOD_EXCEPTION":

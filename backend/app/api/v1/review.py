@@ -438,7 +438,7 @@ async def approve_invoice(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Tenant organization '{tenant_id}' could not be loaded for accounting period validation."
         )
-    lock_date = tenant_obj.books_closed_through_date
+    lock_date = getattr(tenant_obj, "books_closed_through_date", None)
 
     doc_date = parse_and_normalize_date(vlm_data.get("invoice_date"))
     effective_posting = parse_and_normalize_date(invoice.posting_date) or doc_date

@@ -13,6 +13,9 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import relationship, synonym
+from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from app.db.database import Base
 
 
 class Tenant(Base):
