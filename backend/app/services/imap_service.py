@@ -357,6 +357,12 @@ def test_imap_connection_sync(config: Dict[str, Any]) -> None:
     imap_port = int(config.get("imap_port") or 993)
     email_address = config.get("email_address")
     password = config.get("password")
+    if password and password.startswith("gAAAA"):
+        from app.core.security_util import decrypt_data
+        try:
+            password = decrypt_data(password)
+        except Exception:
+            pass
     
     # Safe mask for email address
     masked_email = "N/A"

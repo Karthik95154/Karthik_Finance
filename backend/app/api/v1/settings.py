@@ -3,10 +3,11 @@ import uuid
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
-from app.db.models import Integration
+from app.db.models import Integration, EmailConnection, User, Tenant
 from app.core.security import AuthenticatedUser, get_current_user, require_roles
 from app.core.security_util import encrypt_data
 from app.services.imap_service import imap_service
@@ -37,74 +38,95 @@ async def get_imap_settings(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieves current email integration status and configuration (password masked) for the authenticated user."""
-    tenant_id = current_user.tenant_id
-    user_id = current_user.id
+    """Retrieves current user's active email connection (password masked)."""
     try:
-        parsed_user_id = uuid.UUID(str(user_id))
-    except Exception:
-        parsed_user_id = None
+        user_uuid = uuid.UUID(current_user.id)
+        filter_clause = or_(EmailConnection.user_id == user_uuid, EmailConnection.user_id_str == str(current_user.id))
+    except (ValueError, TypeError):
+        filter_clause = (EmailConnection.user_id_str == str(current_user.id))
 
-    if parsed_user_id:
-        query = select(Integration).where(Integration.tenant_id == tenant_id, Integration.user_id == parsed_user_id)
-    else:
-        query = select(Integration).where(Integration.tenant_id == tenant_id)
-
+    query = select(EmailConnection).where(filter_clause, EmailConnection.is_active == True)
     result = await db.execute(query)
-    integration = result.scalar_one_or_none()
+    conn = result.scalars().first()
 
-    if not integration:
+    if not conn:
         return {
-            "id": "imap_email",
+            "id": f"email_conn_{current_user.id}",
             "status": "disconnected",
             "config": None,
             "last_synced_at": None,
         }
 
+    config = {
+        "imap_server": conn.imap_host,
+        "imap_port": conn.imap_port,
+        "email_address": conn.email_address,
+        "password": conn.encrypted_password,
+    }
+
     return {
-        "id": integration.id,
-        "status": integration.status,
-        "config": mask_password(integration.config or {}),
-        "last_synced_at": integration.last_synced_at,
+        "id": str(conn.id),
+        "status": "connected" if conn.is_active else "disconnected",
+        "config": mask_password(config),
+        "last_synced_at": conn.last_synced_at,
     }
 
 
 @router.post("/imap_email/configure")
 async def configure_imap_settings(
     payload: IMAPConfigureRequest,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Validates connection and saves IMAP configuration securely for the authenticated user."""
-    tenant_id = current_user.tenant_id
-    user_id = current_user.id
+    """Configures or updates current user's single active EmailConnection."""
     try:
-        parsed_user_id = uuid.UUID(str(user_id))
+        user_uuid = uuid.UUID(current_user.id)
+    except (ValueError, TypeError):
+        user_uuid = None
+
+    try:
+        filter_clause = or_(
+            (EmailConnection.user_id == user_uuid) if user_uuid else False,
+            EmailConnection.user_id_str == str(current_user.id)
+        )
     except Exception:
-        parsed_user_id = None
+        filter_clause = (EmailConnection.user_id_str == str(current_user.id))
 
-    if parsed_user_id:
-        query = select(Integration).where(Integration.tenant_id == tenant_id, Integration.user_id == parsed_user_id)
-    else:
-        query = select(Integration).where(Integration.tenant_id == tenant_id)
+    target_email = payload.email_address.strip().lower()
 
+    # Check if ANOTHER user account is ALREADY actively connected to this email address
+    query_others = select(EmailConnection).where(EmailConnection.is_active == True)
+    res_others = await db.execute(query_others)
+    active_connections = res_others.scalars().all()
+    for active_conn in active_connections:
+        is_owner = False
+        if user_uuid and active_conn.user_id == user_uuid:
+            is_owner = True
+        elif active_conn.user_id_str == str(current_user.id):
+            is_owner = True
+
+        if not is_owner and active_conn.email_address.strip().lower() == target_email:
+            logger.warning(f"REJECTED: User {current_user.id} tried to connect {target_email} which is already connected by user {active_conn.user_id_str or active_conn.user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"This email account ({target_email}) is already connected to another user account. Connection rejected.",
+            )
+
+    # Look up current user's existing connection
+    query = select(EmailConnection).where(filter_clause)
     result = await db.execute(query)
-    integration = result.scalar_one_or_none()
+    existing_conn = result.scalars().first()
 
-    existing_config = (integration.config or {}) if integration else {}
     password = payload.password
-
-    # Handle masked password submission (if they did not change password but hit save)
+    # Handle masked password submission if updating existing config
     if password == "••••••••••••••••" or password == "":
-        if not existing_config.get("password"):
+        if not existing_conn or not existing_conn.encrypted_password:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Password is required to configure connection.",
             )
-        # Use existing encrypted password
-        encrypted_pwd = existing_config["password"]
+        encrypted_pwd = existing_conn.encrypted_password
     else:
-        # Encrypt the new password
         try:
             encrypted_pwd = encrypt_data(password)
         except Exception as e:
@@ -123,68 +145,112 @@ async def configure_imap_settings(
 
     # Validate IMAP connection using imap_service
     try:
-        # Decrypted dict is passed to verification helper
         decrypted_dict = config_data.copy()
         from app.core.security_util import decrypt_data
         decrypted_dict["password"] = decrypt_data(encrypted_pwd)
         await imap_service.validate_connection(decrypted_dict)
     except Exception as e:
-        logger.error(f"IMAP Connection validation failed: {e}")
+        logger.error(f"IMAP Connection validation failed for user {current_user.id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unable to authenticate with the email server. Please verify the IMAP server, port, email address, and App Password.",
         )
 
-    # Save to database
-    if not integration:
-        integration = Integration(
-            id=f"imap_email_{tenant_id}_{user_id}"[:100],
-            tenant_id=tenant_id,
-            user_id=parsed_user_id,
-            status="connected",
-            config=config_data,
-        )
-        db.add(integration)
-    else:
-        integration.config = config_data
-        integration.status = "connected"
-        if parsed_user_id:
-            integration.user_id = parsed_user_id
+    # Ensure user exists in users table to satisfy foreign key constraint email_connections_user_id_fkey
+    if user_uuid:
+        user_record = await db.get(User, user_uuid)
+        if not user_record:
+            # Look up existing user by email
+            clean_email = current_user.email.strip().lower()
+            query_user_by_email = select(User).where(User.email == clean_email)
+            res_user = await db.execute(query_user_by_email)
+            user_record = res_user.scalar_one_or_none()
 
-    await db.commit()
-    await db.refresh(integration)
+            if user_record:
+                # Reuse existing user and align user_uuid
+                user_uuid = user_record.id
+            else:
+                # Provision the user using existing auth/provisioning logic
+                tenant_id = current_user.tenant_id or "default-tenant-001"
+                tenant_record = await db.get(Tenant, tenant_id)
+                if not tenant_record:
+                    tenant_record = Tenant(
+                        id=tenant_id,
+                        name="Default Organization",
+                        slug=f"tenant-{tenant_id}",
+                    )
+                    db.add(tenant_record)
+                    await db.flush()
+
+                user_record = User(
+                    id=user_uuid,
+                    tenant_id=tenant_id,
+                    email=clean_email,
+                    full_name=current_user.full_name or clean_email.split("@")[0],
+                    role=current_user.role or "FINANCE",
+                    is_active=True,
+                )
+                db.add(user_record)
+                await db.flush()
+
+    # Update existing user connection or create new EmailConnection record
+    if existing_conn:
+        existing_conn.user_id = user_uuid
+        existing_conn.user_id_str = str(current_user.id)
+        existing_conn.email_address = payload.email_address.strip()
+        existing_conn.encrypted_password = encrypted_pwd
+        existing_conn.imap_host = payload.imap_server.strip()
+        existing_conn.imap_port = payload.imap_port
+        existing_conn.is_active = True
+        conn_record = existing_conn
+    else:
+        conn_record = EmailConnection(
+            user_id=user_uuid,
+            user_id_str=str(current_user.id),
+            email_address=payload.email_address.strip(),
+            encrypted_password=encrypted_pwd,
+            imap_host=payload.imap_server.strip(),
+            imap_port=payload.imap_port,
+            is_active=True,
+        )
+        db.add(conn_record)
+
+    try:
+        await db.commit()
+        await db.refresh(conn_record)
+    except IntegrityError as ie:
+        await db.rollback()
+        logger.error(f"IntegrityError saving email connection for user {current_user.id}: {ie}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Failed to link email connection: authenticated user could not be verified in the database.",
+        )
 
     return {
         "success": True,
-        "status": integration.status,
-        "config": mask_password(integration.config),
+        "status": "connected",
+        "config": mask_password(config_data),
     }
 
 
 @router.post("/imap_email/disconnect")
 async def disconnect_imap_settings(
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "DATA_REVIEWER"])),
+    current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Clears configuration and disconnects IMAP integration for the authenticated user."""
-    tenant_id = current_user.tenant_id
-    user_id = current_user.id
+    """Disconnects the current user's email connection."""
     try:
-        parsed_user_id = uuid.UUID(str(user_id))
-    except Exception:
-        parsed_user_id = None
+        user_uuid = uuid.UUID(current_user.id)
+        filter_clause = or_(EmailConnection.user_id == user_uuid, EmailConnection.user_id_str == str(current_user.id))
+    except (ValueError, TypeError):
+        filter_clause = (EmailConnection.user_id_str == str(current_user.id))
 
-    if parsed_user_id:
-        query = select(Integration).where(Integration.tenant_id == tenant_id, Integration.user_id == parsed_user_id)
-    else:
-        query = select(Integration).where(Integration.tenant_id == tenant_id)
-
+    query = select(EmailConnection).where(filter_clause)
     result = await db.execute(query)
-    integration = result.scalar_one_or_none()
+    connections = result.scalars().all()
 
-    if integration:
-        integration.config = None
-        integration.status = "disconnected"
-        await db.commit()
+    for conn in connections:
+        conn.is_active = False
 
+    await db.commit()
     return {"success": True, "status": "disconnected"}

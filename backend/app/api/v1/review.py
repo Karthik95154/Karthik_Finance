@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
@@ -82,14 +82,19 @@ async def update_tenant_closed_period(
 
 
 class JournalPreviewResponse(BaseModel):
-    invoice_id: str
-    supply_type: str
-    total_debit: float
-    total_credit: float
-    is_balanced: bool
+    invoice_id: UUID
+    status: str
     has_unapproved_lines: bool = False
     difference: float
     lines: List[Dict[str, Any]]
+
+
+def get_user_filter(current_user: AuthenticatedUser):
+    try:
+        user_uuid = UUID(current_user.id)
+        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        return true()
 
 
 @router.get("/invoices/{invoice_id}/journal")
@@ -110,7 +115,8 @@ async def get_journal_preview(
     Accessible to ADMIN, FINANCE, and VIEWER roles.
     """
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -170,7 +176,8 @@ async def approve_journal_entry(
     tenant_id = current_user.tenant_id
     user_email = current_user.email
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -200,7 +207,10 @@ async def approve_journal_entry(
     )
 
     journal = invoice.journal_entry
-    if not journal or not isinstance(journal, dict):
+    target_invoice_total = float(vlm_data.get("total_amount") or vlm_data.get("subtotal") or 0.0)
+    current_journal_debit = float(journal.get("total_debit") or 0.0) if (journal and isinstance(journal, dict)) else 0.0
+
+    if not journal or not isinstance(journal, dict) or (target_invoice_total > 0 and current_journal_debit > 0 and abs(target_invoice_total - current_journal_debit) > 0.05):
         journal = journal_generator.generate_journal(
             invoice_data=vlm_data,
             accounting_classification=accounting_data,
@@ -210,11 +220,17 @@ async def approve_journal_entry(
             financial_validation_result=invoice.financial_validation_result,
         )
 
-    # 3. Check Balance
+    # 3. Check Balance & Invoice Total Consistency
     total_debit = float(journal.get("total_debit") or 0.0)
     total_credit = float(journal.get("total_credit") or 0.0)
     difference = float(journal.get("difference") or 0.0)
     is_balanced = bool(journal.get("is_balanced") or journal.get("validation", {}).get("balanced") or (abs(total_debit - total_credit) < 0.01 and total_debit > 0))
+
+    if target_invoice_total > 0 and abs(total_debit - target_invoice_total) > 0.05:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot approve journal: Journal total debits (₹{total_debit:,.2f}) do not match current effective invoice total (₹{target_invoice_total:,.2f}). Please re-evaluate invoice.",
+        )
 
     if not is_balanced or difference != 0.0 or total_debit <= 0:
         raise HTTPException(
@@ -291,7 +307,8 @@ async def approve_tds_assessment(
     tenant_id = current_user.tenant_id
     user_email = current_user.email
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -379,7 +396,8 @@ async def approve_invoice(
     tenant_id = current_user.tenant_id
     user_email = current_user.email
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -623,7 +641,8 @@ async def reject_invoice(
     tenant_id = current_user.tenant_id
     user_email = current_user.email
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -696,7 +715,8 @@ async def get_invoice_vendor_status(
     Returns MATCHED, NOT_FOUND, or MISMATCH without performing arbitrary fallback.
     """
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -773,7 +793,8 @@ async def add_vendor_to_zoho(
     Associates the newly created contact_id with the invoice.
     """
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     res = await db.execute(query)
     invoice = res.scalar_one_or_none()
 
@@ -796,9 +817,9 @@ async def add_vendor_to_zoho(
 
     vendor_gstin = (vlm_data.get("vendor_gstin") or "").strip() or None
     vendor_pan = (vlm_data.get("vendor_pan") or "").strip() or None
-    vendor_email = vlm_data.get("vendor_email")
-    vendor_phone = vlm_data.get("vendor_phone")
-    vendor_address = vlm_data.get("vendor_address")
+    vendor_email = (vlm_data.get("vendor_email") or vlm_data.get("email") or "").strip() or None
+    vendor_phone = (str(vlm_data.get("vendor_phone") or vlm_data.get("phone") or vlm_data.get("mobile") or "")).strip() or None
+    vendor_address = (vlm_data.get("vendor_address") or vlm_data.get("address") or "").strip() or None
     supplier_state_name = gst_eval.get("supplier_state_name")
 
     try:

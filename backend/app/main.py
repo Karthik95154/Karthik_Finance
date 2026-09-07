@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"Starting {settings.PROJECT_NAME} backend on {settings.HOST}:{settings.PORT}...")
+    logger.info(f"Starting {settings.PROJECT_NAME} backend...")
     
     async def init_db():
         try:
@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
                 
                 # Ensure newly added columns exist on invoices table
                 migration_columns = [
+                    ("user_id", "UUID REFERENCES users(id) ON DELETE SET NULL"),
                     ("financial_relevance", "VARCHAR(50)"),
                     ("document_type", "VARCHAR(50)"),
                     ("classification_confidence", "FLOAT"),
@@ -59,6 +60,13 @@ async def lifespan(app: FastAPI):
                     ("itc_result", "JSONB"),
                     ("financial_validation_result", "JSONB"),
                     ("journal_entry", "JSONB"),
+                    ("period_category", "VARCHAR(50)"),
+                    ("period_decision", "VARCHAR(50) DEFAULT 'NOT_REQUIRED'"),
+                    ("posting_date", "DATE"),
+                    ("period_resolution", "VARCHAR(50) DEFAULT 'NONE'"),
+                    ("period_resolution_reason", "TEXT"),
+                    ("period_resolved_by", "VARCHAR(255)"),
+                    ("period_resolved_at", "TIMESTAMP WITH TIME ZONE"),
                 ]
                 for col, col_type in migration_columns:
                     try:
@@ -69,12 +77,26 @@ async def lifespan(app: FastAPI):
                     await conn.execute(text("ALTER TABLE integrations ALTER COLUMN id TYPE VARCHAR(255);"))
                 except Exception:
                     pass
+                try:
+                    await conn.execute(text("ALTER TABLE integrations ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;"))
+                except Exception:
+                    pass
+                try:
+                    await conn.execute(text("ALTER TABLE zoho_connections ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;"))
+                    await conn.execute(text("ALTER TABLE zoho_connections DROP CONSTRAINT IF EXISTS zoho_connections_tenant_id_key;"))
+                    await conn.execute(text("DROP INDEX IF EXISTS ix_zoho_connections_tenant_id;"))
+                    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_zoho_connections_tenant_id ON zoho_connections(tenant_id);"))
+                except Exception:
+                    pass
+                try:
+                    await conn.execute(text("ALTER TABLE email_connections ADD COLUMN IF NOT EXISTS user_id_str VARCHAR(100);"))
+                except Exception:
+                    pass
             logger.info("Database tables and columns initialized / verified successfully.")
         except Exception as exc:
             logger.warning(f"Database table verification error: {exc}")
 
     try:
-        # Run DB initialization with a short timeout so port binding is never delayed
         await asyncio.wait_for(init_db(), timeout=5.0)
     except asyncio.TimeoutError:
         logger.warning("Database initialization timed out during startup; continuing server startup in background...")
@@ -115,7 +137,7 @@ app.include_router(hitl_router, prefix=settings.API_V1_STR)
 app.include_router(review_router, prefix=settings.API_V1_STR)
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {
         "message": f"Welcome to {settings.PROJECT_NAME} API",

@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
-import { listInvoices, InvoiceListItem } from "@/lib/api";
+import { listInvoices, getCachedInvoices, InvoiceListItem } from "@/lib/api";
 import {
   FileSpreadsheet,
   Search,
@@ -24,11 +24,16 @@ export default function InvoicesListPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
 
-  const loadInvoices = async () => {
+  const loadInvoices = async (forceRefresh = false) => {
     try {
-      setLoading(true);
+      const cached = getCachedInvoices();
+      if (!cached || cached.length === 0) {
+        if (forceRefresh || invoices.length === 0) {
+          setLoading(true);
+        }
+      }
       setError(null);
-      const data = await listInvoices();
+      const data = await listInvoices(forceRefresh);
       setInvoices(data);
     } catch (err: any) {
       setError(err.message || "Failed to load invoices from backend.");
@@ -38,8 +43,21 @@ export default function InvoicesListPage() {
   };
 
   useEffect(() => {
-    loadInvoices();
+    const cached = getCachedInvoices();
+    if (cached && cached.length > 0) {
+      setInvoices(cached);
+      setLoading(false);
+    }
+    loadInvoices(true);
   }, []);
+
+  // Pagination State (10 items per page)
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 10;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, statusFilter]);
 
   // Filter invoices
   const filteredInvoices = invoices.filter((inv) => {
@@ -59,6 +77,12 @@ export default function InvoicesListPage() {
     return matchesSearch && matchesStatus;
   });
 
+  const totalPages = Math.ceil(filteredInvoices.length / itemsPerPage);
+  const paginatedInvoices = filteredInvoices.slice(
+    (currentPage - 1) * itemsPerPage,
+    currentPage * itemsPerPage
+  );
+
   return (
     <AppShell
       title="Invoice Registry"
@@ -66,7 +90,7 @@ export default function InvoicesListPage() {
       actions={
         <button
           type="button"
-          onClick={loadInvoices}
+          onClick={() => loadInvoices(true)}
           disabled={loading}
           className="btn btn-secondary"
           style={{
@@ -117,8 +141,8 @@ export default function InvoicesListPage() {
           gap: "14px",
         }}
       >
-        {/* Search Input */}
-        <div style={{ position: "relative", minWidth: "260px", flex: 1 }}>
+        {/* Search Input Box (Curvy Edges) */}
+        <div style={{ position: "relative", minWidth: "280px", flex: 1 }}>
           <input
             type="text"
             className="form-input"
@@ -126,19 +150,23 @@ export default function InvoicesListPage() {
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             style={{
-              paddingLeft: "34px",
-              fontSize: "13px",
               width: "100%",
+              height: "40px",
+              paddingLeft: "38px",
+              fontSize: "13px",
+              borderRadius: "22px",
+              border: "1px solid #000000",
             }}
           />
           <Search
             size={15}
             style={{
               position: "absolute",
-              left: "11px",
+              left: "13px",
               top: "50%",
               transform: "translateY(-50%)",
               color: "var(--text-secondary)",
+              pointerEvents: "none",
             }}
           />
         </div>
@@ -155,7 +183,7 @@ export default function InvoicesListPage() {
               onClick={() => setStatusFilter(st)}
               className={statusFilter === st ? "btn btn-primary" : "btn btn-secondary"}
               style={{
-                padding: "4px 10px",
+                padding: "4px 12px",
                 fontSize: "11px",
                 fontWeight: "600",
                 borderRadius: "var(--radius-sm)",
@@ -248,7 +276,7 @@ export default function InvoicesListPage() {
                 </tr>
               </thead>
               <tbody>
-                {filteredInvoices.map((inv) => (
+                {paginatedInvoices.map((inv) => (
                   <tr
                     key={inv.id}
                     style={{
@@ -330,6 +358,54 @@ export default function InvoicesListPage() {
                 ))}
               </tbody>
             </table>
+
+            {/* Pagination Controls */}
+            {totalPages > 1 && (
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "16px 24px",
+                  borderTop: "1px solid var(--border-subtle)",
+                  background: "#fafafa",
+                  gap: "8px",
+                }}
+              >
+                <button
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage === 1}
+                  className="btn btn-secondary"
+                  style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                >
+                  Previous
+                </button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNumber) => (
+                  <button
+                    key={pageNumber}
+                    onClick={() => setCurrentPage(pageNumber)}
+                    className={`btn ${currentPage === pageNumber ? "btn-primary" : "btn-secondary"}`}
+                    style={{
+                      padding: "6px 12px",
+                      fontSize: "12.5px",
+                      background: currentPage === pageNumber ? "var(--accent)" : "#ffffff",
+                      color: currentPage === pageNumber ? "#ffffff" : "var(--text-primary)",
+                      minWidth: "36px",
+                    }}
+                  >
+                    {pageNumber}
+                  </button>
+                ))}
+                <button
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={currentPage === totalPages}
+                  className="btn btn-secondary"
+                  style={{ padding: "6px 12px", fontSize: "12.5px" }}
+                >
+                  Next
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>

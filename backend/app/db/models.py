@@ -12,9 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
-from app.db.database import Base
+from sqlalchemy.orm import relationship, synonym
 
 
 class Tenant(Base):
@@ -203,9 +201,8 @@ class Invoice(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(String(64), nullable=False, default="default-tenant-001", index=True)
-    owner_user_id = Column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
-    )
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_user_id = synonym("user_id")
     file_path = Column(String(512), nullable=False)
     file_name = Column(String(255), nullable=False)
     file_size = Column(Integer, nullable=False)
@@ -231,6 +228,9 @@ class Invoice(Base):
     period_resolution_reason = Column(Text, nullable=True)
     period_resolved_by = Column(String(255), nullable=True)
     period_resolved_at = Column(DateTime(timezone=True), nullable=True)
+    # Accounting Period & Previous-FY Decision
+    period_category = Column(String(50), nullable=True)  # CURRENT_MONTH, PREVIOUS_MONTH_CURRENT_FY, PREVIOUS_FINANCIAL_YEAR, CURRENT_FINANCIAL_YEAR, FUTURE_PERIOD
+    period_decision = Column(String(50), nullable=False, default="NOT_REQUIRED")  # NOT_REQUIRED, PENDING, CONTINUE, CANCELLED
 
     # Errors & Metrics
     error_message = Column(Text, nullable=True)
@@ -275,7 +275,7 @@ class Invoice(Base):
     )
 
     journal_entry_rel = relationship("JournalEntry", back_populates="invoice", uselist=False, cascade="all, delete-orphan")
-    owner = relationship("User", foreign_keys=[owner_user_id], backref="owned_invoices")
+    owner = relationship("User", foreign_keys=[user_id], backref="owned_invoices")
 
     def __repr__(self) -> str:
         return f"<Invoice(id={self.id}, file_name={self.file_name}, status={self.status}, export_status={self.export_status})>"
@@ -307,6 +307,31 @@ class Integration(Base):
     )
 
     user = relationship("User", backref="integrations")
+
+
+class EmailConnection(Base):
+    __tablename__ = "email_connections"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, unique=True, index=True)
+    user_id_str = Column(String(100), nullable=True, unique=True, index=True)
+    email_address = Column(String(255), nullable=False)
+    encrypted_password = Column(Text, nullable=False)
+    imap_host = Column(String(255), nullable=False, default="imap.gmail.com")
+    imap_port = Column(Integer, nullable=False, default=993)
+    is_active = Column(Boolean, nullable=False, default=True)
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
 
 class JournalEntry(Base):

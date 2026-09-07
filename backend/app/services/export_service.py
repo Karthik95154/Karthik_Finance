@@ -132,7 +132,7 @@ class InvoiceExportService:
                 "attachment_status": "attached",
             }
 
-        # 3. Check Balanced Journal Entry Existence
+        # 3. Check Balanced Journal Entry Existence & Consistency
         journal_query = select(JournalEntry).where(
             JournalEntry.invoice_id == invoice_id,
             JournalEntry.tenant_id == tenant_id,
@@ -152,6 +152,12 @@ class InvoiceExportService:
         from app.db.models import Tenant
         
         vlm_data_check = get_effective_invoice_data(invoice)
+        inv_eff_total = float(vlm_data_check.get("total_amount") or vlm_data_check.get("subtotal") or 0.0)
+        j_total = float(journal_entry.total_debit or 0.0)
+        if inv_eff_total > 0 and j_total > 0 and abs(inv_eff_total - j_total) > 0.05:
+            raise ValueError(
+                f"Cannot export to Zoho: Approved journal total (₹{j_total:,.2f}) does not match current invoice total (₹{inv_eff_total:,.2f}). Please re-approve journal."
+            )
 
         raw_inv_date = vlm_data_check.get("invoice_date")
         raw_due_date = vlm_data_check.get("due_date")
@@ -344,9 +350,9 @@ class InvoiceExportService:
                     vendor_name=vendor_name,
                     gstin=vendor_gstin,
                     pan=vendor_pan,
-                    email=vlm_data.get("vendor_email"),
-                    phone=vlm_data.get("vendor_phone"),
-                    address=vlm_data.get("vendor_address"),
+                    email=(vlm_data.get("vendor_email") or vlm_data.get("email") or "").strip() or None,
+                    phone=(str(vlm_data.get("vendor_phone") or vlm_data.get("phone") or vlm_data.get("mobile") or "")).strip() or None,
+                    address=(vlm_data.get("vendor_address") or vlm_data.get("address") or "").strip() or None,
                     state_name=supplier_state_name,
                 )
             elif vendor_contact.get("contact_id") and supplier_state_name:
@@ -652,6 +658,15 @@ class InvoiceExportService:
 
             if notes:
                 bill_payload["notes"] = str(notes)
+
+            adjustment_val = vlm_data.get("adjustment")
+            if adjustment_val is not None:
+                try:
+                    adj_flt = float(adjustment_val)
+                    if adj_flt != 0.0:
+                        bill_payload["adjustment"] = adj_flt
+                except (ValueError, TypeError):
+                    pass
 
             # 10. RECONCILIATION & IDEMPOTENT BILL CREATION
             bill_id = invoice.zoho_bill_id

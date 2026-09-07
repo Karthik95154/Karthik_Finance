@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import PublicNavbar from "@/components/PublicNavbar";
 import PublicFooter from "@/components/PublicFooter";
+import { API_BASE } from "@/lib/api";
 import { ShieldCheck, ArrowRight, Lock, Mail, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 
 import { loginUser } from "@/lib/api";
@@ -46,6 +47,7 @@ export default function SignInPage() {
         email: email.trim().toLowerCase(),
         password,
       });
+      sessionStorage.removeItem("sakshi_imap_settings_cache");
       window.location.href = "/dashboard";
     } catch (err: any) {
       setError(err.message || "Invalid email or password.");
@@ -87,35 +89,35 @@ export default function SignInPage() {
         <div
           style={{
             width: "100%",
-            maxWidth: "420px",
+            maxWidth: "480px",
             background: "#ffffff",
             border: "1px solid var(--border-subtle)",
-            borderRadius: "var(--radius-md)",
-            padding: "36px 32px",
-            boxShadow: "var(--shadow-md)",
+            borderRadius: "20px",
+            padding: "40px 36px",
+            boxShadow: "0 20px 35px -5px rgba(0, 0, 0, 0.07), 0 10px 15px -5px rgba(0, 0, 0, 0.03)",
           }}
         >
           {/* Header */}
-          <div style={{ textAlign: "center", marginBottom: "28px" }}>
+          <div style={{ textAlign: "center", marginBottom: "30px" }}>
             <div
               style={{
-                width: "44px",
-                height: "44px",
-                borderRadius: "10px",
+                width: "50px",
+                height: "50px",
+                borderRadius: "14px",
                 background: "linear-gradient(135deg, #0071e3 0%, #005bb5 100%)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 color: "#ffffff",
                 margin: "0 auto 16px",
-                boxShadow: "0 4px 12px rgba(0, 113, 227, 0.25)",
+                boxShadow: "0 6px 16px rgba(0, 113, 227, 0.3)",
               }}
             >
-              <ShieldCheck size={24} />
+              <ShieldCheck size={26} />
             </div>
             <h1
               style={{
-                fontSize: "22px",
+                fontSize: "24px",
                 fontWeight: "700",
                 letterSpacing: "-0.02em",
                 color: "var(--text-primary)",
@@ -124,7 +126,7 @@ export default function SignInPage() {
             >
               Sign in to Finance
             </h1>
-            <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+            <p style={{ fontSize: "13.5px", color: "var(--text-secondary)" }}>
               Access your autonomous AP workspace and invoice ledger.
             </p>
           </div>
@@ -135,8 +137,8 @@ export default function SignInPage() {
               style={{
                 background: "#fef2f2",
                 border: "1px solid #fecaca",
-                borderRadius: "var(--radius-sm)",
-                padding: "10px 14px",
+                borderRadius: "12px",
+                padding: "12px 16px",
                 marginBottom: "20px",
                 fontSize: "13px",
                 color: "#991b1b",
@@ -156,8 +158,8 @@ export default function SignInPage() {
               style={{
                 background: "#f0fdf4",
                 border: "1px solid #bbf7d0",
-                borderRadius: "var(--radius-sm)",
-                padding: "10px 14px",
+                borderRadius: "12px",
+                padding: "12px 16px",
                 marginBottom: "20px",
                 fontSize: "13px",
                 color: "#166534",
@@ -172,16 +174,16 @@ export default function SignInPage() {
           )}
 
           {/* Form */}
-          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
+          <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
             <div>
               <label
                 htmlFor="email"
                 style={{
                   display: "block",
-                  fontSize: "13px",
+                  fontSize: "13.5px",
                   fontWeight: "600",
                   color: "var(--text-primary)",
-                  marginBottom: "6px",
+                  marginBottom: "8px",
                 }}
               >
                 Work Email
@@ -196,16 +198,21 @@ export default function SignInPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   disabled={isLoading}
                   style={{
-                    paddingLeft: "36px",
+                    height: "46px",
+                    paddingLeft: "42px",
                     width: "100%",
+                    borderRadius: "12px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "14px",
+                    outline: "none",
                   }}
                   autoComplete="email"
                 />
                 <Mail
-                  size={16}
+                  size={18}
                   style={{
                     position: "absolute",
-                    left: "12px",
+                    left: "14px",
                     top: "50%",
                     transform: "translateY(-50%)",
                     color: "var(--text-secondary)",
@@ -220,13 +227,13 @@ export default function SignInPage() {
                   display: "flex",
                   justifyContent: "space-between",
                   alignItems: "center",
-                  marginBottom: "6px",
+                  marginBottom: "8px",
                 }}
               >
                 <label
                   htmlFor="password"
                   style={{
-                    fontSize: "13px",
+                    fontSize: "13.5px",
                     fontWeight: "600",
                     color: "var(--text-primary)",
                   }}
@@ -237,7 +244,7 @@ export default function SignInPage() {
                   href="#forgot"
                   onClick={handleForgotPassword}
                   style={{
-                    fontSize: "12px",
+                    fontSize: "12.5px",
                     color: "var(--accent)",
                     fontWeight: "500",
                   }}
@@ -255,16 +262,21 @@ export default function SignInPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={isLoading}
                   style={{
-                    paddingLeft: "36px",
+                    height: "46px",
+                    paddingLeft: "42px",
                     width: "100%",
+                    borderRadius: "12px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "14px",
+                    outline: "none",
                   }}
                   autoComplete="current-password"
                 />
                 <Lock
-                  size={16}
+                  size={18}
                   style={{
                     position: "absolute",
-                    left: "12px",
+                    left: "14px",
                     top: "50%",
                     transform: "translateY(-50%)",
                     color: "var(--text-secondary)",
@@ -279,26 +291,26 @@ export default function SignInPage() {
               disabled={isLoading}
               style={{
                 width: "100%",
-                padding: "11px",
-                fontSize: "14px",
+                height: "46px",
+                fontSize: "14.5px",
                 fontWeight: "600",
                 marginTop: "6px",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 gap: "8px",
-                borderRadius: "var(--radius-sm)",
+                borderRadius: "12px",
               }}
             >
               {isLoading ? (
                 <>
-                  <Loader2 size={16} className="animate-spin" />
+                  <Loader2 size={18} className="animate-spin" />
                   <span>Signing In...</span>
                 </>
               ) : (
                 <>
                   <span>Sign In</span>
-                  <ArrowRight size={15} />
+                  <ArrowRight size={16} />
                 </>
               )}
             </button>

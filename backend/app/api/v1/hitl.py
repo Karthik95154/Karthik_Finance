@@ -146,6 +146,9 @@ async def approve_extraction_hitl(
     if invoice.status != "HITL_REVIEW":
         raise HTTPException(status_code=409, detail=f"Invoice is not in HITL_REVIEW state (current: {invoice.status})")
 
+    if invoice.period_decision == "CANCELLED" or invoice.status == "CANCELLED":
+        raise HTTPException(status_code=400, detail="Cannot approve an invoice that was cancelled.")
+
     # Fetch tenant lock date
     t_query = select(Tenant).where(Tenant.id == user.tenant_id)
     t_res = await db.execute(t_query)
@@ -264,6 +267,17 @@ async def approve_extraction_hitl(
         approved_at=datetime.now(timezone.utc)
     )
     db.add(hitl_review)
+
+    # Recalculate authoritative period if corrected_data has invoice_date
+    from app.core.date_utils import calculate_invoice_accounting_period, parse_and_normalize_date
+    if isinstance(payload.corrected_data, dict):
+        sub = payload.corrected_data.get("data") if isinstance(payload.corrected_data.get("data"), dict) else payload.corrected_data
+        if sub.get("invoice_date"):
+            sub["invoice_date"] = parse_and_normalize_date(sub["invoice_date"])
+            cat, _, _ = calculate_invoice_accounting_period(sub["invoice_date"])
+            invoice.period_category = cat
+            if cat != "PREVIOUS_FINANCIAL_YEAR" and invoice.period_decision == "PENDING":
+                invoice.period_decision = "NOT_REQUIRED"
 
     # Update Invoice
     invoice.current_vlm_output = payload.corrected_data
@@ -512,8 +526,8 @@ async def approve_final_hitl(
     )
     db.add(hitl_review)
 
-    invoice.status = "HITL_COMPLETED"
-    invoice.approval_status = "PENDING_FINANCE_APPROVAL"
+    invoice.status = "COMPLETED"
+    invoice.approval_status = "APPROVED"
     invoice.accounting_status = "COMPLETED"
     invoice.locked_at = datetime.now(timezone.utc)
 
@@ -527,7 +541,7 @@ async def approve_final_hitl(
 
     invoice.updated_at = datetime.now(timezone.utc)
     await db.commit()
-    return {"message": "HITL review completed. Invoice moved to HITL_COMPLETED and is now awaiting final Finance approval in Main App."}
+    return {"message": "HITL review completed. Invoice approved and released.", "approval_status": "APPROVED", "status": "COMPLETED"}
 
 
 @router.get("/invoices/{invoice_id}/hitl/history")
@@ -596,15 +610,25 @@ async def get_all_hitl_history(
     result = await db.execute(query)
     all_invoices = result.scalars().all()
 
+    # Batch fetch hitl reviews to avoid N+1 queries and connection thrashing
+    invoice_ids = [inv.id for inv in all_invoices]
+    reviews_by_invoice = {}
+    if invoice_ids:
+        r_query = (
+            select(HitlReview)
+            .where(HitlReview.invoice_id.in_(invoice_ids))
+            .order_by(HitlReview.created_at.desc())
+        )
+        r_res = await db.execute(r_query)
+        all_reviews = r_res.scalars().all()
+        for r in all_reviews:
+            reviews_by_invoice.setdefault(r.invoice_id, []).append(r)
+
     # Filter invoices that reached HITL_COMPLETED or have review records
     history_invoices = []
     for inv in all_invoices:
         vlm_data = inv.current_vlm_output.get("data") if isinstance(inv.current_vlm_output, dict) and isinstance(inv.current_vlm_output.get("data"), dict) else (inv.raw_vlm_output.get("data") if isinstance(inv.raw_vlm_output, dict) and isinstance(inv.raw_vlm_output.get("data"), dict) else {})
-        
-        # Get hitl reviews
-        r_query = select(HitlReview).where(HitlReview.invoice_id == inv.id).order_by(HitlReview.created_at.desc())
-        r_res = await db.execute(r_query)
-        reviews = r_res.scalars().all()
+        reviews = reviews_by_invoice.get(inv.id, [])
 
         if reviews or inv.status in ("HITL_COMPLETED", "COMPLETED", "EXPORTED"):
             history_invoices.append({

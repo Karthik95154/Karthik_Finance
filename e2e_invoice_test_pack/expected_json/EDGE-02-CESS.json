@@ -1,0 +1,43 @@
+{
+  "invoice_number": "GMS/26-27/4077",
+  "invoice_date": "2026-09-04",
+  "vendor": {
+    "name": "Greenfield Machinery Solutions",
+    "address": "7 Industrial Corridor, Chennai, Tamil Nadu - 600058",
+    "gstin": "33AABCG5566E1Z9",
+    "state": "Tamil Nadu",
+    "state_code": "33"
+  },
+  "customer": {
+    "name": "Bharat Engineering Works",
+    "address": "9 Ambattur Estate, Chennai, Tamil Nadu - 600058",
+    "gstin": "33AABCB7788K1Z6",
+    "state": "Tamil Nadu",
+    "state_code": "33"
+  },
+  "line_items": [
+    {
+      "description": "Hydraulic Cutting Unit HC-90",
+      "hsn": "84615000",
+      "qty": 2,
+      "unit_price": 100000.0,
+      "discount": 0.0,
+      "taxable": 200000.0,
+      "cgst_rate": 9.0,
+      "cgst": 18000.0,
+      "sgst_rate": 9.0,
+      "sgst": 18000.0,
+      "cess": 4000.0,
+      "total": 240000.0
+    }
+  ],
+  "subtotal": 200000.0,
+  "discount": 0.0,
+  "taxes": {
+    "cgst": 18000.0,
+    "sgst": 18000.0,
+    "igst": 0.0,
+    "cess": 4000.0
+  },
+  "grand_total": 240000.0
+}

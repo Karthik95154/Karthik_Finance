@@ -1,7 +1,8 @@
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from sqlalchemy import select, delete
+import uuid
+from sqlalchemy import select, delete, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ChartOfAccount, TaxRate, Vendor, ZohoConnection
@@ -20,24 +21,19 @@ class MasterDataService:
         user_id: Optional[Any] = None,
     ) -> ZohoConnection:
         """Retrieves active ZohoConnection for user/tenant or returns a placeholder record, prioritizing CONNECTED status."""
-        import uuid
-        parsed_user_id = None
+        query = select(ZohoConnection)
         if user_id:
             try:
-                parsed_user_id = uuid.UUID(str(user_id)) if not isinstance(user_id, uuid.UUID) else user_id
+                user_uuid = uuid.UUID(str(user_id)) if not isinstance(user_id, uuid.UUID) else user_id
+                query = query.where(or_(ZohoConnection.user_id == user_uuid, ZohoConnection.user_id.is_(None)))
             except Exception:
-                parsed_user_id = None
-
-        if parsed_user_id:
-            query = select(ZohoConnection).where(
-                ZohoConnection.tenant_id == tenant_id,
-                ZohoConnection.user_id == parsed_user_id,
-            )
+                query = query.where(ZohoConnection.tenant_id == tenant_id)
         else:
-            query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id)
+            query = query.where(ZohoConnection.tenant_id == tenant_id)
 
-        result = await db.execute(query)
-        conns = result.scalars().all()
+        query = query.order_by(ZohoConnection.created_at.desc())
+        res = await db.execute(query)
+        conns = res.scalars().all()
 
         if not conns:
             connection = ZohoConnection(tenant_id=tenant_id, user_id=parsed_user_id, status="DISCONNECTED")

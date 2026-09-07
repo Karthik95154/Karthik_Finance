@@ -45,6 +45,19 @@ export default function AppShell({
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   const [isRefreshingHealth, setIsRefreshingHealth] = useState(false);
+  const [logoutModalOpen, setLogoutModalOpen] = useState(false);
+
+  const handleLogoutConfirm = async () => {
+    try {
+      await logoutUser();
+    } catch {}
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("dev_auth_token");
+      localStorage.removeItem("user_info");
+      sessionStorage.removeItem("sakshi_imap_settings_cache");
+      window.location.href = "/sign-in";
+    }
+  };
 
   const fetchHealth = async () => {
     try {
@@ -60,15 +73,28 @@ export default function AppShell({
 
   useEffect(() => {
     fetchHealth();
-    getCurrentUser().then(setUserProfile).catch(() => {});
+    if (typeof window !== "undefined") {
+      const savedUser = localStorage.getItem("user_info");
+      if (savedUser) {
+        try {
+          setUserProfile(JSON.parse(savedUser));
+        } catch {}
+      }
+    }
+    getCurrentUser()
+      .then((u) => {
+        if (u) {
+          setUserProfile(u);
+          if (typeof window !== "undefined") {
+            localStorage.setItem("user_info", JSON.stringify(u));
+          }
+        }
+      })
+      .catch(() => null);
+
     const interval = setInterval(fetchHealth, 30000);
     return () => clearInterval(interval);
   }, []);
-
-  const handleLogout = async () => {
-    await logoutUser();
-    window.location.href = "/sign-in";
-  };
 
   const navItems = [
     {
@@ -381,37 +407,50 @@ export default function AppShell({
               padding: "6px 4px 0",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: "8px", overflow: "hidden" }}>
-              <div
-                style={{
-                  width: "28px",
-                  height: "28px",
-                  minWidth: "28px",
-                  borderRadius: "50%",
-                  background: "var(--accent-light, #e8f2ff)",
-                  color: "var(--accent, #0071e3)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: "11px",
-                  fontWeight: "700",
-                }}
-              >
-                {userProfile?.full_name ? userProfile.full_name.substring(0, 2).toUpperCase() : (userProfile?.email ? userProfile.email.substring(0, 2).toUpperCase() : "U")}
-              </div>
-              <div style={{ fontSize: "12px", lineHeight: "1.2", overflow: "hidden" }}>
-                <div style={{ fontWeight: "600", color: "var(--text-primary)", textOverflow: "ellipsis", overflow: "hidden", whiteSpace: "nowrap", maxWidth: "130px" }} title={userProfile?.email || "User"}>
-                  {userProfile?.full_name || userProfile?.email || "User"}
-                </div>
-                <div style={{ fontSize: "10px", color: "var(--text-tertiary)", textTransform: "capitalize" }}>
-                  {userProfile?.role?.replace("_", " ").toLowerCase() || "Reviewer"}
-                </div>
-              </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              {(() => {
+                const displayName = userProfile?.full_name || userProfile?.email || "Finance Admin";
+                const displaySub = userProfile?.email && userProfile?.full_name ? userProfile.email : (userProfile?.role ? `${userProfile.role} Specialist` : "Review Specialist");
+                const parts = displayName.split(" ").filter(Boolean);
+                const initials = parts.length >= 2 
+                  ? `${parts[0][0]}${parts[1][0]}`.toUpperCase()
+                  : displayName.slice(0, 2).toUpperCase();
+                return (
+                  <>
+                    <div
+                      style={{
+                        width: "28px",
+                        height: "28px",
+                        borderRadius: "50%",
+                        background: "var(--accent-primary, #2563eb)",
+                        color: "#ffffff",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        fontSize: "11px",
+                        fontWeight: "700",
+                        flexShrink: 0,
+                      }}
+                      title={userProfile?.email || displayName}
+                    >
+                      {initials}
+                    </div>
+                    <div style={{ fontSize: "12px", lineHeight: "1.2", overflow: "hidden" }}>
+                      <div style={{ fontWeight: "600", color: "var(--text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }} title={displayName}>
+                        {displayName}
+                      </div>
+                      <div style={{ fontSize: "10px", color: "var(--text-tertiary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "120px" }} title={displaySub}>
+                        {displaySub}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
             <button
               type="button"
-              onClick={handleLogout}
+              onClick={() => setLogoutModalOpen(true)}
               title="Sign Out"
               style={{
                 color: "var(--text-secondary)",
@@ -576,6 +615,97 @@ export default function AppShell({
           loading={isRefreshingHealth}
           onRefresh={fetchHealth}
         />
+
+        {/* Centered Logout Confirmation Modal */}
+        {logoutModalOpen && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              zIndex: 9999,
+              background: "rgba(0, 0, 0, 0.45)",
+              backdropFilter: "blur(4px)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: "16px",
+            }}
+            onClick={() => setLogoutModalOpen(false)}
+          >
+            <div
+              style={{
+                background: "#ffffff",
+                borderRadius: "12px",
+                padding: "24px",
+                maxWidth: "380px",
+                width: "100%",
+                boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.15), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+                textAlign: "center",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                style={{
+                  width: "48px",
+                  height: "48px",
+                  borderRadius: "50%",
+                  background: "#fee2e2",
+                  color: "#dc2626",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  margin: "0 auto 16px",
+                }}
+              >
+                <LogOut size={22} />
+              </div>
+
+              <h3 style={{ fontSize: "17px", fontWeight: "600", color: "#111827", marginBottom: "8px" }}>
+                Confirm Sign Out
+              </h3>
+              <p style={{ fontSize: "13.5px", color: "#6b7280", marginBottom: "24px", lineHeight: "1.4" }}>
+                Are you sure you want to sign out of Sakshi Finance? You will need to sign in again to access your account.
+              </p>
+
+              <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
+                <button
+                  type="button"
+                  onClick={() => setLogoutModalOpen(false)}
+                  style={{
+                    flex: 1,
+                    padding: "9px 16px",
+                    borderRadius: "6px",
+                    border: "1px solid #d1d5db",
+                    background: "#ffffff",
+                    color: "#374151",
+                    fontSize: "13.5px",
+                    fontWeight: "500",
+                    cursor: "pointer",
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleLogoutConfirm}
+                  style={{
+                    flex: 1,
+                    padding: "9px 16px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: "#dc2626",
+                    color: "#ffffff",
+                    fontSize: "13.5px",
+                    fontWeight: "500",
+                    cursor: "pointer",
+                  }}
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <style jsx>{`

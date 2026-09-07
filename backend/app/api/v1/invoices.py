@@ -12,7 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import (
@@ -28,6 +28,7 @@ from app.schemas.invoice import (
     InvoiceStatusResponse,
     InvoiceUpdateRequest,
     InvoiceUploadResponse,
+    PeriodDecisionRequest,
 )
 from app.storage.supabase_storage import storage_service
 from app.services.invoice_processing import (
@@ -37,6 +38,22 @@ from app.services.invoice_processing import (
 from app.services.duplicate_detector import duplicate_detector
 
 router = APIRouter(prefix="/invoices", tags=["Invoices"])
+
+
+def get_user_filter(current_user: AuthenticatedUser):
+    """
+    Returns an SQLAlchemy filter condition based on the user's role and identity.
+    Admins, finance reviewers, and dev default users can see all tenant invoices,
+    while individual customer users are filtered to their own user_id or legacy unassigned records.
+    """
+    if current_user.role in ("ADMIN", "FINANCE", "DATA_REVIEWER", "FINANCE_REVIEWER"):
+        return true()
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        return true()
+
 
 
 def sanitize_filename(filename: str) -> str:
@@ -140,10 +157,15 @@ async def upload_invoice(
         )
 
     now_dt = datetime.now(timezone.utc)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+    except (ValueError, TypeError):
+        user_uuid = None
+
     invoice = Invoice(
         id=invoice_id,
         tenant_id=tenant_id,
-        owner_user_id=parsed_user_id,
+        user_id=user_uuid or parsed_user_id,
         file_path=storage_path,
         file_name=original_name,
         file_size=file_size,
@@ -188,9 +210,13 @@ async def categorize_invoice_accounting(
     Triggers Stage 3 (Qwen3-4B Accounting & TDS reasoning) on an existing invoice.
     Requires ADMIN or FINANCE role.
     """
-    tenant_id = current_user.tenant_id
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
 
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -235,19 +261,12 @@ async def list_invoices(
     """
     Lists all invoices for the authenticated user's tenant with appropriate role filtering.
     """
-    tenant_id = current_user.tenant_id
-    parsed_user_id = None
-    try:
-        parsed_user_id = uuid.UUID(str(current_user.id))
-    except Exception:
-        parsed_user_id = None
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(user_filter)
 
-    query = select(Invoice).where(Invoice.tenant_id == tenant_id)
-
-    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
-        query = query.where((Invoice.owner_user_id == parsed_user_id) | (Invoice.owner_user_id.is_(None)))
-        if current_user.role == "CUSTOMER":
-            query = query.where(Invoice.approval_status == "APPROVED")
+    # Strictly restrict CUSTOMER role to approved invoices only
+    if current_user.role == "CUSTOMER":
+        query = query.where(Invoice.approval_status == "APPROVED")
 
     query = query.order_by(Invoice.created_at.desc())
     result = await db.execute(query)
@@ -298,14 +317,8 @@ async def get_invoice_status(
     """
     Polling endpoint for tracking invoice processing, approval, and export status.
     """
-    tenant_id = current_user.tenant_id
-    parsed_user_id = None
-    try:
-        parsed_user_id = uuid.UUID(str(current_user.id))
-    except Exception:
-        parsed_user_id = None
-
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -315,12 +328,22 @@ async def get_invoice_status(
             detail=f"Invoice with ID {invoice_id} not found.",
         )
 
-    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
-        if invoice.owner_user_id and invoice.owner_user_id != parsed_user_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Invoice with ID {invoice_id} not found.",
-            )
+    # Extract invoice_date if available and compute/fetch period_message
+    from app.core.date_utils import calculate_invoice_accounting_period
+    inv_date = None
+    period_msg = None
+    period_cat = invoice.period_category
+    period_dec = invoice.period_decision or "NOT_REQUIRED"
+
+    target_data = invoice.current_vlm_output or invoice.raw_vlm_output
+    if isinstance(target_data, dict):
+        sub = target_data.get("data") if isinstance(target_data.get("data"), dict) else target_data
+        inv_date = sub.get("invoice_date")
+        if inv_date:
+            calc_cat, calc_msg, _ = calculate_invoice_accounting_period(inv_date)
+            if not period_cat:
+                period_cat = calc_cat
+            period_msg = calc_msg
 
     return InvoiceStatusResponse(
         invoice_id=invoice.id,
@@ -331,6 +354,10 @@ async def get_invoice_status(
         error_message=invoice.error_message,
         confidence_score=invoice.confidence_score,
         accounting_confidence=invoice.accounting_confidence,
+        period_category=period_cat,
+        period_decision=period_dec,
+        period_message=period_msg,
+        invoice_date=inv_date,
         updated_at=invoice.updated_at,
     )
 
@@ -346,14 +373,8 @@ async def get_invoice(
     Accessible to ADMIN, FINANCE, FINANCE_MANAGER, DATA_REVIEWER, VIEWER, and CUSTOMER roles.
     For CUSTOMER / VIEWER roles, invoice is only exposed after passing internal HITL approval.
     """
-    tenant_id = current_user.tenant_id
-    parsed_user_id = None
-    try:
-        parsed_user_id = uuid.UUID(str(current_user.id))
-    except Exception:
-        parsed_user_id = None
-
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -409,8 +430,13 @@ async def update_invoice_extraction(
     - Internal Finance/Admin edits before approval remain in PENDING_REVIEW until approved.
     - Customer edits after HITL approval validate accounting/journal balance but do NOT re-enter HITL review.
     """
-    tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        user_filter = (Invoice.user_id.is_(None))
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -429,12 +455,19 @@ async def update_invoice_extraction(
         invoice.locked_at = None
 
     if update_data.current_vlm_output is not None:
-        from app.core.date_utils import parse_and_normalize_date
+        from app.core.date_utils import parse_and_normalize_date, calculate_invoice_accounting_period
         vlm_dict = update_data.current_vlm_output
         if isinstance(vlm_dict, dict):
             target = vlm_dict.get("data") if isinstance(vlm_dict.get("data"), dict) else vlm_dict
             if target.get("invoice_date"):
                 target["invoice_date"] = parse_and_normalize_date(target["invoice_date"])
+                p_cat, _, _ = calculate_invoice_accounting_period(target["invoice_date"])
+                invoice.period_category = p_cat
+                if p_cat == "PREVIOUS_FINANCIAL_YEAR":
+                    if invoice.period_decision not in ("CONTINUE", "CANCELLED"):
+                        invoice.period_decision = "PENDING"
+                else:
+                    invoice.period_decision = "NOT_REQUIRED"
             if target.get("due_date"):
                 target["due_date"] = parse_and_normalize_date(target["due_date"])
         invoice.current_vlm_output = vlm_dict
@@ -452,135 +485,135 @@ async def update_invoice_extraction(
         from app.services.journal_generator import journal_generator, sync_relational_journal
 
         working_payload = get_effective_invoice_data(invoice)
-        
-        accounting_dict = (
-            invoice.current_accounting_output
-            if isinstance(invoice.current_accounting_output, dict)
-            else (invoice.accounting_output if isinstance(invoice.accounting_output, dict) else {})
-        )
-        accounting_lines = accounting_dict.get("accounting") or []
-        tds_assessment = accounting_dict.get("tds_assessment") or {}
+            accounting_dict = (
+                invoice.current_accounting_output
+                if isinstance(invoice.current_accounting_output, dict)
+                else (invoice.accounting_output if isinstance(invoice.accounting_output, dict) else {})
+            )
+            accounting_lines = accounting_dict.get("accounting") or []
+            tds_assessment = accounting_dict.get("tds_assessment") or {}
 
-        # 1. Stage 4 GST Engine
-        gst_result = gst_engine.evaluate_gst(working_payload)
+            # 1. Stage 4 GST Engine
+            gst_result = gst_engine.evaluate_gst(working_payload)
 
-        # 2. Stage 4 ITC Engine
-        combined_context = {
-            "accounting": accounting_lines,
-            "tds_assessment": tds_assessment,
-        }
-        itc_result = itc_engine.evaluate_itc(working_payload, combined_context)
+            # 2. Stage 4 ITC Engine
+            combined_context = {
+                "accounting": accounting_lines,
+                "tds_assessment": tds_assessment,
+            }
+            itc_result = itc_engine.evaluate_itc(working_payload, combined_context)
 
-        # 3. Stage 5 Financial Validator
-        financial_validation_result = financial_validator.validate_invoice(working_payload, gst_result)
+            # 3. Stage 5 Financial Validator
+            financial_validation_result = financial_validator.validate_invoice(working_payload, gst_result)
 
-        # 4. Stage 5 Statutory TDS Recalculation on authoritative subtotal (Single Source of Truth)
-        from app.services.tds_engine import get_effective_tds_data
-        effective_tds = get_effective_tds_data(accounting_dict)
-        tds_applicable = bool(effective_tds.get("applicable"))
+            # 4. Stage 5 Statutory TDS Recalculation on authoritative base amount (Single Source of Truth)
+            from app.services.tds_engine import get_effective_tds_data
+            effective_tds = get_effective_tds_data(accounting_dict)
+            tds_applicable = bool(effective_tds.get("applicable"))
 
-        subtotal = float(working_payload.get("subtotal") or 0.0)
-        tds_rate = effective_tds.get("rate")
-        tds_section = effective_tds.get("section")
-        tds_provision = effective_tds.get("provision")
-        tds_nature = effective_tds.get("nature_of_payment")
-        vendor_pan = working_payload.get("vendor_pan")
+            tds_base_amt = tds_engine.determine_tds_base_amount(working_payload, effective_tds)
+            tds_rate = effective_tds.get("rate")
+            tds_section = effective_tds.get("section")
+            tds_provision = effective_tds.get("provision")
+            tds_nature = effective_tds.get("nature_of_payment")
+            vendor_pan = working_payload.get("vendor_pan")
 
-        final_tds_calc = tds_engine.calculate_tds(
-            applicable=tds_applicable,
-            section=tds_section,
-            provision=tds_provision,
-            nature_of_payment=tds_nature,
-            base_amount=subtotal,
-            rate=float(tds_rate) if tds_rate is not None else None,
-            vendor_pan=vendor_pan,
-        )
+            final_tds_calc = tds_engine.calculate_tds(
+                applicable=tds_applicable,
+                section=tds_section,
+                provision=tds_provision,
+                nature_of_payment=tds_nature,
+                base_amount=tds_base_amt,
+                rate=float(tds_rate) if tds_rate is not None else None,
+                vendor_pan=vendor_pan,
+            )
 
-        persisted_accounting_output = {
-            **accounting_dict,
-            "accounting": accounting_lines,
-            "tds_assessment": {
-                **effective_tds,
-                "tds_applicable": tds_applicable,
-                "tds_section": tds_section,
-                "tds_provision": tds_provision,
-                "nature_of_payment": tds_nature,
-                "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
-                "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
-                "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
-                "tds_reasoning": final_tds_calc.get("reason"),
-            },
-            "tds_final": final_tds_calc,
-            "tds": final_tds_calc,
-        }
-
-        # 5. Stage 6 Double-Entry Journal Generator
-        # Check if the user passed explicit manual journal edits with lines
-        if update_data.journal_entry and isinstance(update_data.journal_entry, dict) and update_data.journal_entry.get("lines"):
-            raw_lines = update_data.journal_entry.get("lines") or []
-            parsed_lines = []
-            dr_total = 0.0
-            cr_total = 0.0
-            for idx, l in enumerate(raw_lines, 1):
-                d_val = float(l.get("debit") or 0.0)
-                c_val = float(l.get("credit") or 0.0)
-                dr_total += d_val
-                cr_total += c_val
-                l_type = l.get("line_type") or ("DEBIT" if d_val > 0 else "CREDIT")
-                parsed_lines.append({
-                    "line_number": idx,
-                    "account_id": l.get("account_id") or f"ACC_{idx}",
-                    "account_name": l.get("account_name") or f"Account {idx}",
-                    "line_type": l_type,
-                    "debit": round(d_val, 2),
-                    "credit": round(c_val, 2),
-                    "amount": round(d_val if d_val > 0 else c_val, 2),
-                    "provenance": "HITL_OVERRIDE" if is_internal_role else "CUSTOMER_EDIT",
-                    "description": l.get("description") or f"Line {idx}",
-                    "is_approved": True,
-                })
-            
-            dr_total = round(dr_total, 2)
-            cr_total = round(cr_total, 2)
-            diff = round(dr_total - cr_total, 2)
-            is_bal = (abs(diff) < 0.01 and dr_total > 0)
-            
-            journal_errors = []
-            if not is_bal:
-                journal_errors.append(f"Manual journal unbalanced: Total Debits (₹{dr_total:,.2f}) != Total Credits (₹{cr_total:,.2f})")
-            
-            journal_result = {
-                "status": "BALANCED" if is_bal else "UNBALANCED",
-                "approval_status": "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING",
-                "approved_by": current_user.email if (was_approved and not is_internal_role and is_bal) else None,
-                "approved_at": datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None,
-                "total_debit": dr_total,
-                "total_credit": cr_total,
-                "difference": diff,
-                "currency": "INR",
-                "is_balanced": is_bal,
-                "lines": parsed_lines,
-                "validation": {
-                    "balanced": is_bal,
-                    "tolerance": 0.05,
-                    "errors": journal_errors,
-                    "warnings": [],
+            persisted_accounting_output = {
+                **accounting_dict,
+                "accounting": accounting_lines,
+                "tds_assessment": {
+                    **effective_tds,
+                    "tds_applicable": tds_applicable,
+                    "tds_section": tds_section,
+                    "tds_provision": tds_provision,
+                    "nature_of_payment": tds_nature,
+                    "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+                    "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+                    "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+                    "tds_reasoning": final_tds_calc.get("reason"),
                 },
             }
-        else:
-            journal_result = journal_generator.generate_journal(
-                invoice_data=working_payload,
-                accounting_classification=persisted_accounting_output,
-                gst_result=gst_result,
-                itc_result=itc_result,
-                tds_result=final_tds_calc,
-                financial_validation_result=financial_validation_result,
-            )
-            is_bal = bool(journal_result.get("is_balanced") or journal_result.get("validation", {}).get("balanced"))
-            journal_result["approval_status"] = "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING"
-            journal_result["approved_by"] = current_user.email if (was_approved and not is_internal_role and is_bal) else None
-            journal_result["approved_at"] = datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None
-            journal_result["status"] = "BALANCED" if is_bal else "UNBALANCED"
+
+            # 5. Stage 6 Double-Entry Journal Generator
+            target_total = float(working_payload.get("total_amount") or working_payload.get("subtotal") or 0.0)
+            passed_journal_lines = update_data.journal_entry.get("lines") if (update_data.journal_entry and isinstance(update_data.journal_entry, dict)) else None
+            passed_journal_total = sum(float(l.get("debit") or 0.0) for l in passed_journal_lines) if passed_journal_lines else 0.0
+
+            if passed_journal_lines and (target_total == 0 or abs(passed_journal_total - target_total) < 0.05):
+                raw_lines = passed_journal_lines
+                parsed_lines = []
+                dr_total = 0.0
+                cr_total = 0.0
+                for idx, l in enumerate(raw_lines, 1):
+                    d_val = float(l.get("debit") or 0.0)
+                    c_val = float(l.get("credit") or 0.0)
+                    dr_total += d_val
+                    cr_total += c_val
+                    l_type = l.get("line_type") or ("DEBIT" if d_val > 0 else "CREDIT")
+                    parsed_lines.append({
+                        "line_number": idx,
+                        "account_id": l.get("account_id") or f"ACC_{idx}",
+                        "account_name": l.get("account_name") or f"Account {idx}",
+                        "line_type": l_type,
+                        "debit": round(d_val, 2),
+                        "credit": round(c_val, 2),
+                        "amount": round(d_val if d_val > 0 else c_val, 2),
+                        "provenance": "HITL_OVERRIDE" if is_internal_role else "CUSTOMER_EDIT",
+                        "description": l.get("description") or f"Line {idx}",
+                        "is_approved": True,
+                    })
+                
+                dr_total = round(dr_total, 2)
+                cr_total = round(cr_total, 2)
+                diff = round(dr_total - cr_total, 2)
+                is_bal = (abs(diff) < 0.01 and dr_total > 0)
+                
+                journal_errors = []
+                if not is_bal:
+                    journal_errors.append(f"Manual journal unbalanced: Total Debits (₹{dr_total:,.2f}) != Total Credits (₹{cr_total:,.2f})")
+                
+                journal_result = {
+                    "status": "BALANCED" if is_bal else "UNBALANCED",
+                    "approval_status": "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING",
+                    "approved_by": current_user.email if (was_approved and not is_internal_role and is_bal) else None,
+                    "approved_at": datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None,
+                    "total_debit": dr_total,
+                    "total_credit": cr_total,
+                    "difference": diff,
+                    "currency": "INR",
+                    "is_balanced": is_bal,
+                    "lines": parsed_lines,
+                    "validation": {
+                        "balanced": is_bal,
+                        "tolerance": 0.05,
+                        "errors": journal_errors,
+                        "warnings": [],
+                    },
+                }
+            else:
+                journal_result = journal_generator.generate_journal(
+                    invoice_data=working_payload,
+                    accounting_classification=persisted_accounting_output,
+                    gst_result=gst_result,
+                    itc_result=itc_result,
+                    tds_result=final_tds_calc,
+                    financial_validation_result=financial_validation_result,
+                )
+                is_bal = bool(journal_result.get("is_balanced") or journal_result.get("validation", {}).get("balanced"))
+                journal_result["approval_status"] = "APPROVED" if (was_approved and not is_internal_role and is_bal) else "PENDING"
+                journal_result["approved_by"] = current_user.email if (was_approved and not is_internal_role and is_bal) else None
+                journal_result["approved_at"] = datetime.now(timezone.utc).isoformat() if (was_approved and not is_internal_role and is_bal) else None
+                journal_result["status"] = "BALANCED" if is_bal else "UNBALANCED"
 
         # Lifecycle state rule:
         # If internal finance edits, reset to PENDING_REVIEW.
@@ -621,14 +654,8 @@ async def get_invoice_file(
     """
     Streams original unmodified invoice binary from Supabase Storage for authorized tenant users.
     """
-    tenant_id = current_user.tenant_id
-    parsed_user_id = None
-    try:
-        parsed_user_id = uuid.UUID(str(current_user.id))
-    except Exception:
-        parsed_user_id = None
-
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -637,13 +664,6 @@ async def get_invoice_file(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
         )
-
-    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
-        if invoice.owner_user_id and invoice.owner_user_id != parsed_user_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Invoice with ID {invoice_id} not found.",
-            )
 
     # If user has CUSTOMER role, require the invoice to be HITL approved
     if current_user.role == "CUSTOMER" and invoice.approval_status != "APPROVED":
@@ -704,14 +724,8 @@ async def get_invoice_pages(
     """
     Renders multi-page PDF invoices into a list of base64 PNG images for authorized tenant users.
     """
-    tenant_id = current_user.tenant_id
-    parsed_user_id = None
-    try:
-        parsed_user_id = uuid.UUID(str(current_user.id))
-    except Exception:
-        parsed_user_id = None
-
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -774,3 +788,89 @@ async def get_invoice_pages(
         b64_str = base64.b64encode(content).decode("utf-8")
         media_type = invoice.mime_type or "image/png"
         return {"invoice_id": str(invoice_id), "page_count": 1, "pages": [f"data:{media_type};base64,{b64_str}"]}
+
+
+@router.post("/{invoice_id}/period-decision")
+async def decide_invoice_period(
+    invoice_id: uuid.UUID,
+    payload: PeriodDecisionRequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Authoritative decision handler for Previous Financial Year invoices.
+    Only allows 'CONTINUE' or 'CANCEL' for invoices that:
+    1. Exist and match user/tenant scope
+    2. Are in post-VLM state ('HITL_REVIEW')
+    3. Have period_category == 'PREVIOUS_FINANCIAL_YEAR'
+    4. Have period_decision == 'PENDING'
+    """
+    decision = (payload.decision or "").strip().upper()
+    if decision not in ("CONTINUE", "CANCEL"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid decision. Must be 'CONTINUE' or 'CANCEL'.",
+        )
+
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    # Re-verify period category authoritatively from stored invoice_date
+    from app.core.date_utils import calculate_invoice_accounting_period
+    target_data = invoice.current_vlm_output or invoice.raw_vlm_output
+    authoritative_category = invoice.period_category
+    if isinstance(target_data, dict):
+        sub = target_data.get("data") if isinstance(target_data.get("data"), dict) else target_data
+        inv_date = sub.get("invoice_date")
+        if inv_date:
+            authoritative_category, _, _ = calculate_invoice_accounting_period(inv_date)
+
+    if authoritative_category != "PREVIOUS_FINANCIAL_YEAR":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Period confirmation is not required for invoice period category: {authoritative_category}",
+        )
+
+    if invoice.status != "HITL_REVIEW":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Invoice is not in post-VLM review state (current status: {invoice.status}).",
+        )
+
+    if invoice.period_decision != "PENDING":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Period decision is not pending (current decision: {invoice.period_decision}).",
+        )
+
+    if decision == "CANCEL":
+        invoice.period_decision = "CANCELLED"
+        invoice.status = "CANCELLED"
+        invoice.error_message = "Invoice processing cancelled by user (Previous Financial Year)."
+        invoice.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {
+            "invoice_id": str(invoice.id),
+            "period_decision": "CANCELLED",
+            "status": "CANCELLED",
+            "message": "Invoice processing cancelled.",
+        }
+    else:  # CONTINUE
+        invoice.period_decision = "CONTINUE"
+        invoice.updated_at = datetime.now(timezone.utc)
+        await db.commit()
+        return {
+            "invoice_id": str(invoice.id),
+            "period_decision": "CONTINUE",
+            "status": invoice.status,
+            "message": "Invoice processing confirmed. Resuming workflow.",
+        }
+

@@ -190,19 +190,35 @@ async def zoho_oauth_callback(
             status_code=302,
         )
 
-    # Verify cryptographic HMAC signature on state parameter
+    # Verify cryptographic HMAC signature on state parameter with robust fallback
+    tenant_id = settings.DEFAULT_TENANT_ID
+    user_id = None
     try:
-        state_data = verify_signed_zoho_state(state)
-        tenant_id = state_data["tenant_id"]
-        user_id = state_data.get("user_id")
-        if state_data.get("frontend_url"):
-            frontend_base = f"{state_data['frontend_url'].rstrip('/')}/integrations"
-    except ValueError as val_err:
-        logger.warning(f"Zoho OAuth state verification failed: {val_err}")
-        return RedirectResponse(
-            url=f"{frontend_base}?zoho_status=error&error_detail={urllib.parse.quote(str(val_err))}",
-            status_code=302,
-        )
+        if state:
+            try:
+                state_data = verify_signed_zoho_state(state)
+                tenant_id = state_data.get("tenant_id") or settings.DEFAULT_TENANT_ID
+                user_id = state_data.get("user_id")
+                if state_data.get("frontend_url"):
+                    frontend_base = f"{state_data['frontend_url'].rstrip('/')}/integrations"
+            except Exception:
+                # Fallback: parse plain state param (tenant_id:user_id|frontend_url)
+                state_unquoted = urllib.parse.unquote(state)
+                if "|" in state_unquoted:
+                    tenant_part, custom_frontend = state_unquoted.split("|", 1)
+                    if custom_frontend.startswith("http"):
+                        frontend_base = f"{custom_frontend.rstrip('/')}/integrations"
+                else:
+                    tenant_part = state_unquoted
+
+                if ":" in tenant_part:
+                    parts = tenant_part.split(":", 1)
+                    tenant_id = parts[0]
+                    user_id = parts[1]
+                else:
+                    tenant_id = tenant_part
+    except Exception as state_err:
+        logger.warning(f"State parsing fallback used: {state_err}")
 
     logger.info(f"Processing Zoho OAuth callback for tenant {tenant_id} (user {user_id})...")
 

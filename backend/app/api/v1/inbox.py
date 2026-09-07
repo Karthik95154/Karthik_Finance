@@ -3,10 +3,10 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, and_, true
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
-from app.db.models import Invoice, Integration
+from app.db.models import Invoice, Integration, EmailConnection
 from app.core.config import settings
 from app.core.security import AuthenticatedUser, get_current_user, require_roles
 from app.storage.supabase_storage import storage_service
@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="", tags=["Inbox / Ingestion"])
 
 
+def get_user_filter(current_user: AuthenticatedUser):
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+    except (ValueError, TypeError):
+        return true()
+
+
 @router.get("/inbox/staged")
 async def get_staged_documents(
     current_user: AuthenticatedUser = Depends(get_current_user),
@@ -27,26 +35,20 @@ async def get_staged_documents(
 ):
     """Retrieves staged invoices waiting for review, strictly scoped to the authenticated user and tenant."""
     tenant_id = current_user.tenant_id
-    parsed_user_id = None
-    try:
-        parsed_user_id = uuid.UUID(str(current_user.id))
-    except Exception:
-        parsed_user_id = None
+    user_filter = get_user_filter(current_user)
 
     query = (
         select(Invoice)
         .where(
             Invoice.tenant_id == tenant_id,
             Invoice.status == "STAGED",
+            user_filter,
             or_(
                 Invoice.financial_relevance != "NOT_FINANCIAL",
                 Invoice.financial_relevance.is_(None),
             ),
         )
     )
-
-    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER") and parsed_user_id:
-        query = query.where(Invoice.owner_user_id == parsed_user_id)
 
     query = query.order_by(Invoice.created_at.desc())
     result = await db.execute(query)
@@ -63,14 +65,9 @@ async def process_staged_document(
 ):
     """Triggers invoice extraction and Stage 3 accounting pipeline for a staged document belonging to the tenant."""
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
-    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER"):
-        try:
-            parsed_uid = uuid.UUID(str(current_user.id))
-            query = query.where(Invoice.owner_user_id == parsed_uid)
-        except Exception:
-            pass
+    user_filter = get_user_filter(current_user)
 
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -111,14 +108,9 @@ async def delete_staged_document(
 ):
     """Deletes a staged invoice from the database and Supabase Storage, strictly verifying tenant ownership."""
     tenant_id = current_user.tenant_id
-    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id)
-    if current_user.role in ("DATA_REVIEWER", "VIEWER", "CUSTOMER"):
-        try:
-            parsed_uid = uuid.UUID(str(current_user.id))
-            query = query.where(Invoice.owner_user_id == parsed_uid)
-        except Exception:
-            pass
+    user_filter = get_user_filter(current_user)
 
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -152,7 +144,7 @@ async def poll_email_inbox(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Triggers live polling of the authenticated user's configured IMAP mailbox to ingest new attachments."""
+    """Triggers live polling of the configured EmailConnection mailbox to ingest new attachments."""
     import time
     start_total = time.perf_counter()
     tenant_id = current_user.tenant_id
@@ -162,35 +154,55 @@ async def poll_email_inbox(
     except Exception:
         parsed_user_id = None
     
-    # Find email config for this user & tenant
-    if parsed_user_id:
-        query = select(Integration).where(Integration.tenant_id == tenant_id, Integration.user_id == parsed_user_id)
-    else:
-        query = select(Integration).where(Integration.tenant_id == tenant_id)
+    try:
+        current_user_uuid = uuid.UUID(current_user.id)
+        user_conn_filter = or_(
+            EmailConnection.user_id == current_user_uuid,
+            EmailConnection.user_id_str == str(current_user.id),
+        )
+    except (ValueError, TypeError):
+        current_user_uuid = None
+        user_conn_filter = (EmailConnection.user_id_str == str(current_user.id))
 
+    # Find EmailConnection record for this specific user strictly (NO cross-user global fallbacks)
+    query = select(EmailConnection).where(user_conn_filter, EmailConnection.is_active == True)
     result = await db.execute(query)
-    integration = result.scalar_one_or_none()
+    email_conn = result.scalars().first()
 
-    if not integration or integration.status != "connected" or not integration.config:
+    if not email_conn:
+        logger.warning(f"POLL DENIED: No active EmailConnection found for user_id={current_user.id}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Corporate email integration is not configured for your tenant or user account. Please connect your inbox in Settings.",
+            detail="No email account is connected. Please connect an email account first in Settings.",
         )
+
+    configured_email = email_conn.email_address
+    masked_email = configured_email[0] + "***@" + configured_email.split("@")[-1] if "@" in configured_email else "***"
+    logger.info(f"POLL INITIATED | User ID: {current_user.id} | EmailConnection ID: {email_conn.id} | Mailbox: {masked_email}")
+
+    imap_config = {
+        "imap_server": email_conn.imap_host,
+        "imap_port": email_conn.imap_port,
+        "email_address": email_conn.email_address,
+        "password": email_conn.encrypted_password,
+    }
 
     try:
         # Perform IMAP polling
-        poll_res = await imap_service.poll_mailbox(integration.config, window_hours=window_hours)
+        poll_res = await imap_service.poll_mailbox(imap_config, window_hours=window_hours)
+        email_conn.last_synced_at = datetime.now(timezone.utc)
+        await db.commit()
     except Exception as e:
         err_msg = str(e)
-        logger.error(f"IMAP Polling failed: {err_msg}")
+        logger.error(f"IMAP Polling failed for user {current_user.id}: {err_msg}")
         if "AUTHENTICATIONFAILED" in err_msg or "Invalid credentials" in err_msg:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="IMAP authentication failed. For Gmail accounts, please generate a 16-character Google App Password (https://myaccount.google.com/apppasswords) and update your credentials in the Integrations hub.",
+                detail=f"Unable to authenticate with the connected email account: {err_msg}",
             )
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Failed to poll mailbox: {err_msg}",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"IMAP Polling error: {err_msg}",
         )
 
     attachments = poll_res.get("attachments", [])
@@ -204,12 +216,17 @@ async def poll_email_inbox(
     failed_attachments = len(parser_errors)
     errors_list = list(parser_errors)
 
-    # 1. Batch duplicate check query
+    # 1. User-scoped duplicate check query (Ensures separate users can ingest the same file independently)
     start_dup = time.perf_counter()
     hashes = [att["file_hash"] for att in attachments]
     existing_invoices = {}
     if hashes:
-        dup_query = select(Invoice).where(Invoice.tenant_id == tenant_id, Invoice.file_hash.in_(hashes))
+        if current_user_uuid:
+            user_inv_filter = or_(Invoice.user_id == current_user_uuid, Invoice.user_id.is_(None))
+        else:
+            user_inv_filter = true()
+        
+        dup_query = select(Invoice).where(user_inv_filter, Invoice.file_hash.in_(hashes))
         dup_result = await db.execute(dup_query)
         existing_invoices = {inv.file_hash: inv for inv in dup_result.scalars().all()}
     dup_time_ms = (time.perf_counter() - start_dup) * 1000.0
@@ -218,78 +235,26 @@ async def poll_email_inbox(
     unique_candidates = []
     for attachment in attachments:
         file_hash = attachment["file_hash"]
-        logger.info(f"SHA256 = {file_hash}")
+        logger.info(f"SHA256 = {file_hash} for User = {current_user.id}")
         
         existing_invoice = existing_invoices.get(file_hash)
         if existing_invoice:
-            logger.info(f"DUPLICATE = YES | Existing ID: {existing_invoice.id} | Filename: {existing_invoice.file_name} | Status: {existing_invoice.status}")
+            logger.info(f"DUPLICATE FOR USER = YES | Existing Invoice ID: {existing_invoice.id} | Filename: {existing_invoice.file_name}")
             duplicates += 1
         else:
-            logger.info("DUPLICATE = NO")
+            logger.info(f"DUPLICATE FOR USER = NO | Filename: {attachment['filename']}")
             unique_candidates.append(attachment)
 
-    # 2. Concurrently upload unique attachments to Supabase Storage
+    # 2. Classify and store unique candidate financial documents
     import asyncio
     import re
     
-    async def upload_attachment_task(att):
-        invoice_id = uuid.uuid4()
-        clean_name = att["filename"]
-        clean_name = re.sub(r"[^\w\.-]", "_", clean_name)[:100]
-        storage_path = f"uploads/{invoice_id}_{clean_name}"
-        
-        try:
-            await storage_service.upload_file(
-                file_bytes=att["file_bytes"],
-                file_path=storage_path,
-                content_type=att["mime_type"],
-            )
-            return {
-                "success": True,
-                "attachment": att,
-                "invoice_id": invoice_id,
-                "storage_path": storage_path,
-                "error": None
-            }
-        except Exception as e:
-            return {
-                "success": False,
-                "attachment": att,
-                "invoice_id": invoice_id,
-                "storage_path": storage_path,
-                "error": e
-            }
-
     upload_time_ms = 0.0
     insert_time_ms = 0.0
     
     if unique_candidates:
-        start_upload = time.perf_counter()
-        logger.info(f"Concurrently uploading {len(unique_candidates)} unique files to Supabase...")
-        upload_tasks = [upload_attachment_task(candidate) for candidate in unique_candidates]
-        upload_results = await asyncio.gather(*upload_tasks)
-        upload_time_ms = (time.perf_counter() - start_upload) * 1000.0
-        
-        # 3. Database inserts for successfully uploaded files
-        start_insert = time.perf_counter()
-        for res in upload_results:
-            attachment = res["attachment"]
-            invoice_id = res["invoice_id"]
-            storage_path = res["storage_path"]
-            
-            if not res["success"]:
-                err = res["error"]
-                logger.error(f"STORAGE UPLOAD = FAIL | Filename: {attachment['filename']} | Exception: {str(err)}", exc_info=True)
-                failed_attachments += 1
-                errors_list.append({
-                    "filename": attachment["filename"],
-                    "reason": f"Supabase storage upload failed: {str(err)}"
-                })
-                continue
-                
-            logger.info("STORAGE UPLOAD = SUCCESS")
-            
-            # Prepare classification context and perform AI classification for unique attachment
+        for attachment in unique_candidates:
+            # Step A: Perform AI visual classification in memory FIRST before uploading to storage or inserting into DB
             classification_res = None
             try:
                 ctx = prepare_classification_context(attachment)
@@ -302,11 +267,45 @@ async def poll_email_inbox(
             rel_val = classification_res.financial_relevance.value if hasattr(classification_res.financial_relevance, "value") else str(classification_res.financial_relevance)
             type_val = classification_res.document_type.value if hasattr(classification_res.document_type, "value") else str(classification_res.document_type)
 
-            # Save record as STAGED invoice with tenant_id and owner_user_id
+            # Accept INVOICE, CREDIT_NOTE, DEBIT_NOTE, or UNKNOWN fallback (e.g. rate-limit fallback so user can still review)
+            allowed_document_types = {"INVOICE", "CREDIT_NOTE", "DEBIT_NOTE", "UNKNOWN"}
+            is_financial_doc = (type_val in allowed_document_types) or (rel_val in ("FINANCIAL", "UNKNOWN"))
+
+            if not is_financial_doc:
+                logger.info(f"NON-FINANCIAL DOCUMENT DISCARDED | Type: {type_val} | Relevance: {rel_val} | Filename: {attachment['filename']}")
+                continue
+
+            # Step B: Upload allowed financial document to Supabase Storage
+            invoice_id = uuid.uuid4()
+            clean_name = attachment["filename"]
+            clean_name = re.sub(r"[^\w\.-]", "_", clean_name)[:100]
+            storage_path = f"uploads/{invoice_id}_{clean_name}"
+
+            start_upload = time.perf_counter()
+            try:
+                await storage_service.upload_file(
+                    file_bytes=attachment["file_bytes"],
+                    file_path=storage_path,
+                    content_type=attachment["mime_type"],
+                )
+                upload_time_ms += (time.perf_counter() - start_upload) * 1000.0
+                logger.info("STORAGE UPLOAD = SUCCESS")
+            except Exception as e:
+                logger.error(f"STORAGE UPLOAD = FAIL | Filename: {attachment['filename']} | Exception: {str(e)}", exc_info=True)
+                failed_attachments += 1
+                errors_list.append({
+                    "filename": attachment["filename"],
+                    "reason": f"Supabase storage upload failed: {str(e)}"
+                })
+                continue
+
+            # Step C: Save record as STAGED invoice in PostgreSQL
+            start_insert = time.perf_counter()
             new_invoice = Invoice(
                 id=invoice_id,
-                tenant_id=tenant_id,
-                owner_user_id=parsed_user_id,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user_uuid,
+>>>>>>> target/updated_HITL
                 file_path=storage_path,
                 file_name=attachment["filename"],
                 file_size=len(attachment["file_bytes"]),
@@ -322,12 +321,13 @@ async def poll_email_inbox(
                 document_type=type_val,
                 classification_confidence=classification_res.confidence,
                 classification_reason=classification_res.reason,
-                classification_model=getattr(settings, "GROQ_MODEL", "openai/gpt-oss-20b"),
+                classification_model=getattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b"),
             )
             try:
                 db.add(new_invoice)
                 await db.flush()
                 new_documents += 1
+                insert_time_ms += (time.perf_counter() - start_insert) * 1000.0
                 logger.info("DATABASE INSERT = SUCCESS")
             except Exception as e:
                 logger.error(f"DATABASE INSERT = FAIL | Filename: {attachment['filename']} | Exception: {str(e)}", exc_info=True)
@@ -342,10 +342,9 @@ async def poll_email_inbox(
                 except Exception as cleanup_err:
                     logger.error(f"Failed to clean up storage file {storage_path}: {cleanup_err}")
                 continue
-        insert_time_ms = (time.perf_counter() - start_insert) * 1000.0
 
-    # Update integration metadata
-    integration.last_synced_at = datetime.now(timezone.utc)
+    # Update EmailConnection metadata
+    email_conn.last_synced_at = datetime.now(timezone.utc)
     await db.commit()
     
     total_time_ms = (time.perf_counter() - start_total) * 1000.0

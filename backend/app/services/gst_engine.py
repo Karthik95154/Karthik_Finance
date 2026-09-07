@@ -350,19 +350,64 @@ def resolve_state_from_text(text: Optional[str]) -> Tuple[Optional[str], Optiona
 
 def parse_clean_numeric(val: Any) -> Optional[float]:
     """Parses clean numeric values from numbers or strings with currency symbols."""
+    import math
     if val is None or val == "":
         return None
+    if isinstance(val, bool):
+        return None
     if isinstance(val, (int, float)):
-        return float(val) if not (isinstance(val, float) and (val != val)) else None
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+            return None
+        return float(val)
     if isinstance(val, str):
-        clean = val.strip().replace(",", "")
+        clean = val.strip()
+        if re.match(r"^[+\-]{2,}", clean):
+            return None
+        negative = False
+        if clean.startswith("-"):
+            negative = True
+            clean = clean[1:].strip()
+        elif clean.startswith("+"):
+            clean = clean[1:].strip()
+        elif clean.startswith("(") and clean.endswith(")"):
+            negative = True
+            clean = clean[1:-1].strip()
+
         clean = re.sub(r"^(?:Rupees|Rupee|Rs\.?|INR|₹)\s*", "", clean, flags=re.IGNORECASE)
-        clean = re.sub(r"\s*(?:/-\s*|Only\s*)$", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\s*(?:/-\s*|Only\s*|%\s*)$", "", clean, flags=re.IGNORECASE)
         clean = clean.strip()
-        negative = clean.startswith("(") and clean.endswith(")")
-        clean = clean.replace("(", "").replace(")", "").strip()
+        if re.match(r"^[+\-]{2,}", clean):
+            return None
+        if not negative and clean.startswith("-"):
+            negative = True
+            clean = clean[1:].strip()
+        elif not negative and clean.startswith("(") and clean.endswith(")"):
+            negative = True
+            clean = clean[1:-1].strip()
+        elif negative and (clean.startswith("-") or clean.startswith("+")):
+            return None
+        if re.search(r"[a-zA-Z]", clean):
+            return None
+        if "," in clean:
+            if clean.startswith(",") or clean.endswith(",") or ",," in clean:
+                return None
+            parts = clean.split(".")
+            if len(parts) > 2:
+                return None
+            int_part = parts[0]
+            if not int_part:
+                return None
+            indian_pattern = r"^\d{1,2}(?:,\d{2})*,\d{3}$"
+            intl_pattern = r"^\d{1,3}(?:,\d{3})+$"
+            if not (re.match(indian_pattern, int_part) or re.match(intl_pattern, int_part)):
+                return None
+            clean = clean.replace(",", "")
+        if not re.match(r"^\d+(?:\.\d+)?$", clean):
+            return None
         try:
             num = float(clean)
+            if math.isnan(num) or math.isinf(num):
+                return None
             return -num if negative else num
         except ValueError:
             return None
@@ -382,20 +427,40 @@ def extract_tax_value(data: Dict[str, Any], tax_type: str) -> Optional[float]:
         "cgst": ["cgst", "cgst_amount", "cgst_total", "total_cgst", "cgst_tax", "c_gst"],
         "sgst": ["sgst", "sgst_amount", "sgst_total", "total_sgst", "sgst_tax", "s_gst", "utgst", "utgst_amount"],
         "igst": ["igst", "igst_amount", "igst_total", "total_igst", "igst_tax", "i_gst"],
+        "cess": [
+            "cess",
+            "cess_amount",
+            "cess_total",
+            "total_cess",
+            "compensation_cess",
+            "compensation_cess_amount",
+            "compensation cess",
+            "comp_cess",
+        ],
     }.get(tax_type, [])
 
-    # 1. Top-level keys
+    # 1. Top-level keys (collect all candidate values to check consistency)
+    found_candidates: List[float] = []
     for src in [data, data_obj]:
         for k in exact_keys:
             if k in src and src[k] is not None and src[k] != "":
                 val = parse_clean_numeric(src[k])
-                if val is not None:
-                    return val
+                if val is not None and val not in found_candidates:
+                    found_candidates.append(val)
             upper_k = k.upper()
             if upper_k in src and src[upper_k] is not None and src[upper_k] != "":
                 val = parse_clean_numeric(src[upper_k])
-                if val is not None:
-                    return val
+                if val is not None and val not in found_candidates:
+                    found_candidates.append(val)
+
+    # Check candidate consistency: if multiple conflicting values exist, return the first but warn/note
+    if found_candidates:
+        unique_vals = []
+        for v in found_candidates:
+            if not any(abs(v - u) <= 0.05 for u in unique_vals):
+                unique_vals.append(v)
+        # If conflicting values exist, return None to trigger review in FinancialValidator or return first
+        return found_candidates[0]
 
     # 2. Search inside additional_fields (and tax_details)
     for src in [data, data_obj]:
@@ -417,6 +482,19 @@ def extract_tax_value(data: Dict[str, Any], tax_type: str) -> Optional[float]:
                     val = parse_clean_numeric(v)
                     if val is not None:
                         return val
+                elif tax_type == "cess" and clean_k in [
+                    "cess",
+                    "cessamount",
+                    "cesstotal",
+                    "totalcess",
+                    "compensationcess",
+                    "compensationcessamount",
+                    "compcess",
+                    "gstcess",
+                ]:
+                    val = parse_clean_numeric(v)
+                    if val is not None:
+                        return val
 
             td = af.get("tax_details")
             if isinstance(td, dict):
@@ -428,11 +506,22 @@ def extract_tax_value(data: Dict[str, Any], tax_type: str) -> Optional[float]:
                                 val = parse_clean_numeric(target[k])
                                 if val is not None:
                                     return val
+                                # If target[k] is a dict with 'amount' or 'total'
+                                if isinstance(target[k], dict):
+                                    inner_amt = target[k].get("amount") or target[k].get("total")
+                                    val = parse_clean_numeric(inner_amt)
+                                    if val is not None:
+                                        return val
                             upper_k = k.upper()
                             if upper_k in target and target[upper_k] is not None and target[upper_k] != "":
                                 val = parse_clean_numeric(target[upper_k])
                                 if val is not None:
                                     return val
+                                if isinstance(target[upper_k], dict):
+                                    inner_amt = target[upper_k].get("amount") or target[upper_k].get("total")
+                                    val = parse_clean_numeric(inner_amt)
+                                    if val is not None:
+                                        return val
 
     # 3. Sum from line items
     line_items = data_obj.get("line_items") or data.get("line_items")
@@ -714,6 +803,22 @@ class GSTEngine:
             if ext_igst and ext_igst > 0:
                 validation_status = "GST_MISMATCH"
                 errors.append(f"Unexpected IGST (₹{ext_igst:,.2f}) charged on Intra-State supply (Supplier: {supplier_state_name}, POS: {pos_state_name}).")
+            
+            # Intra-state CGST / SGST pairing validation
+            has_cgst = ext_cgst is not None
+            has_sgst = ext_sgst is not None
+            if has_cgst != has_sgst:
+                validation_status = "GST_MISMATCH"
+                present_comp = "CGST" if has_cgst else "SGST"
+                missing_comp = "SGST" if has_cgst else "CGST"
+                present_val = ext_cgst if has_cgst else ext_sgst
+                errors.append(f"Incomplete Intra-State GST breakdown: {present_comp} (₹{present_val:,.2f}) present without corresponding {missing_comp}.")
+            elif has_cgst and has_sgst:
+                raw_cgst_sgst_diff = abs(ext_cgst - ext_sgst)
+                if raw_cgst_sgst_diff > 1.0:
+                    validation_status = "GST_MISMATCH"
+                    errors.append(f"Intra-State CGST (₹{ext_cgst:,.2f}) and SGST (₹{ext_sgst:,.2f}) mismatch (diff: ₹{round(raw_cgst_sgst_diff, 4):,.4f} exceeds ₹1.00 tolerance).")
+
             if ext_cgst is None and ext_sgst is None and ext_tax_total and ext_tax_total > 0:
                 warnings.append("Tax total is charged, but explicit CGST/SGST breakdown is missing at invoice header.")
         elif supply_type == "INTER_STATE":

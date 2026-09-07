@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     ENCRYPTION_KEY: str = ""
 
-    CORS_ORIGINS: Union[str, List[str]] = [
+    CORS_ORIGINS: Union[List[str], str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:3002",
@@ -44,6 +44,9 @@ class Settings(BaseSettings):
             val = v.strip()
             if not val:
                 return ["*"]
+            # If wrapped in quotes, strip them
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                val = val[1:-1].strip()
             if val.startswith("[") and val.endswith("]"):
                 import json
                 try:
@@ -51,9 +54,16 @@ class Settings(BaseSettings):
                     if isinstance(parsed, list):
                         return [str(x).strip() for x in parsed if str(x).strip()]
                 except Exception:
-                    pass
-            return [x.strip() for x in val.split(",") if x.strip()]
-        elif isinstance(v, list):
+                    # Fallback: strip brackets and split by comma
+                    val = val[1:-1]
+            # Split comma-separated values and clean extra quotes
+            items = []
+            for item in val.split(","):
+                cleaned = item.strip().strip("'\"").strip()
+                if cleaned:
+                    items.append(cleaned)
+            return items if items else ["*"]
+        elif isinstance(v, (list, tuple, set)):
             return [str(x).strip() for x in v if str(x).strip()]
         return ["*"]
 
@@ -66,11 +76,17 @@ class Settings(BaseSettings):
         if isinstance(v, str):
             val = v.strip()
             if val.startswith("postgresql+psycopg2://"):
-                return val.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+                val = val.replace("postgresql+psycopg2://", "postgresql+asyncpg://", 1)
             elif val.startswith("postgresql://"):
-                return val.replace("postgresql://", "postgresql+asyncpg://", 1)
+                val = val.replace("postgresql://", "postgresql+asyncpg://", 1)
             elif val.startswith("postgres://"):
-                return val.replace("postgres://", "postgresql+asyncpg://", 1)
+                val = val.replace("postgres://", "postgresql+asyncpg://", 1)
+
+            # Supabase pooler: port 5432 is session mode (strictly capped at 15 clients).
+            # Switch to port 6543 (transaction pooler) which safely supports thousands of concurrent connections.
+            if "pooler.supabase.com:5432" in val:
+                val = val.replace("pooler.supabase.com:5432", "pooler.supabase.com:6543", 1)
+
             return val
         return v
 
