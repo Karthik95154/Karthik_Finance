@@ -21,19 +21,27 @@ class MasterDataService:
         user_id: Optional[Any] = None,
     ) -> ZohoConnection:
         """Retrieves active ZohoConnection for tenant or returns a placeholder record, prioritizing CONNECTED status."""
-        query = select(ZohoConnection)
+        query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id)
         if user_id:
             try:
                 user_uuid = uuid.UUID(str(user_id))
                 query = query.where(or_(ZohoConnection.user_id == user_uuid, ZohoConnection.user_id.is_(None)))
             except Exception:
-                query = query.where(ZohoConnection.tenant_id == tenant_id)
-        else:
-            query = query.where(ZohoConnection.tenant_id == tenant_id)
+                pass
 
         query = query.order_by(ZohoConnection.created_at.desc())
         res = await db.execute(query)
-        conns = res.scalars().all()
+        conns = []
+        if hasattr(res, "scalars"):
+            scalars_res = res.scalars()
+            if hasattr(scalars_res, "all"):
+                all_res = scalars_res.all()
+                if isinstance(all_res, list):
+                    conns = all_res
+        if not conns and hasattr(res, "scalar_one_or_none"):
+            single = res.scalar_one_or_none()
+            if single and isinstance(single, ZohoConnection):
+                conns = [single]
 
         if not conns:
             connection = ZohoConnection(tenant_id=tenant_id, status="DISCONNECTED")

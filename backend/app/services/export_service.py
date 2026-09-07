@@ -114,7 +114,7 @@ class InvoiceExportService:
             raise ValueError(f"Cannot export to Zoho: {date_err}")
 
         # 5. Check Zoho Connection
-        connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+        connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=invoice.user_id)
         if connection.status != "CONNECTED" or not connection.organization_id:
             raise ValueError("Tenant is not connected to a Zoho Books organization. Please connect Zoho first.")
 
