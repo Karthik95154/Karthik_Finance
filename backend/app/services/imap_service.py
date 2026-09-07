@@ -41,11 +41,22 @@ def parse_email_date(date_str: str) -> datetime:
         logger.warning(f"Failed to parse email date '{date_str}': {e}")
         return datetime.now()
 
-def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str, Any]:
+def run_imap_polling(
+    config: Dict[str, Any],
+    window_hours: int = 24,
+    since_datetime: Optional[datetime] = None,
+) -> Dict[str, Any]:
     """
     Synchronous IMAP polling operations.
-    Connects to the server, fetches emails from the last `window_hours`,
-    and parses out supported attachments with deep diagnostic logging.
+    Connects to the server, fetches emails, and parses out supported attachments.
+
+    Incremental mode (preferred):
+        Pass a timezone-aware UTC `since_datetime`.  Emails received strictly after
+        this timestamp are fetched.  `window_hours` is ignored.
+
+    Initial mode (first poll / fallback):
+        Leave `since_datetime` as None.  Falls back to fetching the last
+        `window_hours` of email using the existing behaviour.
     """
     start_total = time.perf_counter()
     logger.info("POLL START")
@@ -96,8 +107,20 @@ def run_imap_polling(config: Dict[str, Any], window_hours: int = 24) -> Dict[str
         logger.info(f"Total messages in INBOX = {total_messages}")
         search_time_ms = (time.perf_counter() - start_search) * 1000.0
         
+        # --- Determine poll window boundaries (both timezone-naive for header comparison) ---
         now_time = datetime.now()
-        poll_start_time = now_time - timedelta(hours=window_hours)
+        if since_datetime is not None:
+            # Incremental mode: use caller-supplied checkpoint.
+            # Convert to local naive for comparison with parse_email_date() output.
+            try:
+                poll_start_time = since_datetime.astimezone().replace(tzinfo=None)
+            except Exception:
+                poll_start_time = since_datetime.replace(tzinfo=None)
+            logger.info(f"INCREMENTAL POLL | since={since_datetime.isoformat()}")
+        else:
+            # Initial mode: classic fixed-window lookback
+            poll_start_time = now_time - timedelta(hours=window_hours)
+            logger.info(f"INITIAL POLL | window={window_hours}h")
         
         # 3. Header Batch Fetching
         start_header = time.perf_counter()
@@ -423,8 +446,20 @@ class IMAPService:
         """Validate connection details asynchronously by offloading to a thread."""
         await asyncio.to_thread(test_imap_connection_sync, config)
 
-    async def poll_mailbox(self, config: Dict[str, Any], window_hours: int = 24) -> Dict[str, Any]:
-        """Poll mailbox asynchronously by offloading the blocking IMAP operations to a thread."""
-        return await asyncio.to_thread(run_imap_polling, config, window_hours)
+    async def poll_mailbox(
+        self,
+        config: Dict[str, Any],
+        window_hours: int = 24,
+        since_datetime: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Poll mailbox asynchronously by offloading the blocking IMAP operations to a thread.
+
+        Args:
+            config: IMAP connection parameters.
+            window_hours: Lookback window for the initial poll (ignored when since_datetime is set).
+            since_datetime: Timezone-aware UTC timestamp for incremental mode.  When provided,
+                            only emails received after this timestamp are fetched.
+        """
+        return await asyncio.to_thread(run_imap_polling, config, window_hours, since_datetime)
 
 imap_service = IMAPService()

@@ -11,6 +11,7 @@ from app.api.v1.zoho import router as zoho_router
 from app.api.v1.hitl import router as hitl_router
 from app.api.v1.review import router as review_router
 from app.core.config import settings
+from app.services.email_scheduler import start_scheduler, stop_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,10 +81,33 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text("ALTER TABLE email_connections ADD COLUMN IF NOT EXISTS user_id_str VARCHAR(100);"))
             except Exception:
                 pass
+            # Incremental polling state columns (idempotent — safe on existing deployments)
+            try:
+                await conn.execute(text("ALTER TABLE email_connections ADD COLUMN IF NOT EXISTS last_successful_poll_at TIMESTAMP WITH TIME ZONE;"))
+            except Exception:
+                pass
+            try:
+                await conn.execute(text("ALTER TABLE email_connections ADD COLUMN IF NOT EXISTS automatic_polling_enabled BOOLEAN NOT NULL DEFAULT FALSE;"))
+            except Exception:
+                pass
+            try:
+                await conn.execute(text("ALTER TABLE email_connections ADD COLUMN IF NOT EXISTS is_polling BOOLEAN NOT NULL DEFAULT FALSE;"))
+            except Exception:
+                pass
         logger.info("Database tables and columns initialized / verified successfully.")
     except Exception as exc:
         logger.warning(f"Database table verification error: {exc}")
+
+    # Start the daily 7AM automatic email polling scheduler
+    try:
+        start_scheduler()
+    except Exception as sched_exc:
+        logger.warning(f"Email scheduler failed to start: {sched_exc}")
+
     yield
+
+    # Graceful shutdown
+    stop_scheduler()
     logger.info(f"Shutting down {settings.PROJECT_NAME} backend...")
 
 

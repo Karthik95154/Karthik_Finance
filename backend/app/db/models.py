@@ -297,6 +297,15 @@ class EmailConnection(Base):
     imap_port = Column(Integer, nullable=False, default=993)
     is_active = Column(Boolean, nullable=False, default=True)
     last_synced_at = Column(DateTime(timezone=True), nullable=True)
+
+    # Incremental polling state — user-specific, independent per user
+    # NULL = user has never completed a successful poll (first poll pending)
+    last_successful_poll_at = Column(DateTime(timezone=True), nullable=True)
+    # Set to TRUE only after the first successful manual poll completes
+    automatic_polling_enabled = Column(Boolean, nullable=False, default=False)
+    # Lightweight mutex: prevents two concurrent polls for the same connection
+    is_polling = Column(Boolean, nullable=False, default=False)
+
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
