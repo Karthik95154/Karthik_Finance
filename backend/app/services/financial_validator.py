@@ -258,10 +258,14 @@ class FinancialValidator:
             line_tax_sum += (cgst + sgst + igst)
             line_total_sum += item_total
 
-        if line_items and subtotal > 0 and abs(line_taxable_sum - subtotal) > (len(line_items) * tolerance):
-            errors.append(
-                f"Line taxable sum (₹{line_taxable_sum:.2f}) does not match header subtotal (₹{subtotal:.2f})"
-            )
+        effective_subtotal = subtotal or float(data.get("taxable_amount") or 0.0)
+        if line_items and effective_subtotal > 0:
+            diff = abs(line_taxable_sum - effective_subtotal)
+            max_allowed_diff = max(0.50, len(line_items) * 0.10)
+            if diff > max_allowed_diff and abs(line_taxable_sum - (effective_subtotal - discount_total)) > max_allowed_diff:
+                errors.append(
+                    f"Line taxable sum (₹{line_taxable_sum:.2f}) does not match header subtotal (₹{effective_subtotal:.2f})"
+                )
 
         expected_grand_total = round(
             subtotal + tax_total - discount_total + shipping + other_charges + adjustment + round_off, 2

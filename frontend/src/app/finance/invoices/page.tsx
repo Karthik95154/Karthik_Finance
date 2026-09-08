@@ -3,7 +3,8 @@
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
-import { listInvoices, getCachedInvoices, InvoiceListItem } from "@/lib/api";
+import { listInvoices, getCachedInvoices, processInvoice, InvoiceListItem } from "@/lib/api";
+import { Play } from "lucide-react";
 import {
   FileSpreadsheet,
   Search,
@@ -17,12 +18,29 @@ import {
   ExternalLink,
 } from "lucide-react";
 
+import { useRouter } from "next/navigation";
+
 export default function InvoicesListPage() {
+  const router = useRouter();
   const [invoices, setInvoices] = useState<InvoiceListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
+  const [processingMap, setProcessingMap] = useState<{ [id: string]: boolean }>({});
+
+  const handleProcessClick = async (invoiceId: string) => {
+    setProcessingMap((prev) => ({ ...prev, [invoiceId]: true }));
+    setError(null);
+
+    try {
+      await processInvoice(invoiceId);
+      router.push(`/finance/invoices/${invoiceId}/processing`);
+    } catch (err: any) {
+      setError(err.message || "Failed to trigger invoice extraction.");
+      setProcessingMap((prev) => ({ ...prev, [invoiceId]: false }));
+    }
+  };
 
   const loadInvoices = async (forceRefresh = false) => {
     try {
@@ -66,13 +84,19 @@ export default function InvoicesListPage() {
       (inv.vendor_name?.toLowerCase() || "").includes(searchTerm.toLowerCase()) ||
       (inv.file_name?.toLowerCase() || "").includes(searchTerm.toLowerCase());
 
+    const isProcessing =
+      inv.status === "PROCESSING" ||
+      inv.status === "PENDING" ||
+      inv.status === "PROCESSING_VLM" ||
+      inv.status === "PROCESSING_ACCOUNTING";
+
+    const isNotProcessed = inv.status === "NOT_PROCESSED" || inv.status === "STAGED";
+
     const matchesStatus =
       statusFilter === "ALL" ||
       inv.status === statusFilter ||
-      (statusFilter === "PROCESSING" &&
-        (inv.status === "PENDING" ||
-          inv.status === "PROCESSING_VLM" ||
-          inv.status === "PROCESSING_ACCOUNTING"));
+      (statusFilter === "PROCESSING" && isProcessing) ||
+      (statusFilter === "NOT_PROCESSED" && isNotProcessed);
 
     return matchesSearch && matchesStatus;
   });
@@ -176,7 +200,7 @@ export default function InvoicesListPage() {
           <span style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: "600" }}>
             Status:
           </span>
-          {["ALL", "COMPLETED", "PROCESSING", "FAILED"].map((st) => (
+          {["ALL", "COMPLETED", "PROCESSING", "NOT_PROCESSED", "FAILED"].map((st) => (
             <button
               key={st}
               type="button"
@@ -189,7 +213,7 @@ export default function InvoicesListPage() {
                 borderRadius: "var(--radius-sm)",
               }}
             >
-              {st}
+              {st === "NOT_PROCESSED" ? "NOT PROCESSED" : st}
             </button>
           ))}
         </div>
@@ -276,86 +300,150 @@ export default function InvoicesListPage() {
                 </tr>
               </thead>
               <tbody>
-                {paginatedInvoices.map((inv) => (
-                  <tr
-                    key={inv.id}
-                    style={{
-                      borderBottom: "1px solid var(--border-subtle)",
-                      transition: "background 0.1s ease",
-                    }}
-                    className="invoice-table-row"
-                  >
-                    <td style={{ padding: "14px 16px" }}>
-                      <div style={{ fontWeight: "600", color: "var(--text-primary)" }}>
-                        {inv.invoice_number || inv.file_name}
-                      </div>
-                      {inv.invoice_number && (
-                        <div style={{ fontSize: "11px", color: "var(--text-tertiary)", fontFamily: "monospace" }}>
-                          {inv.file_name}
-                        </div>
-                      )}
-                    </td>
+                {paginatedInvoices.map((inv) => {
+                  const isProcessing =
+                    inv.status === "PROCESSING" ||
+                    inv.status === "PENDING" ||
+                    inv.status === "PROCESSING_VLM" ||
+                    inv.status === "PROCESSING_ACCOUNTING" ||
+                    Boolean(processingMap[inv.id]);
 
-                    <td style={{ padding: "14px 16px", color: "var(--text-secondary)" }}>
-                      {inv.vendor_name || "—"}
-                    </td>
+                  const isNotProcessed = inv.status === "NOT_PROCESSED" || inv.status === "STAGED" || inv.status === "FAILED";
 
-                    <td style={{ padding: "14px 16px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                      {new Date(inv.created_at).toLocaleDateString(undefined, {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                      })}
-                    </td>
-
-                    <td
+                  return (
+                    <tr
+                      key={inv.id}
                       style={{
-                        padding: "14px 16px",
-                        textAlign: "right",
-                        fontFamily: "monospace",
-                        fontWeight: "600",
-                        color: "var(--text-primary)",
+                        borderBottom: "1px solid var(--border-subtle)",
+                        transition: "background 0.1s ease",
                       }}
+                      className="invoice-table-row"
                     >
-                      {typeof inv.total_amount === "number"
-                        ? `₹${inv.total_amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                        : "—"}
-                    </td>
+                      <td style={{ padding: "14px 16px" }}>
+                        <div style={{ fontWeight: "600", color: "var(--text-primary)" }}>
+                          {inv.invoice_number || inv.file_name}
+                        </div>
+                        {inv.invoice_number && (
+                          <div style={{ fontSize: "11px", color: "var(--text-tertiary)", fontFamily: "monospace" }}>
+                            {inv.file_name}
+                          </div>
+                        )}
+                      </td>
 
-                    <td style={{ padding: "14px 16px" }}>
-                      <span
-                        className={`badge ${
-                          inv.status === "COMPLETED"
-                            ? "badge-success"
-                            : inv.status === "FAILED"
-                            ? "badge-danger"
-                            : "badge-uploaded"
-                        }`}
-                        style={{ fontSize: "11px", fontWeight: "600" }}
-                      >
-                        {inv.status}
-                      </span>
-                    </td>
+                      <td style={{ padding: "14px 16px", color: "var(--text-secondary)" }}>
+                        {inv.vendor_name || "—"}
+                      </td>
 
-                    <td style={{ padding: "14px 16px", textAlign: "right" }}>
-                      <Link
-                        href={`/finance/invoices/${inv.id}`}
-                        className="btn btn-secondary"
+                      <td style={{ padding: "14px 16px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                        {new Date(inv.created_at).toLocaleDateString(undefined, {
+                          year: "numeric",
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </td>
+
+                      <td
                         style={{
-                          padding: "6px 12px",
-                          fontSize: "12px",
+                          padding: "14px 16px",
+                          textAlign: "right",
+                          fontFamily: "monospace",
                           fontWeight: "600",
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "4px",
+                          color: "var(--text-primary)",
                         }}
                       >
-                        <span>Open Workspace</span>
-                        <ExternalLink size={13} />
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
+                        {typeof inv.total_amount === "number"
+                          ? `₹${inv.total_amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : "—"}
+                      </td>
+
+                      <td style={{ padding: "14px 16px" }}>
+                        <span
+                          className={`badge ${
+                            inv.status === "COMPLETED"
+                              ? "badge-success"
+                              : isProcessing
+                              ? "badge-uploaded"
+                              : isNotProcessed
+                              ? "badge-secondary"
+                              : inv.status === "FAILED"
+                              ? "badge-danger"
+                              : "badge-uploaded"
+                          }`}
+                          style={{
+                            fontSize: "11px",
+                            fontWeight: "600",
+                            background: isNotProcessed ? "#f1f5f9" : undefined,
+                            color: isNotProcessed ? "#475569" : undefined,
+                            border: isNotProcessed ? "1px solid #cbd5e1" : undefined,
+                          }}
+                        >
+                          {isNotProcessed
+                            ? "NOT PROCESSED"
+                            : isProcessing
+                            ? "PROCESSING"
+                            : inv.status}
+                        </span>
+                      </td>
+
+                      <td style={{ padding: "14px 16px", textAlign: "right" }}>
+                        {isNotProcessed ? (
+                          <button
+                            type="button"
+                            onClick={() => handleProcessClick(inv.id)}
+                            disabled={Boolean(processingMap[inv.id])}
+                            className="btn btn-primary"
+                            style={{
+                              padding: "6px 14px",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                            }}
+                          >
+                            <Play size={12} fill="currentColor" />
+                            <span>Process</span>
+                          </button>
+                        ) : isProcessing ? (
+                          <button
+                            type="button"
+                            disabled
+                            className="btn btn-secondary"
+                            style={{
+                              padding: "6px 14px",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "5px",
+                              opacity: 0.6,
+                              cursor: "not-allowed",
+                            }}
+                          >
+                            <RefreshCw size={12} className="animate-spin" />
+                            <span>Process</span>
+                          </button>
+                        ) : (
+                          <Link
+                            href={`/finance/invoices/${inv.id}`}
+                            className="btn btn-secondary"
+                            style={{
+                              padding: "6px 12px",
+                              fontSize: "12px",
+                              fontWeight: "600",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                            }}
+                          >
+                            <span>Open Workspace</span>
+                            <ExternalLink size={13} />
+                          </Link>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
 

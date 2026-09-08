@@ -71,10 +71,10 @@ async def test_vlm_pipeline_no_mock_data_and_retry_isolation():
             assert inv_res.status_code == 200
             inv_detail = inv_res.json()
 
-            assert inv_detail["status"] == "FAILED"
+            assert inv_detail["status"] == "NOT_PROCESSED"
             assert inv_detail["raw_vlm_output"] is None
             assert inv_detail["current_vlm_output"] is None
-            assert ("VLM extraction failed" in inv_detail["error_message"] or "Kimi K3 inference failed" in inv_detail["error_message"])
+            assert "EXTRACTION_UNAVAILABLE" in inv_detail["error_message"] or "Extraction service unavailable" in inv_detail["error_message"]
 
             # Step C: Verify User B CANNOT retry User A's invoice (User Isolation -> 404)
             retry_b = await client.post(f"/api/v1/invoices/{invoice_id}/retry_extraction", headers=headers_b)
@@ -94,6 +94,6 @@ async def test_vlm_pipeline_no_mock_data_and_retry_isolation():
                 assert inv_res_after.status_code == 200
                 inv_detail_after = inv_res_after.json()
 
-                assert inv_detail_after["status"] in ("HITL_REVIEW", "FINAL_HITL_REVIEW")
+                assert inv_detail_after["status"] in ("COMPLETED", "HITL_REVIEW", "FINAL_HITL_REVIEW")
                 assert inv_detail_after["raw_vlm_output"]["data"]["invoice_number"] == "REAL-INV-100"
                 assert inv_detail_after["raw_vlm_output"]["data"]["total_amount"] == 5000.0

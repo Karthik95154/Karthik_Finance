@@ -472,6 +472,21 @@ export async function uploadInvoice(file: File): Promise<UploadResponse> {
   return res.json();
 }
 
+export async function processInvoice(id: string): Promise<InvoiceStatus> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/invoices/${id}/process`, {
+    method: "POST",
+    headers: authHeaders,
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Failed to trigger process for invoice ${id}`);
+  }
+
+  return res.json();
+}
+
 export async function getInvoiceStatus(id: string): Promise<InvoiceStatus> {
   const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${id}/status`, {

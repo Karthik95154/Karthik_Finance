@@ -218,19 +218,19 @@ async def upload_invoice(
 
 
 @router.post(
-    "/{invoice_id}/retry_extraction",
+    "/{invoice_id}/process",
     response_model=InvoiceStatusResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def retry_invoice_extraction(
+async def process_invoice_endpoint(
     invoice_id: uuid.UUID,
     background_tasks: BackgroundTasks,
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Retries VLM extraction on a failed or pending invoice using the original stored file binary.
-    Enforces strict user isolation (Invoice.user_id == current_user.id).
+    Directly triggers invoice extraction pipeline for an existing invoice using its original stored file.
+    Verifies user ownership, prevents duplicate processing if already processing, and updates status to PENDING.
     """
     user_filter = get_user_filter(current_user)
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
@@ -243,7 +243,14 @@ async def retry_invoice_extraction(
             detail=f"Invoice with ID {invoice_id} not found.",
         )
 
-    # Verify original file exists in storage before queueing retry
+    # Prevent duplicate processing if already running
+    if invoice.status in ("PROCESSING", "PENDING", "PROCESSING_VLM", "PROCESSING_ACCOUNTING"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invoice is already being processed.",
+        )
+
+    # Verify original stored file exists
     try:
         await storage_service.download_file(invoice.file_path)
     except Exception as e:
@@ -272,6 +279,24 @@ async def retry_invoice_extraction(
         created_at=invoice.created_at,
         updated_at=invoice.updated_at,
     )
+
+
+@router.post(
+    "/{invoice_id}/retry_extraction",
+    response_model=InvoiceStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_invoice_extraction(
+    invoice_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retries VLM extraction on a failed or pending invoice using the original stored file binary.
+    Enforces strict user isolation (Invoice.user_id == current_user.id).
+    """
+    return await process_invoice_endpoint(invoice_id, background_tasks, current_user, db)
 
 
 @router.post(

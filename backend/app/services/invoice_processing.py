@@ -476,20 +476,24 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             chart_of_accounts=cached_coa,
         )
     except Exception as vlm_err:
-        err_msg = f"Kimi K3 inference failed: {str(vlm_err)}"
-        logger.error(f"Invoice {invoice_id} extraction failed: {err_msg}")
+        err_msg = f"Extraction service unavailable / failed: {str(vlm_err)}"
+        logger.warning(
+            f"Invoice {invoice_id} extraction failed (Colab/AI unavailable). Setting status to NOT_PROCESSED. Reason: {err_msg}"
+        )
+
         async with AsyncSessionLocal() as session:
             try:
                 res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
                 inv = res.scalar_one_or_none()
                 if inv:
-                    inv.status = "FAILED"
-                    inv.accounting_status = "FAILED"
-                    inv.error_message = err_msg
+                    inv.status = "NOT_PROCESSED"
+                    inv.accounting_status = "NOT_PROCESSED"
+                    inv.error_message = f"[EXTRACTION_UNAVAILABLE] {err_msg}"
                     inv.updated_at = datetime.now(timezone.utc)
                     await session.commit()
+                    logger.info(f"Invoice {invoice_id} set to NOT_PROCESSED due to AI/Colab service unavailability.")
             except Exception as commit_err:
-                logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_err}")
+                logger.error(f"Failed to update status to NOT_PROCESSED for invoice {invoice_id}: {commit_err}")
         return
 
     # 4. Normalize Kimi response via KimiK3ResponseAdapter

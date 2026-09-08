@@ -25,9 +25,7 @@ class MasterDataService:
         if user_id:
             try:
                 user_uuid = uuid.UUID(str(user_id))
-                query = query.where(
-                    (ZohoConnection.user_id == user_uuid) | (ZohoConnection.user_id.is_(None))
-                )
+                query = query.where(ZohoConnection.user_id == user_uuid)
             except Exception:
                 pass
 

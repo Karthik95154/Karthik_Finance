@@ -769,14 +769,18 @@ export default function InvoiceWorkspace({
           }
         }
 
-        // Deep resolve Bank Details (parsing structured object or unparsed text)
+        // Deep resolve Bank Details across all backend response structures
         const bankObj: any = {
+          ...(typeof (vDet as any).bank_details === "object" ? (vDet as any).bank_details : {}),
+          ...(typeof (rawDataPayload as any).bank_details === "object" ? (rawDataPayload as any).bank_details : {}),
+          ...(typeof (currDataPayload as any).bank_details === "object" ? (currDataPayload as any).bank_details : {}),
           ...(typeof rawData.bank_details === "object" ? rawData.bank_details : {}),
           ...(typeof currData.bank_details === "object" ? currData.bank_details : {})
         };
         const addBank =
           (typeof (rawData.additional_fields as any)?.bank_details === "object" ? (rawData.additional_fields as any).bank_details : null) ||
-          (typeof (currData.additional_fields as any)?.bank_details === "object" ? (currData.additional_fields as any).bank_details : null);
+          (typeof (currData.additional_fields as any)?.bank_details === "object" ? (currData.additional_fields as any).bank_details : null) ||
+          (typeof (rawDataPayload as any)?.additional_fields?.bank_details === "object" ? (rawDataPayload as any).additional_fields.bank_details : null);
 
         if (addBank) {
           if (!bankObj.bank_name) bankObj.bank_name = addBank.bank_name || addBank.bank;
@@ -785,9 +789,20 @@ export default function InvoiceWorkspace({
           if (!bankObj.branch) bankObj.branch = addBank.branch || addBank.branch_name;
           if (!bankObj.branch_name) bankObj.branch_name = addBank.branch || addBank.branch_name;
           if (!bankObj.account_holder_name) bankObj.account_holder_name = addBank.account_holder_name || addBank.account_name;
+          if (!bankObj.upi_id) bankObj.upi_id = addBank.upi_id || addBank.vpa || addBank.upi;
         }
 
+        // Direct fallback to top-level or vDet flat bank fields
+        bankObj.bank_name = bankObj.bank_name || (vDet as any).bank_name || rawData.bank_name || currData.bank_name;
+        bankObj.account_number = bankObj.account_number || (vDet as any).account_number || (vDet as any).bank_account_number || rawData.account_number || currData.account_number;
+        bankObj.ifsc_code = bankObj.ifsc_code || (vDet as any).ifsc_code || (vDet as any).ifsc || rawData.ifsc_code || currData.ifsc_code;
+        bankObj.branch = bankObj.branch || (vDet as any).branch || rawData.branch || currData.branch;
+        bankObj.branch_name = bankObj.branch_name || bankObj.branch;
+        bankObj.upi_id = bankObj.upi_id || (vDet as any).upi_id || (vDet as any).vpa || rawData.upi_id || currData.upi_id;
+
         const unparsedBankText: string =
+          (typeof (vDet as any)?.bank_details === "string" ? (vDet as any).bank_details : "") ||
+          (typeof (rawDataPayload as any)?.vendor_details?.bank_details === "string" ? (rawDataPayload as any).vendor_details.bank_details : "") ||
           (typeof rawF.bank_details === "string" ? rawF.bank_details : "") ||
           (rawData.additional_fields as any)?.unparsed_bank_details ||
           (currData.additional_fields as any)?.unparsed_bank_details ||
@@ -797,28 +812,35 @@ export default function InvoiceWorkspace({
 
         if (unparsedBankText) {
           if (!bankObj.bank_name) {
-            const m = unparsedBankText.match(/Bank\s*(?:Name)?[:\s]*([^,\n|]+)/i);
+            const m = unparsedBankText.match(/Bank\s*Name[:\s]*([^,;\n|]+)/i) || unparsedBankText.match(/Bank[:\s]*([^,;\n|]+)/i);
             if (m) bankObj.bank_name = m[1].trim();
           }
-          if (!bankObj.branch_name || !bankObj.branch) {
-            const m = unparsedBankText.match(/Branch[:\s]*([^,\n|]+)/i) || unparsedBankText.match(/Bank:[^,]+,\s*([^,\n|]+)/i);
-            if (m) {
-              const val = m[1].trim();
-              bankObj.branch_name = val;
-              bankObj.branch = val;
-            }
+          if (!bankObj.account_holder_name) {
+            const m = unparsedBankText.match(/(?:Account\s*Name|Beneficiary\s*(?:Name)?|A\/C\s*Name)[:.\s]*([^,;\n|]+)/i);
+            if (m) bankObj.account_holder_name = m[1].trim();
           }
           if (!bankObj.account_number) {
-            const m = unparsedBankText.match(/(?:A\/C\s*No|Account\s*No|A\/c|Account(?:\s*No|\s*Number)?)[:.\s]*([0-9A-Za-z]+)/i);
-            if (m) bankObj.account_number = m[1].trim();
+            const m = unparsedBankText.match(/(?:Account\s*(?:No|Num|Number)|A\/C\s*(?:No|Num|Number)|A\/c\s*No)[:.\s]*([0-9A-Za-z]+)/i) || unparsedBankText.match(/(?:Account|A\/c|A\/C)[:.\s]*([0-9A-Za-z]+)/i);
+            if (m) {
+              const val = m[1].trim();
+              if (isNaN(Number(val)) && val.includes(" ")) {
+                // If it captured name text, ignore for account_number
+              } else {
+                bankObj.account_number = val;
+              }
+            }
           }
           if (!bankObj.ifsc_code) {
             const m = unparsedBankText.match(/IFSC\s*(?:Code)?[:.\s]*([A-Z]{4}0[A-Z0-9]{6})/i);
             if (m) bankObj.ifsc_code = m[1].trim();
           }
-          if (!bankObj.account_holder_name) {
-            const m = unparsedBankText.match(/Account\s*Name[:.\s]*([^,\n|]+)/i);
-            if (m) bankObj.account_holder_name = m[1].trim();
+          if (!bankObj.branch_name || !bankObj.branch) {
+            const m = unparsedBankText.match(/Branch[:\s]*([^,;\n|]+)/i) || unparsedBankText.match(/Bank:[^,;]+,\s*([^,;\n|]+)/i);
+            if (m) {
+              const val = m[1].trim();
+              bankObj.branch_name = val;
+              bankObj.branch = val;
+            }
           }
         }
         if (bankObj.branch_name && !bankObj.branch) bankObj.branch = bankObj.branch_name;
@@ -1683,10 +1705,63 @@ export default function InvoiceWorkspace({
         }
       }
 
+      const existingVlm = invoice?.current_vlm_output || invoice?.raw_vlm_output || {};
+      const existingData = (existingVlm as any)?.data || (existingVlm as any)?.prediction || existingVlm;
+
+      const existingVendor = existingData?.vendor_details || {};
+      const existingCustomer = existingData?.customer_details || {};
+      const existingFinancial = existingData?.financial_details || {};
+      const existingInvoiceDet = existingData?.invoice_details || {};
+
       const updatedVlmPayload: RawVlmOutput = {
-        ...(invoice?.current_vlm_output || invoice?.raw_vlm_output || {}),
+        ...existingVlm,
         data: {
+          ...existingData,
           ...formData,
+          vendor_details: {
+            ...existingVendor,
+            vendor_name: formData.vendor_name,
+            vendor_address: formData.vendor_address,
+            vendor_gstin: formData.vendor_gstin,
+            vendor_pan: formData.vendor_pan,
+            vendor_phone: formData.vendor_phone,
+            vendor_email: formData.vendor_email,
+            bank_details: formData.bank_details ?? existingVendor.bank_details,
+          },
+          customer_details: {
+            ...existingCustomer,
+            customer_name: formData.customer_name,
+            customer_address: formData.customer_address,
+            customer_gstin: formData.customer_gstin,
+            customer_pan: formData.customer_pan,
+            customer_phone: formData.customer_phone,
+            customer_email: formData.customer_email,
+          },
+          financial_details: {
+            ...existingFinancial,
+            subtotal: formData.subtotal,
+            discount_total: formData.discount_total,
+            taxable_amount: formData.taxable_amount,
+            tax_total: formData.tax_total,
+            cgst_amount: formData.cgst_amount,
+            sgst_amount: formData.sgst_amount,
+            igst_amount: formData.igst_amount,
+            cess_amount: formData.cess_amount,
+            shipping_charges: formData.shipping_charges,
+            other_charges: formData.other_charges,
+            total_amount: formData.total_amount,
+          },
+          invoice_details: {
+            ...existingInvoiceDet,
+            invoice_number: formData.invoice_number,
+            invoice_date: formData.invoice_date,
+            due_date: formData.due_date,
+            po_number: formData.po_number,
+            place_of_supply: formData.place_of_supply,
+            payment_terms: formData.payment_terms,
+            currency: formData.currency,
+          },
+          bank_details: formData.bank_details,
           additional_fields: parsedAdditional,
         },
       };
@@ -2110,8 +2185,36 @@ export default function InvoiceWorkspace({
       ? tdsResultRaw
       : defaultTdsResult;
 
+  const isVlmFailed = Boolean(invoice?.error_message?.startsWith("[VLM_FAILED]"));
+
   return (
     <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+      {/* VLM Extraction Failure Warning Banner */}
+      {isVlmFailed && (
+        <div
+          style={{
+            background: "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)",
+            border: "1.5px solid #f59e0b",
+            borderRadius: "10px",
+            padding: "14px 20px",
+            marginBottom: "16px",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: "12px",
+          }}
+        >
+          <span style={{ fontSize: "20px", lineHeight: "1" }}>⚠️</span>
+          <div>
+            <div style={{ fontWeight: "700", color: "#92400e", fontSize: "14px", marginBottom: "4px" }}>
+              AI Extraction Failed — Manual Review Required
+            </div>
+            <div style={{ fontSize: "13px", color: "#78350f", lineHeight: "1.5" }}>
+              The Kimi K3 AI model could not read this invoice (the Colab/ngrok tunnel may be down).
+              All fields are blank — please <strong>fill in the invoice details manually</strong>, then click <strong>Save Changes</strong> to continue the workflow.
+            </div>
+          </div>
+        </div>
+      )}
       {/* Top Header / Status bar */}
       <div
         style={{
@@ -3735,87 +3838,131 @@ export default function InvoiceWorkspace({
                 </section>
 
                 {/* 6. PAYMENT & BANK DETAILS */}
-                <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
-                    <CreditCard size={16} color="var(--text-secondary)" />
-                    <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      6. Payment & Bank Details
-                    </h3>
-                  </div>
+                {(() => {
+                  const bd = formData.bank_details;
+                  const hasBankDetails = Boolean(
+                    bd?.bank_name || bd?.account_number || bd?.ifsc_code || bd?.branch || bd?.upi_id || bd?.raw_text
+                  );
 
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
-                    <div>
-                      <label className="form-label">Payment Terms</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        value={formData.payment_terms ?? ""}
-                        placeholder="e.g. Net 30, Due on Receipt"
-                        onChange={(e) => handleFieldChange("payment_terms", e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="form-label">UPI ID / VPA</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        value={formData.bank_details?.upi_id ?? ""}
-                        placeholder="e.g. merchant@upi"
-                        onChange={(e) => handleBankChange("upi_id", e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="form-label">Account Holder Name</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        value={formData.bank_details?.account_holder_name ?? ""}
-                        placeholder="Beneficiary / Account Name"
-                        onChange={(e) => handleBankChange("account_holder_name", e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="form-label">Bank Name</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        value={formData.bank_details?.bank_name ?? ""}
-                        placeholder="Bank Name (e.g. HDFC, ICICI, SBI)"
-                        onChange={(e) => handleBankChange("bank_name", e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="form-label">Account Number</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        value={formData.bank_details?.account_number ?? ""}
-                        placeholder="Bank Account Number"
-                        onChange={(e) => handleBankChange("account_number", e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="form-label">IFSC Code</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        value={formData.bank_details?.ifsc_code ?? ""}
-                        placeholder="11-character IFSC Code"
-                        onChange={(e) => handleBankChange("ifsc_code", e.target.value)}
-                      />
-                    </div>
-                    <div style={{ gridColumn: "span 2" }}>
-                      <label className="form-label">Branch & Address</label>
-                      <input
-                        type="text"
-                        className="form-input"
-                        value={formData.bank_details?.branch ?? ""}
-                        placeholder="Branch Name / City"
-                        onChange={(e) => handleBankChange("branch", e.target.value)}
-                      />
-                    </div>
-                  </div>
-                </section>
+                  return (
+                    <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <CreditCard size={16} color={hasBankDetails ? "var(--text-secondary)" : "#dc2626"} />
+                          <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase", color: hasBankDetails ? "inherit" : "#dc2626" }}>
+                            6. Payment & Bank Details
+                          </h3>
+                        </div>
+                        {!hasBankDetails && (
+                          <span
+                            className="badge badge-danger"
+                            style={{
+                              fontSize: "10px",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "4px",
+                              background: "#fef2f2",
+                              color: "#dc2626",
+                              border: "1px solid #fecaca",
+                              fontWeight: "600",
+                            }}
+                          >
+                            <AlertCircle size={10} /> Bank Details Not Extracted
+                          </span>
+                        )}
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                        <div>
+                          <label className="form-label">Payment Terms</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={formData.payment_terms ?? ""}
+                            placeholder="e.g. Net 30, Due on Receipt"
+                            onChange={(e) => handleFieldChange("payment_terms", e.target.value)}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label">UPI ID / VPA</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={formData.bank_details?.upi_id ?? ""}
+                            placeholder="e.g. merchant@upi"
+                            onChange={(e) => handleBankChange("upi_id", e.target.value)}
+                            style={{ borderColor: !hasBankDetails ? "#fca5a5" : undefined }}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" style={{ color: !bd?.account_holder_name && !hasBankDetails ? "#dc2626" : undefined }}>
+                            Account Holder Name
+                          </label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={formData.bank_details?.account_holder_name ?? ""}
+                            placeholder="Beneficiary / Account Name"
+                            onChange={(e) => handleBankChange("account_holder_name", e.target.value)}
+                            style={{ borderColor: !bd?.account_holder_name && !hasBankDetails ? "#fca5a5" : undefined }}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" style={{ color: !bd?.bank_name && !hasBankDetails ? "#dc2626" : undefined }}>
+                            Bank Name
+                          </label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={formData.bank_details?.bank_name ?? ""}
+                            placeholder="Bank Name (e.g. HDFC, ICICI, SBI)"
+                            onChange={(e) => handleBankChange("bank_name", e.target.value)}
+                            style={{ borderColor: !bd?.bank_name && !hasBankDetails ? "#fca5a5" : undefined }}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" style={{ color: !bd?.account_number && !hasBankDetails ? "#dc2626" : undefined }}>
+                            Account Number
+                          </label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={formData.bank_details?.account_number ?? ""}
+                            placeholder="Bank Account Number"
+                            onChange={(e) => handleBankChange("account_number", e.target.value)}
+                            style={{ borderColor: !bd?.account_number && !hasBankDetails ? "#fca5a5" : undefined }}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" style={{ color: !bd?.ifsc_code && !hasBankDetails ? "#dc2626" : undefined }}>
+                            IFSC Code
+                          </label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={formData.bank_details?.ifsc_code ?? ""}
+                            placeholder="11-character IFSC Code"
+                            onChange={(e) => handleBankChange("ifsc_code", e.target.value)}
+                            style={{ borderColor: !bd?.ifsc_code && !hasBankDetails ? "#fca5a5" : undefined }}
+                          />
+                        </div>
+                        <div style={{ gridColumn: "span 2" }}>
+                          <label className="form-label" style={{ color: !bd?.branch && !hasBankDetails ? "#dc2626" : undefined }}>
+                            Branch & Address
+                          </label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            value={formData.bank_details?.branch ?? ""}
+                            placeholder="Branch Name / City"
+                            onChange={(e) => handleBankChange("branch", e.target.value)}
+                            style={{ borderColor: !bd?.branch && !hasBankDetails ? "#fca5a5" : undefined }}
+                          />
+                        </div>
+                      </div>
+                    </section>
+                  );
+                })()}
 
                 {/* 7. FINANCIAL TOTALS & TAX BREAKDOWN */}
                 <section id="section-financial-totals" style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px", borderRadius: "8px", padding: "12px", transition: "background-color 0.5s ease" }}>

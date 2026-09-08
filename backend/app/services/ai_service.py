@@ -118,12 +118,89 @@ class AIService:
         logger.info(f"Sending extraction request to Kimi K3 Colab ({endpoint}) with timeout={self.timeout}s")
 
         file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+
+        # ── TDS Analysis Instructions ─────────────────────────────────────────
+        # Injected into Colab payload so the model uses current statutory rules.
+        # The backend (tds_engine.py) always computes the final TDS amount —
+        # the model MUST NOT calculate or return a tds_amount.
+        TDS_INSTRUCTIONS = (
+            "## TDS / Withholding Tax Analysis\n\n"
+            "You are acting as a senior Indian chartered accountant.\n"
+            "Apply the Income-tax Act, 1961 as amended up to the transaction/event date visible on this invoice.\n"
+            "If the invoice date is on or after 01-Apr-2026, apply provisions of the Income-tax Act, 2025 "
+            "(effective 01-Apr-2026) where they differ from the 1961 Act (e.g., updated thresholds, merged sections).\n\n"
+
+            "### Your task — populate tds_support with EXACTLY these keys:\n\n"
+
+            "1. **tds_applicable_candidate** (boolean | null)\n"
+            "   - true  → the payment event described on this invoice is a prescribed TDS event under the applicable Act.\n"
+            "   - false → the payment is genuinely outside all TDS provisions after threshold analysis.\n"
+            "   - null  → insufficient information to determine (flag requires_backend_validation = true).\n"
+            "   - Cloud/SaaS/IaaS/PaaS invoices where the purchaser is an Indian entity: treat as fees for "
+            "technical services → tds_applicable_candidate = true unless a specific exemption applies.\n\n"
+
+            "2. **payment_nature** (string)\n"
+            "   Plain English description of what is being purchased, e.g.:\n"
+            "   'Cloud compute and storage services (IaaS)' | 'Software subscription (SaaS)' | "
+            "   'Professional consulting services' | 'Construction sub-contract' | 'Office rent'\n\n"
+
+            "3. **provision_candidate** (string | null)\n"
+            "   The exact section number and short title from the applicable Act, e.g.:\n"
+            "   '194J – Fees for professional or technical services' | '194C – Payment to contractors' | "
+            "   '194I – Rent' | '194H – Commission or brokerage' | '194Q – Purchase of goods'\n"
+            "   Return null only if tds_applicable_candidate is false or null.\n"
+            "   DO NOT default to '194J / 194C' as a combined fallback — choose the single most applicable section.\n\n"
+
+            "4. **law_version_candidate** (string)\n"
+            "   The Act version governing this invoice:\n"
+            "   'Income-tax Act, 1961' or 'Income-tax Act, 2025' based on the invoice date.\n\n"
+
+            "5. **rate_candidate** (number | null)\n"
+            "   The statutory TDS rate (%) for the identified section and entity type.\n"
+            "   Use the rate applicable on the invoice date.\n"
+            "   Examples: 2.0 for 194C (company), 1.0 for 194C (individual/HUF), 10.0 for 194J professional, "
+            "   2.0 for 194J technical, 10.0 for 194I, 5.0 for 194H, 0.1 for 194Q.\n"
+            "   If vendor PAN is missing or invalid → rate_candidate = 20.0 (Section 206AA).\n"
+            "   Return null only if tds_applicable_candidate is false or null.\n\n"
+
+            "6. **base_candidate** (number | null)\n"
+            "   The pre-tax amount (excluding GST) on which TDS is to be computed, as printed on the invoice.\n"
+            "   This is the taxable value / subtotal BEFORE GST — never include GST in the TDS base.\n"
+            "   Return null if the amount is not determinable from the document.\n\n"
+
+            "7. **threshold_status** (string)\n"
+            "   Whether the payment exceeds the annual threshold for the identified section:\n"
+            "   'EXCEEDS_THRESHOLD' | 'BELOW_THRESHOLD' | 'CUMULATIVE_CHECK_REQUIRED' | 'NOT_APPLICABLE'\n"
+            "   Use 'CUMULATIVE_CHECK_REQUIRED' when a single invoice looks below threshold but aggregate "
+            "   vendor payments may cross it.\n\n"
+
+            "8. **pan_status** (string)\n"
+            "   'VALID_PAN_PROVIDED' | 'PAN_MISSING' | 'PAN_INVALID_FORMAT' | 'PANNOTAVBL'\n"
+            "   Based on the vendor PAN visible on the document.\n\n"
+
+            "9. **requires_backend_validation** (boolean)\n"
+            "   Set true when cumulative vendor data (prior payments) is needed to confirm threshold breach.\n\n"
+
+            "10. **reason** (string)\n"
+            "    One or two sentences explaining your determination, citing the section and key facts.\n\n"
+
+            "### STRICT RULES:\n"
+            "- DO NOT output a tds_amount or calculated_tds_amount field — the backend engine computes the final amount.\n"
+            "- DO NOT combine two sections in provision_candidate (e.g., '194J / 194C' is forbidden).\n"
+            "- DO NOT fabricate a section. If genuinely uncertain between two sections, set "
+            "  provision_candidate to the more likely one and set requires_backend_validation = true.\n"
+            "- DO NOT apply TDS on the GST component — the base is always the pre-tax value.\n"
+            "- Honour the invoice date for law version selection; do not assume current date.\n"
+        )
+        # ─────────────────────────────────────────────────────────────────────
+
         payload = {
             "image_base64": file_b64,
             "file_base64": file_b64,
             "filename": filename,
             "content_type": content_type,
             "chart_of_accounts": chart_of_accounts or [],
+            "tds_instructions": TDS_INSTRUCTIONS,
         }
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:

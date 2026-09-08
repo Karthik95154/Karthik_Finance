@@ -295,35 +295,40 @@ class KimiK3ResponseAdapter:
         if not c_pan and c_gstin:
             c_pan = cls.extract_pan_from_gstin(c_gstin)
 
-        # Bank details parsing
-        raw_bank = vendor_details.get("bank_details")
+        # Bank details parsing: check all structural possibilities (vendor_details.bank_details, payment_details, root.bank_details, root.payment_details, or flat vendor/payment fields)
+        raw_bank = vendor_details.get("bank_details") or root.get("bank_details") or root.get("payment_details") or vendor_details.get("payment_details")
+        b_name, b_acc, b_ifsc, b_branch, b_upi = None, None, None, None, None
+
         if isinstance(raw_bank, dict):
+            b_name = cls._clean_optional_string(raw_bank.get("bank_name") or raw_bank.get("name") or raw_bank.get("bank"))
+            b_acc = cls._clean_optional_string(
+                raw_bank.get("account_number") or raw_bank.get("bank_account_number") or raw_bank.get("acc_no") or raw_bank.get("a_c_no") or raw_bank.get("account_no")
+            )
+            b_ifsc = cls._clean_optional_string(raw_bank.get("ifsc_code") or raw_bank.get("ifsc") or raw_bank.get("ifsc_code_candidate"))
+            b_branch = cls._clean_optional_string(raw_bank.get("branch") or raw_bank.get("branch_name") or raw_bank.get("branch_and_address"))
+            b_upi = cls._clean_optional_string(raw_bank.get("upi_id") or raw_bank.get("vpa") or raw_bank.get("upi"))
+
+        # Fallback to flat vendor_details or root keys if any key is missing
+        b_name = b_name or cls._clean_optional_string(vendor_details.get("bank_name") or root.get("bank_name") or invoice_details.get("bank_name"))
+        b_acc = b_acc or cls._clean_optional_string(
+            vendor_details.get("bank_account_number") or vendor_details.get("account_number") or root.get("bank_account_number") or root.get("account_number")
+        )
+        b_ifsc = b_ifsc or cls._clean_optional_string(vendor_details.get("ifsc_code") or vendor_details.get("ifsc") or root.get("ifsc_code") or root.get("ifsc"))
+        b_branch = b_branch or cls._clean_optional_string(vendor_details.get("branch") or root.get("branch"))
+        b_upi = b_upi or cls._clean_optional_string(vendor_details.get("upi_id") or vendor_details.get("vpa") or root.get("upi_id") or root.get("vpa"))
+
+        if b_name or b_acc or b_ifsc or b_branch or b_upi:
             bank_details = {
-                "bank_name": cls._clean_optional_string(raw_bank.get("bank_name")),
-                "account_number": cls._clean_optional_string(
-                    raw_bank.get("account_number") or raw_bank.get("bank_account_number")
-                ),
-                "ifsc_code": cls._clean_optional_string(raw_bank.get("ifsc_code")),
-                "branch": cls._clean_optional_string(raw_bank.get("branch")),
+                "bank_name": b_name,
+                "account_number": b_acc,
+                "ifsc_code": b_ifsc,
+                "branch": b_branch,
+                "upi_id": b_upi,
             }
         elif isinstance(raw_bank, str) and raw_bank.strip():
             bank_details = {"raw_text": raw_bank.strip()}
         else:
-            b_name = cls._clean_optional_string(vendor_details.get("bank_name"))
-            b_acc = cls._clean_optional_string(
-                vendor_details.get("bank_account_number") or vendor_details.get("account_number")
-            )
-            b_ifsc = cls._clean_optional_string(vendor_details.get("ifsc_code"))
-            b_branch = cls._clean_optional_string(vendor_details.get("branch"))
-            if b_name or b_acc or b_ifsc or b_branch:
-                bank_details = {
-                    "bank_name": b_name,
-                    "account_number": b_acc,
-                    "ifsc_code": b_ifsc,
-                    "branch": b_branch,
-                }
-            else:
-                bank_details = None
+            bank_details = None
 
         # ---------------------------------------------------------
         # 2. Active Zoho COA lookup
