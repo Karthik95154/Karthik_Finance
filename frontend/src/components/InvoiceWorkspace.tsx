@@ -2549,6 +2549,29 @@ export default function InvoiceWorkspace({
             </span>
           </button>
 
+          {/* Permanent Create COA Button */}
+          <button
+            type="button"
+            onClick={() => setShowCreateCoaModal(true)}
+            className="btn btn-secondary"
+            style={{
+              padding: "6px 14px",
+              fontSize: "12px",
+              fontWeight: "600",
+              background: "#f8fafc",
+              borderColor: "#cbd5e1",
+              color: "#2563eb",
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
+            }}
+            title="Create a new Chart of Account in Zoho Books anytime"
+          >
+            <Plus size={13} color="#2563eb" />
+            <span>+ Create COA</span>
+          </button>
+
           {/* Action Buttons: Reject, Approve, Export to Zoho (Internal Finance Only) */}
           {mode === "internal" && (
             <>
@@ -6548,7 +6571,19 @@ export default function InvoiceWorkspace({
                   <option value="other_current_asset">Other Current Asset</option>
                   <option value="other_current_liability">Other Current Liability</option>
                   <option value="other_expense">Other Expense</option>
+                  <option value="custom">Custom (Specify...)</option>
                 </select>
+
+                {createCoaFormData.account_type === "custom" && (
+                  <input
+                    type="text"
+                    className="table-input"
+                    style={{ width: "100%", padding: "8px 10px", fontSize: "13px", marginTop: "8px" }}
+                    value={(createCoaFormData as any).custom_account_type || ""}
+                    onChange={(e) => setCreateCoaFormData({ ...createCoaFormData, custom_account_type: e.target.value } as any)}
+                    placeholder="Enter custom Account Type (e.g. Income, Equity, Bank)"
+                  />
+                )}
               </div>
 
 
@@ -6571,9 +6606,13 @@ export default function InvoiceWorkspace({
                   try {
                     setIsCreatingCoa(true);
                     const { createZohoCOA, assignInvoiceCOA } = await import("@/lib/api");
+                    const finalType = createCoaFormData.account_type === "custom"
+                      ? ((createCoaFormData as any).custom_account_type || "").trim().toLowerCase().replace(/\s+/g, "_")
+                      : createCoaFormData.account_type;
+
                     const created = await createZohoCOA({
                       account_name: createCoaFormData.account_name.trim(),
-                      account_type: createCoaFormData.account_type,
+                      account_type: finalType || "expense",
                     });
                     const newId = created.chart_of_account?.zoho_account_id;
                     if (!newId && created.status !== "EXISTS") throw new Error("No Zoho Account ID returned from server.");
