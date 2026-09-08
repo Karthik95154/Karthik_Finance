@@ -109,6 +109,27 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
             if (it.get("discount_type") is None) and it_rf.get("discount_type"):
                 it["discount_type"] = it_rf.get("discount_type")
 
+            if (it.get("cgst_amount") is None) and it_rf.get("cgst_amount") is not None:
+                try:
+                    it["cgst_amount"] = float(str(it_rf.get("cgst_amount")).replace(",", ""))
+                except Exception:
+                    pass
+            if (it.get("sgst_amount") is None) and it_rf.get("sgst_amount") is not None:
+                try:
+                    it["sgst_amount"] = float(str(it_rf.get("sgst_amount")).replace(",", ""))
+                except Exception:
+                    pass
+            if (it.get("igst_amount") is None) and it_rf.get("igst_amount") is not None:
+                try:
+                    it["igst_amount"] = float(str(it_rf.get("igst_amount")).replace(",", ""))
+                except Exception:
+                    pass
+            if (it.get("cess_amount") is None) and it_rf.get("cess_amount") is not None:
+                try:
+                    it["cess_amount"] = float(str(it_rf.get("cess_amount")).replace(",", ""))
+                except Exception:
+                    pass
+
         # Fallback to hsn_sac_code if canonical hsn_code is missing
         if not it.get("hsn_code") and it.get("hsn_sac_code"):
             it["hsn_code"] = str(it.get("hsn_sac_code")).strip()

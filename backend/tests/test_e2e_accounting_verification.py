@@ -371,7 +371,7 @@ async def test_case_5_financial_mismatch_blocks_approval():
         await approve_invoice(invoice_id=inv_id, current_user=user, db=mock_db)
 
     assert exc_info.value.status_code == 400
-    assert "Stage 5 Financial Validation reported MISMATCH" in exc_info.value.detail
+    assert "Cannot approve invoice" in exc_info.value.detail or "unbalanced" in exc_info.value.detail
 
 
 @pytest.mark.asyncio

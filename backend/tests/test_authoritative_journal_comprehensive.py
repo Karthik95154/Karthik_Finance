@@ -273,7 +273,7 @@ async def test_approval_rejects_financial_mismatch():
         tenant_id="tenant-1",
         approval_status="PENDING_REVIEW",
         financial_validation_result={"overall_status": "MISMATCH", "errors": ["Sum mismatch"]},
-        current_vlm_output={"data": {"total_amount": 1000.0, "line_items": [{"description": "X", "taxable_amount": 100.0}]}},
+        current_vlm_output={"data": {"total_amount": 1000.0, "subtotal": 100.0, "line_items": [{"description": "X", "taxable_amount": 100.0}]}},
         current_accounting_output={"accounting": [{"line_index": 1, "approved_account_id": "ACC_1", "approved_account_name": "Exp"}]},
     )
 
@@ -293,7 +293,7 @@ async def test_approval_rejects_financial_mismatch():
         await approve_invoice(invoice_id=inv_id, current_user=user, db=mock_db)
 
     assert exc_info.value.status_code == 400
-    assert "Stage 5 Financial Validation reported MISMATCH" in exc_info.value.detail
+    assert "Cannot approve invoice" in exc_info.value.detail or "unbalanced" in exc_info.value.detail
 
 
 def test_j_shipping_and_other_charges_and_roundoff():

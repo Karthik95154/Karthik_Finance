@@ -370,26 +370,6 @@ class MasterDataService:
 
         norm_name = "".join(e for e in account_name.lower() if e.isalnum())
 
-        # Pre-creation duplicate check against local synced cache
-        query_dup = select(ChartOfAccount).where(
-            ChartOfAccount.tenant_id == tenant_id,
-            ChartOfAccount.organization_id == org_id,
-        )
-        res_dup = await db.execute(query_dup)
-        for existing in res_dup.scalars().all():
-            if "".join(e for e in (existing.account_name or "").lower() if e.isalnum()) == norm_name:
-                logger.info(f"Duplicate check hit: Account '{existing.account_name}' already exists in organization {org_id}.")
-                return {
-                    "status": "EXISTS",
-                    "message": f"Chart of Account '{existing.account_name}' already exists in Zoho.",
-                    "chart_of_account": {
-                        "zoho_account_id": existing.zoho_account_id,
-                        "account_name": existing.account_name,
-                        "account_type": existing.account_type,
-                        "account_code": existing.account_code,
-                    },
-                }
-
         connection = await self.get_or_create_zoho_connection(tenant_id, db)
         if connection.status != "CONNECTED":
             raise ValueError("Zoho connection is not active. Please connect Zoho Books first.")

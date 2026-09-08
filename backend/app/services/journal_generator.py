@@ -289,7 +289,7 @@ class JournalGenerator:
                     )
                 elif ai_acc_id and ai_acc_name:
                     account_id = ai_acc_id
-                    account_name = str(ai_acc_name).replace("[Unapproved] ", "").strip()
+                    account_name = f"[Unapproved] {str(ai_acc_name).replace('[Unapproved] ', '').strip()}"
                     provenance = acc_info.get("provenance") or "AI_PREDICTED"
                 elif ai_acc_id:
                     account_id = ai_acc_id
@@ -943,7 +943,7 @@ class JournalGenerator:
                 "line_number": idx,
                 "account_id": acc_id_alias,
                 "account_name": line.get("account_name"),
-                "is_approved": line.get("provenance") == "HITL_OVERRIDE" or ("[Unapproved]" not in line.get("account_name", "")),
+                "is_approved": line.get("provenance") == "HITL_OVERRIDE" or ("approved_account_id" in line and bool(line.get("approved_account_id"))) or (line.get("account_name") and "[Unapproved]" not in line.get("account_name", "")),
                 "line_type": line_type,
                 "amount": amt,
                 "debit": line.get("debit", 0.0),

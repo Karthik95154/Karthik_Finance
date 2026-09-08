@@ -70,7 +70,7 @@ export default function SignUpPage() {
           localStorage.setItem("user_info", JSON.stringify(data.user));
         }
       }
-      window.location.href = "/dashboard";
+      router.push("/dashboard");
     } catch (err: any) {
       setError(err.message || "Network error during account creation.");
       setIsLoading(false);

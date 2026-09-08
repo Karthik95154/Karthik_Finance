@@ -1480,7 +1480,14 @@ export default function InvoiceWorkspace({
     computedIgst = Math.round(computedIgst * 100) / 100;
     computedCess = Math.round(computedCess * 100) / 100;
     const computedTaxTotal = Math.round((computedCgst + computedSgst + computedIgst + computedCess) * 100) / 100;
-    const computedTotalAmount = Math.round((computedSubtotal + computedTaxTotal) * 100) / 100;
+    const roundOff = typeof formData.round_off === "number" ? formData.round_off : parseFloat(String(formData.round_off || "0")) || 0;
+    const shipping = typeof formData.shipping_charges === "number" ? formData.shipping_charges : parseFloat(String(formData.shipping_charges || "0")) || 0;
+    const other = typeof formData.other_charges === "number" ? formData.other_charges : parseFloat(String(formData.other_charges || "0")) || 0;
+    const discount = typeof formData.discount_total === "number" ? formData.discount_total : parseFloat(String(formData.discount_total || "0")) || 0;
+    
+    // Total Amount = Subtotal - Discount + Tax + Shipping + Other + RoundOff
+    const rawTotal = computedSubtotal - discount + computedTaxTotal + shipping + other + roundOff;
+    const computedTotalAmount = Math.round(rawTotal * 100) / 100;
 
     // 2. Update formData
     setFormData((prev) => ({
@@ -1631,6 +1638,20 @@ export default function InvoiceWorkspace({
       });
     }
 
+    // Round Off Adjustment Line (Debit if positive, Credit if negative)
+    if (roundOff !== 0) {
+      newJournalLines.push({
+        account_id: "ACC_ROUNDING",
+        account_name: "Rounding Off / Adjustment",
+        line_type: "ROUNDING",
+        debit: roundOff > 0 ? roundOff : 0,
+        credit: roundOff < 0 ? Math.abs(roundOff) : 0,
+        source_line_index: null,
+        description: `Round Off adjustment (₹${roundOff})`,
+        provenance: "DETERMINISTIC",
+      });
+    }
+
     // Accounts Payable Credit
     const vendorName = formData.vendor_name || "Vendor";
     newJournalLines.push({
@@ -1761,6 +1782,7 @@ export default function InvoiceWorkspace({
             payment_terms: formData.payment_terms,
             currency: formData.currency,
           },
+          line_items: formData.line_items || [],
           bank_details: formData.bank_details,
           additional_fields: parsedAdditional,
         },
@@ -2030,14 +2052,18 @@ export default function InvoiceWorkspace({
       );
     }
     if (financialValidationResult?.overall_status === "MISMATCH") {
-      hardBlocks.push("Financial validation reported mathematical discrepancies.");
+      if (financialValidationResult.errors && financialValidationResult.errors.length > 0) {
+        financialValidationResult.errors.forEach((err) => hardBlocks.push(err));
+      } else {
+        hardBlocks.push("Financial validation reported mathematical / line-item discrepancies.");
+      }
     }
     if (!formData.invoice_number?.trim()) {
       hardBlocks.push("Invoice number is mandatory.");
     }
 
     if (hardBlocks.length > 0) {
-      setError(`Cannot Approve: ${hardBlocks.join(" ")} Please correct invoice line items or totals.`);
+      setError(hardBlocks.join("\n"));
       return;
     }
 
@@ -2189,6 +2215,189 @@ export default function InvoiceWorkspace({
 
   return (
     <div style={{ maxWidth: "1600px", margin: "0 auto", padding: "16px 24px 60px" }}>
+      {/* Error Popup Modal */}
+      {error && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            width: "100vw",
+            height: "100vh",
+            backgroundColor: "rgba(15, 23, 42, 0.55)",
+            backdropFilter: "blur(4px)",
+            zIndex: 99999,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "14px",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.1)",
+              maxWidth: "520px",
+              width: "100%",
+              overflow: "hidden",
+              border: "1px solid #fee2e2",
+              animation: "fadeIn 0.2s ease-out",
+            }}
+          >
+            {/* Header */}
+            <div
+              style={{
+                background: "#fef2f2",
+                padding: "16px 20px",
+                borderBottom: "1px solid #fecaca",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <div
+                  style={{
+                    width: "34px",
+                    height: "34px",
+                    borderRadius: "50%",
+                    background: "#fee2e2",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "#dc2626",
+                    fontWeight: "bold",
+                    fontSize: "16px",
+                    flexShrink: 0,
+                  }}
+                >
+                  !
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: "15px", fontWeight: "700", color: "#991b1b" }}>
+                    Action Blocked
+                  </h3>
+                  <div style={{ fontSize: "12px", color: "#b91c1c", fontWeight: "500" }}>
+                    {(() => {
+                      const items = error
+                        .split(/\n+/)
+                        .map((s) => s.trim())
+                        .filter(Boolean);
+                      return `${items.length} issue${items.length > 1 ? "s" : ""} found requiring attention`;
+                    })()}
+                  </div>
+                </div>
+              </div>
+              <span
+                style={{
+                  background: "#dc2626",
+                  color: "#ffffff",
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  padding: "3px 9px",
+                  borderRadius: "12px",
+                }}
+              >
+                {(() => {
+                  const items = error
+                    .split(/\n+/)
+                    .map((s) => s.trim())
+                    .filter(Boolean);
+                  return `${items.length} Error${items.length > 1 ? "s" : ""}`;
+                })()}
+              </span>
+            </div>
+
+            {/* Content Body */}
+            <div style={{ padding: "20px", fontSize: "13.5px", color: "#374151", lineHeight: "1.6", maxHeight: "350px", overflowY: "auto" }}>
+              <div style={{ marginBottom: "10px", fontWeight: "600", color: "#1f2937" }}>
+                The following error(s) must be resolved:
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                {error
+                  .split(/\n+/)
+                  .map((s) => s.trim())
+                  .filter(Boolean)
+                  .map((item, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: "8px",
+                        background: "#fff5f5",
+                        border: "1px solid #fed7d7",
+                        borderRadius: "8px",
+                        padding: "10px 12px",
+                        fontSize: "13px",
+                        color: "#9b2c2c",
+                      }}
+                    >
+                      <span style={{ fontWeight: "700", minWidth: "18px" }}>{idx + 1}.</span>
+                      <span>{item}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+
+            {/* Footer with OK button and Human Confirmation Override */}
+            <div
+              style={{
+                padding: "14px 20px",
+                background: "#f9fafb",
+                borderTop: "1px solid #f3f4f6",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: "12px",
+              }}
+            >
+              <button
+                type="button"
+                onClick={async () => {
+                  setError(null);
+                  await executeBackendApproval();
+                }}
+                className="btn btn-secondary"
+                style={{
+                  padding: "8px 16px",
+                  fontSize: "12.5px",
+                  fontWeight: "600",
+                  color: "#d97706",
+                  borderColor: "#fde68a",
+                  background: "#fffbeb",
+                  cursor: "pointer",
+                }}
+              >
+                ⚠ Confirm & Accept Discrepancy
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setError(null)}
+                className="btn btn-primary"
+                style={{
+                  padding: "8px 24px",
+                  fontSize: "13px",
+                  fontWeight: "600",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: "6px",
+                  background: "#16a34a",
+                  borderColor: "#16a34a",
+                  borderRadius: "8px",
+                  color: "#ffffff",
+                  cursor: "pointer",
+                }}
+              >
+                <Check size={16} />
+                <span>OK</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* VLM Extraction Failure Warning Banner */}
       {isVlmFailed && (
         <div
@@ -2431,9 +2640,16 @@ export default function InvoiceWorkspace({
               if (!isMismatch) return null;
 
               const failedChecks = (financialValidationResult?.checks || []).filter(
-                (c: any) => c.status === "MISMATCH" || c.status === "FAILED"
+                (c: any) =>
+                  (c.status === "MISMATCH" || c.status === "FAILED") &&
+                  Math.abs(Number(c.difference || 0)) >= 0.01
               );
               const errorsList = financialValidationResult?.errors || [];
+
+              const hasRealMismatch = failedChecks.length > 0 || (errorsList.length > 0 && isMismatch);
+
+              // Only show this message banner if there are actual failed checks with difference >= 0.01
+              if (!hasRealMismatch) return null;
 
               return (
                 <div
@@ -2457,60 +2673,9 @@ export default function InvoiceWorkspace({
                           The following extracted invoice fields do not reconcile with calculated values:
                         </div>
 
-                        {/* List of failed checks showing where and what is incorrect */}
-                        <div style={{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
-                          {failedChecks.length > 0 ? (
-                            failedChecks.map((chk: any, idx: number) => (
-                              <div
-                                key={idx}
-                                style={{
-                                  fontSize: "12px",
-                                  backgroundColor: "#ffffff",
-                                  border: "1px solid #fca5a5",
-                                  padding: "6px 10px",
-                                  borderRadius: "6px",
-                                  color: "#7f1d1d",
-                                }}
-                              >
-                                <strong>Location / Field:</strong> {chk.field || chk.type || chk.name || "Invoice Line / Total"}
-                                {chk.invoice_value !== undefined && chk.calculated_value !== undefined && (
-                                  <span style={{ marginLeft: "8px" }}>
-                                    (Extracted: <strong>₹{Number(chk.invoice_value).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> vs Calculated: <strong>₹{Number(chk.calculated_value).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> | Diff: <strong style={{ color: "#dc2626" }}>₹{Number(chk.difference || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>)
-                                  </span>
-                                )}
-                                {chk.message && <div style={{ fontSize: "11px", color: "#991b1b", marginTop: "2px" }}>{chk.message}</div>}
-                              </div>
-                            ))
-                          ) : errorsList.length > 0 ? (
-                            errorsList.map((err: string, idx: number) => (
-                              <div
-                                key={idx}
-                                style={{
-                                  fontSize: "12px",
-                                  backgroundColor: "#ffffff",
-                                  border: "1px solid #fca5a5",
-                                  padding: "6px 10px",
-                                  borderRadius: "6px",
-                                  color: "#7f1d1d",
-                                }}
-                              >
-                                • {err}
-                              </div>
-                            ))
-                          ) : (
-                            <div
-                              style={{
-                                fontSize: "12px",
-                                backgroundColor: "#ffffff",
-                                border: "1px solid #fca5a5",
-                                padding: "6px 10px",
-                                borderRadius: "6px",
-                                color: "#7f1d1d",
-                              }}
-                            >
-                              • Extracted line item subtotals or tax values do not balance with the invoice total amount.
-                            </div>
-                          )}
+                        {/* Concise banner summary message */}
+                        <div style={{ marginTop: "6px", fontSize: "12.5px", color: "#7f1d1d" }}>
+                          Line-item GST components or totals do not reconcile with extracted header amounts. Click <strong>View Math Details</strong> to review the exact breakdown.
                         </div>
                       </div>
                     </div>
@@ -3148,59 +3313,6 @@ export default function InvoiceWorkspace({
                         placeholder="Full registered address"
                         onChange={(e) => handleFieldChange("vendor_address", e.target.value)}
                       />
-                    </div>
-
-                    {/* Vendor Bank Details Sub-block */}
-                    <div style={{ gridColumn: "span 2", background: "#f8fafc", padding: "10px 12px", borderRadius: "6px", border: "1px solid #e2e8f0", marginTop: "4px" }}>
-                      <div style={{ fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "8px" }}>
-                        🏦 Vendor Bank Account Details
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
-                        <div>
-                          <label className="form-label" style={{ fontSize: "11px" }}>Bank Name</label>
-                          <input
-                            type="text"
-                            className="form-input"
-                            style={{ fontSize: "11.5px" }}
-                            value={formData.bank_details?.bank_name ?? ""}
-                            placeholder="e.g. HDFC Bank"
-                            onChange={(e) => handleFieldChange("bank_details", { ...(formData.bank_details || {}), bank_name: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="form-label" style={{ fontSize: "11px" }}>Account Number</label>
-                          <input
-                            type="text"
-                            className="form-input"
-                            style={{ fontSize: "11.5px" }}
-                            value={formData.bank_details?.account_number ?? ""}
-                            placeholder="Account Number"
-                            onChange={(e) => handleFieldChange("bank_details", { ...(formData.bank_details || {}), account_number: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="form-label" style={{ fontSize: "11px" }}>IFSC Code</label>
-                          <input
-                            type="text"
-                            className="form-input"
-                            style={{ fontSize: "11.5px" }}
-                            value={formData.bank_details?.ifsc_code ?? ""}
-                            placeholder="IFSC Code"
-                            onChange={(e) => handleFieldChange("bank_details", { ...(formData.bank_details || {}), ifsc_code: e.target.value })}
-                          />
-                        </div>
-                        <div>
-                          <label className="form-label" style={{ fontSize: "11px" }}>Branch</label>
-                          <input
-                            type="text"
-                            className="form-input"
-                            style={{ fontSize: "11.5px" }}
-                            value={formData.bank_details?.branch ?? ""}
-                            placeholder="Branch Name"
-                            onChange={(e) => handleFieldChange("bank_details", { ...(formData.bank_details || {}), branch: e.target.value })}
-                          />
-                        </div>
-                      </div>
                     </div>
                   </div>
                 </section>
@@ -4180,19 +4292,7 @@ export default function InvoiceWorkspace({
                   )}
                 </section>
 
-                {/* 7.5. ADDITIONAL EXTRACTED DETAILS & UNMAPPED METADATA */}
-                {formData.additional_fields && Object.keys(formData.additional_fields).length > 0 && (
-                  <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                    <details style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
-                      <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: "13px", color: "#334155" }}>
-                        🔍 Additional Extracted AI Metadata ({Object.keys(formData.additional_fields).length} extra fields)
-                      </summary>
-                      <pre style={{ marginTop: "10px", fontSize: "11px", background: "#ffffff", padding: "10px", borderRadius: "6px", border: "1px solid #cbd5e1", overflowX: "auto" }}>
-                        {JSON.stringify(formData.additional_fields, null, 2)}
-                      </pre>
-                    </details>
-                  </section>
-                )}
+
 
                 {/* 8. STATUTORY TDS ASSESSMENT */}
                 {tdsResult && (
@@ -5530,27 +5630,6 @@ export default function InvoiceWorkspace({
                   </section>
                 )}
 
-                {/* 13. ADDITIONAL EXTRACTED INFORMATION (ZERO DATA LOSS) */}
-                <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "8px" }}>
-                    <Layers size={16} color="var(--text-secondary)" />
-                    <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
-                      13. Additional Extracted Information
-                    </h3>
-                  </div>
-                  <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "10px" }}>
-                    Preserves non-standard or unmapped fields extracted by AI pipeline (Zero Data Loss).
-                  </p>
-
-                  <textarea
-                    className="form-input"
-                    rows={4}
-                    style={{ fontFamily: "monospace", fontSize: "12px" }}
-                    value={additionalFieldsText}
-                    placeholder="{}"
-                    onChange={(e) => setAdditionalFieldsText(e.target.value)}
-                  />
-                </section>
 
                 {/* 12. SAVE CHANGES (WORKING BUTTON) */}
                 <section
@@ -6422,33 +6501,7 @@ export default function InvoiceWorkspace({
                 </select>
               </div>
 
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
-                  Account Code (Optional)
-                </label>
-                <input
-                  type="text"
-                  className="table-input"
-                  style={{ width: "100%", padding: "8px 10px", fontSize: "13px" }}
-                  value={createCoaFormData.account_code}
-                  onChange={(e) => setCreateCoaFormData({ ...createCoaFormData, account_code: e.target.value })}
-                  placeholder="e.g. 5010"
-                />
-              </div>
 
-              <div>
-                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
-                  Description (Optional)
-                </label>
-                <textarea
-                  className="table-input"
-                  rows={2}
-                  style={{ width: "100%", padding: "8px 10px", fontSize: "13px", resize: "none" }}
-                  value={createCoaFormData.description}
-                  onChange={(e) => setCreateCoaFormData({ ...createCoaFormData, description: e.target.value })}
-                  placeholder="Account description..."
-                />
-              </div>
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "20px" }}>
@@ -6471,22 +6524,19 @@ export default function InvoiceWorkspace({
                     const created = await createZohoCOA({
                       account_name: createCoaFormData.account_name.trim(),
                       account_type: createCoaFormData.account_type,
-                      account_code: createCoaFormData.account_code.trim() || undefined,
-                      description: createCoaFormData.description.trim() || undefined,
                     });
                     const newId = created.chart_of_account?.zoho_account_id;
-                    if (!newId) throw new Error("No Zoho Account ID returned from server.");
-                    const res = await assignInvoiceCOA(invoiceId, {
-                      zoho_account_id: newId,
-                      account_name: created.chart_of_account?.account_name || createCoaFormData.account_name,
-                      account_type: createCoaFormData.account_type,
-                      account_code: createCoaFormData.account_code || undefined,
-                    });
-                    setInvoice(res);
-                    if (res.current_accounting_output) setAccountingData(res.current_accounting_output);
-                    getZohoMasterData().then((m) => setZohoAccounts(m.accounts || [])).catch(() => null);
+                    if (!newId && created.status !== "EXISTS") throw new Error("No Zoho Account ID returned from server.");
+                    
+                    // Refresh COA list so the new account is immediately available everywhere
+                    const masterData = await getZohoMasterData();
+                    if (masterData.accounts) {
+                      setZohoAccounts(masterData.accounts);
+                    }
+                    
                     setShowCreateCoaModal(false);
-                    setActionNotice(`✓ Created & persisted new Zoho COA '${createCoaFormData.account_name}'!`);
+                    setCreateCoaFormData({ account_name: "", account_type: "expense", account_code: "", description: "" });
+                    setActionNotice(`✓ Successfully created Chart of Account '${created.chart_of_account?.account_name || createCoaFormData.account_name}' in Zoho Books!`);
                     setTimeout(() => setActionNotice(null), 4000);
                   } catch (err: any) {
                     setError(err.message || "Failed to create/assign COA.");
@@ -6554,34 +6604,65 @@ export default function InvoiceWorkspace({
               Extracted invoice values do not mathematically reconcile. Please review the comparison below against the original invoice document.
             </p>
 
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", color: "var(--text-primary)" }}>
-                <thead>
-                  <tr style={{ background: "rgba(239, 68, 68, 0.1)", textAlign: "left", borderBottom: "1px solid rgba(239, 68, 68, 0.2)" }}>
-                    <th style={{ padding: "8px 10px" }}>Check Type</th>
-                    <th style={{ padding: "8px 10px" }}>Field / Location</th>
-                    <th style={{ padding: "8px 10px" }}>Extracted</th>
-                    <th style={{ padding: "8px 10px" }}>Calculated</th>
-                    <th style={{ padding: "8px 10px" }}>Difference</th>
-                    <th style={{ padding: "8px 10px" }}>Explanation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(financialValidationResult?.checks || []).map((chk: any, cIdx: number) => {
-                    if (chk.status !== "MISMATCH" && chk.status !== "FAILED") return null;
-                    return (
-                      <tr key={cIdx} style={{ borderBottom: "1px solid #f1f5f9" }}>
-                        <td style={{ padding: "8px 10px", fontWeight: "600", color: "#ef4444" }}>{chk.type || chk.name || "CHECK"}</td>
-                        <td style={{ padding: "8px 10px" }}>{chk.field || "Header/Line"}</td>
-                        <td style={{ padding: "8px 10px" }}>₹{Number(chk.invoice_value ?? chk.source_value ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
-                        <td style={{ padding: "8px 10px" }}>₹{Number(chk.calculated_value ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
-                        <td style={{ padding: "8px 10px", fontWeight: "700", color: "#ef4444" }}>₹{Number(chk.difference ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
-                        <td style={{ padding: "8px 10px", fontSize: "11px", color: "var(--text-secondary)" }}>{chk.message || chk.note || "Calculated equation does not reconcile with extracted value."}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div style={{ marginTop: "10px", display: "flex", flexDirection: "column", gap: "8px" }}>
+              {(() => {
+                const errorsList = financialValidationResult?.errors || [];
+                const failedChecks = (financialValidationResult?.checks || []).filter(
+                  (c: any) =>
+                    (c.status === "MISMATCH" || c.status === "FAILED") &&
+                    Math.abs(Number(c.difference || 0)) >= 0.01
+                );
+
+                if (errorsList.length > 0) {
+                  return errorsList.map((err: string, idx: number) => (
+                    <div
+                      key={idx}
+                      style={{
+                        fontSize: "12.5px",
+                        backgroundColor: "#fef2f2",
+                        border: "1px solid #fca5a5",
+                        padding: "10px 14px",
+                        borderRadius: "8px",
+                        color: "#7f1d1d",
+                        lineHeight: "1.5",
+                      }}
+                    >
+                      • {err}
+                    </div>
+                  ));
+                } else if (failedChecks.length > 0) {
+                  return failedChecks.map((chk: any, idx: number) => (
+                    <div
+                      key={idx}
+                      style={{
+                        fontSize: "12.5px",
+                        backgroundColor: "#fef2f2",
+                        border: "1px solid #fca5a5",
+                        padding: "10px 14px",
+                        borderRadius: "8px",
+                        color: "#7f1d1d",
+                        lineHeight: "1.5",
+                      }}
+                    >
+                      • {chk.message || `${chk.name || "Check"}: ${chk.issue || "Mismatch detected"}`}
+                    </div>
+                  ));
+                }
+                return (
+                  <div
+                    style={{
+                      fontSize: "12.5px",
+                      backgroundColor: "#fef2f2",
+                      border: "1px solid #fca5a5",
+                      padding: "10px 14px",
+                      borderRadius: "8px",
+                      color: "#7f1d1d",
+                    }}
+                  >
+                    • Extracted line item subtotals or tax values do not balance with the invoice total amount.
+                  </div>
+                );
+              })()}
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>

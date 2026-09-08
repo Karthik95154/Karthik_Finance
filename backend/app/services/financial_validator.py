@@ -1008,6 +1008,7 @@ class FinancialValidator:
                     "type": "TAX",
                     "description": "Reconciliation of line-level GST components vs header tax components",
                     "status": "MISMATCH",
+                    "difference": max(diff_cgst if 'diff_cgst' in locals() else 0.0, diff_sgst if 'diff_sgst' in locals() else 0.0, diff_tot_tax if 'diff_tot_tax' in locals() else 0.0),
                     "details": recon_details,
                     "mismatches": recon_mismatches,
                 })
