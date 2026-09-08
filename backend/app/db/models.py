@@ -48,6 +48,7 @@ class User(Base):
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     email = Column(String(255), nullable=False, unique=True, index=True)
+    hashed_password = Column(String(255), nullable=True)
     full_name = Column(String(255), nullable=True)
     role = Column(String(50), nullable=False, default="FINANCE")  # ADMIN, FINANCE, VIEWER
     is_active = Column(Boolean, nullable=False, default=True)

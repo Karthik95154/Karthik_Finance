@@ -120,34 +120,21 @@ class Settings(BaseSettings):
     ZOHO_BOOKS_API_BASE_URL: str = "https://www.zohoapis.in/books/v3"
 
     # Colab / AI Inference Endpoints
-    # Primary variables with backward-compatible fallbacks
-    QWEN_VL_SERVICE_URL: str = ""
-    QWEN_COA_SERVICE_URL: str = ""
-    QWEN_TDS_SERVICE_URL: str = ""
-
-    # Legacy variables
-    COLAB_API_URL: str = "https://physiognomically-sane-dexter.ngrok-free.dev"
-    COLAB_ACCOUNTING_API_URL: str = "https://parcel-curtsy-retiring.ngrok-free.dev"
-    COLAB_TDS_API_URL: str = ""
+    KIMI_K3_SERVICE_URL: str = ""
     INFERENCE_TIMEOUT: float = 900.0  # seconds (15 minutes)
 
     # Groq AI Financial Document Classifier
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
-    @property
-    def vl_service_url(self) -> str:
-        url = self.QWEN_VL_SERVICE_URL or self.COLAB_API_URL or ""
-        return url.strip().rstrip("/")
 
     @property
-    def coa_service_url(self) -> str:
-        url = self.QWEN_COA_SERVICE_URL or self.COLAB_ACCOUNTING_API_URL or ""
-        return url.strip().rstrip("/")
-
-    @property
-    def tds_service_url(self) -> str:
-        url = self.QWEN_TDS_SERVICE_URL or self.COLAB_TDS_API_URL or ""
-        return url.strip().rstrip("/")
+    def kimi_k3_url(self) -> str:
+        if not self.KIMI_K3_SERVICE_URL or not self.KIMI_K3_SERVICE_URL.strip():
+            raise ValueError(
+                "CRITICAL CONFIGURATION ERROR: 'KIMI_K3_SERVICE_URL' environment variable is required and cannot be empty. "
+                "Please configure KIMI_K3_SERVICE_URL in backend/.env with your live Kimi K3 Colab ngrok URL."
+            )
+        return self.KIMI_K3_SERVICE_URL.strip().rstrip("/")
 
     # File Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB

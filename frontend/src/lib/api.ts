@@ -1,4 +1,5 @@
 export interface LineItem {
+  line_index?: number | null;
   description?: string | null;
   hsn_code?: string | null;
   quantity?: number | null;
@@ -6,7 +7,10 @@ export interface LineItem {
   unit_price?: number | null;
   rate?: number | null;
   discount?: number | null;
+  discount_type?: string | null;
+  line_amount?: number | null;
   taxable_amount?: number | null;
+  gst_rate?: number | null;
   cgst_rate?: number | null;
   cgst_amount?: number | null;
   sgst_rate?: number | null;
@@ -15,6 +19,7 @@ export interface LineItem {
   igst_amount?: number | null;
   cess_rate?: number | null;
   cess_amount?: number | null;
+  account_name?: string | null;
   total?: number | null;
 }
 
@@ -28,6 +33,8 @@ export interface BankDetails {
 }
 
 export interface ExtractedInvoiceData {
+  schema_version?: string | null;
+  knowledge_version?: string | null;
   invoice_number?: string | null;
   invoice_date?: string | null;
   due_date?: string | null;
@@ -46,6 +53,8 @@ export interface ExtractedInvoiceData {
   customer_address?: string | null;
   customer_gstin?: string | null;
   customer_pan?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
 
   shipping_name?: string | null;
   shipping_address?: string | null;
@@ -69,6 +78,7 @@ export interface ExtractedInvoiceData {
   cess_amount?: number | null;
   shipping_charges?: number | null;
   other_charges?: number | null;
+  adjustment?: number | null;
   round_off?: number | null;
   total_amount?: number | null;
   currency?: string | null;
@@ -125,14 +135,20 @@ export interface TdsResult {
   tds_type?: string | null;
   nature_of_payment?: string | null;
   tds_provision?: string | null;
+  provision?: string | null;
   tds_section?: string | null;
+  section?: string | null;
   tds_rate?: number | null;
+  rate?: number | null;
+  approved_tds_rate?: number | null;
   rate_source?: string | null;
   tds_base_amount?: number | null;
+  base_amount?: number | null;
   base_source?: string | null;
   extracted_tds_amount?: number | null;
   calculated_tds_amount?: number | null;
   proposed_tds_amount?: number | null;
+  tds_amount?: number | null;
   calculation?: string | null;
   confidence?: number | null;
   needs_review?: boolean | null;
@@ -251,11 +267,16 @@ export interface ItcResult {
 export interface FinancialCheck {
   name: string;
   description: string;
-  status: "PASSED" | "MISMATCH" | "REVIEW_REQUIRED" | "NOT_APPLICABLE" | string;
+  status: "PASSED" | "MISMATCH" | "REVIEW_REQUIRED" | "NOT_APPLICABLE" | "MATCH" | "NOT_VALIDATED" | string;
+  type?: "LINE_TOTAL" | "SUBTOTAL" | "TAX" | "GRAND_TOTAL" | string;
+  field?: string;
+  line_item_index?: number;
+  line_item_name?: string;
   source_value?: number | null;
   calculated_value?: number | null;
   difference?: number | null;
   note?: string;
+  message?: string;
   total_lines_checked?: number;
   line_breakdowns?: Array<{
     line_index: number;
@@ -273,6 +294,7 @@ export interface FinancialCheck {
 
 export interface FinancialValidationResult {
   overall_status: "PASSED" | "MISMATCH" | "REVIEW_REQUIRED" | string;
+  validation_status?: "VALID" | "MISMATCH" | "PARTIAL" | "NOT_VALIDATED" | string;
   tolerance?: number;
   source: {
     subtotal?: number | null;
@@ -311,6 +333,9 @@ export interface JournalLine {
   source_line_index?: number | null;
   provenance: "AI_PREDICTED" | "HITL_OVERRIDE" | "DETERMINISTIC" | string;
   description?: string | null;
+  match_status?: string | null;
+  ai_needs_review?: boolean | null;
+  match_message?: string | null;
 }
 
 export interface JournalValidation {
@@ -377,6 +402,7 @@ export interface InvoiceStatus {
   period_category?: "CURRENT_MONTH" | "PREVIOUS_MONTH_CURRENT_FY" | "PREVIOUS_FINANCIAL_YEAR" | "CURRENT_FINANCIAL_YEAR" | "FUTURE_PERIOD" | string | null;
   period_decision?: "NOT_REQUIRED" | "PENDING" | "CONTINUE" | "CANCELLED" | string | null;
   period_message?: string | null;
+  file_name?: string | null;
   invoice_date?: string | null;
   updated_at: string;
 }
@@ -431,8 +457,10 @@ export async function uploadInvoice(file: File): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
 
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/upload`, {
     method: "POST",
+    headers: authHeaders,
     body: formData,
   });
 
@@ -445,7 +473,9 @@ export async function uploadInvoice(file: File): Promise<UploadResponse> {
 }
 
 export async function getInvoiceStatus(id: string): Promise<InvoiceStatus> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${id}/status`, {
+    headers: authHeaders,
     cache: "no-store",
   });
 
@@ -554,8 +584,10 @@ export async function getInvoice(id: string): Promise<Invoice> {
 }
 
 export async function triggerAccountingCategorization(id: string): Promise<InvoiceStatus> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${id}/categorize`, {
     method: "POST",
+    headers: authHeaders,
   });
 
   if (!res.ok) {
@@ -599,8 +631,24 @@ export function getInvoiceFileUrl(id: string): string {
   return `${API_BASE}/invoices/${id}/file`;
 }
 
+export async function fetchAuthenticatedFileBlobUrl(id: string): Promise<string> {
+  const token = typeof window !== "undefined" ? localStorage.getItem("dev_auth_token") : null;
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(getInvoiceFileUrl(id), { headers });
+  if (!res.ok) {
+    throw new Error(`Failed to load file preview (${res.status})`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 export async function getInvoiceJournal(id: string): Promise<JournalEntry> {
+  const authHeaders = await getAuthHeaders();
   const res = await fetch(`${API_BASE}/invoices/${id}/journal`, {
+    headers: authHeaders,
     cache: "no-store",
   });
 
@@ -1521,5 +1569,69 @@ export async function approveHitlFinal(invoiceId: string, finalAccounting: any, 
     body: JSON.stringify({ final_accounting: finalAccounting, final_journal: finalJournal }),
   });
   if (!res.ok) throw new Error("Failed to approve final HITL");
+  return res.json();
+}
+
+export async function matchZohoCOA(payload: {
+  account_name?: string;
+  account_type?: string;
+  account_code?: string;
+  zoho_account_id?: string;
+}) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/zoho/chart_of_accounts/match`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Failed to match Zoho Chart of Accounts");
+  return res.json();
+}
+
+export async function createZohoCOA(payload: {
+  account_name: string;
+  account_type?: string;
+  account_code?: string;
+  description?: string;
+}) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/zoho/chart_of_accounts/create`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to create Chart of Account in Zoho");
+  }
+  return res.json();
+}
+
+export async function assignInvoiceCOA(
+  invoiceId: string,
+  payload: {
+    zoho_account_id: string;
+    account_name: string;
+    account_type?: string;
+    account_code?: string;
+    line_item_index?: number;
+  }
+) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/invoices/${invoiceId}/assign_coa`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Failed to assign Chart of Account to invoice");
   return res.json();
 }

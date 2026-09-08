@@ -41,15 +41,13 @@ export default function SignInPage() {
 
     try {
       setIsLoading(true);
-      // Request JWT token from backend auth endpoint
-      const res = await fetch(`${API_BASE}/auth/token`, {
+      // Request JWT token from backend login auth endpoint
+      const res = await fetch(`${API_BASE}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email: email.trim().toLowerCase(),
-          dev_role: "ADMIN",
-          dev_tenant_id: "default-tenant-001",
-          dev_name: email.split("@")[0],
+          password: password,
         }),
       });
 

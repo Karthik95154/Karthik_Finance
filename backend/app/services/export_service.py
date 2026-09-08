@@ -140,8 +140,24 @@ class InvoiceExportService:
                 accounting = invoice.accounting_output
 
             acct_lines = accounting.get("accounting") or []
+            if not acct_lines and vlm_data.get("line_items"):
+                # Auto-build accounting lines array from vlm_data line_items if not explicitly constructed
+                built_lines = []
+                for idx, item in enumerate(vlm_data.get("line_items") or [], 1):
+                    built_lines.append({
+                        "line_index": idx,
+                        "source_description": item.get("description") or f"Line {idx}",
+                        "account_id": None,
+                        "account_name": None,
+                        "approved_account_id": None,
+                        "approved_account_name": None,
+                    })
+                acct_lines = built_lines
+                accounting["accounting"] = built_lines
+                invoice.current_accounting_output = accounting
+
             if not acct_lines:
-                raise ValueError("Cannot export to Zoho: Invoice has no accounting line items.")
+                raise ValueError("Cannot export to Zoho: Invoice has no accounting line items. Please add line items or select COA accounts.")
 
             # Retrieve active synchronized Zoho accounts strictly scoped to current organization_id
             valid_zoho_accounts = {}

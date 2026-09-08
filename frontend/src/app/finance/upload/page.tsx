@@ -33,7 +33,11 @@ export default function UploadPage() {
     setError(null);
     setUploadResult(null);
 
-    if (!ALLOWED_TYPES.includes(file.type)) {
+    const ext = file.name.split(".").pop()?.toLowerCase() || "";
+    const isAllowedExt = ["pdf", "png", "jpg", "jpeg"].includes(ext);
+    const isAllowedMime = ALLOWED_TYPES.includes(file.type);
+
+    if (!isAllowedMime && !isAllowedExt) {
       setError("Please upload a valid PDF, PNG, or JPEG invoice file.");
       return;
     }
@@ -281,11 +285,11 @@ export default function UploadPage() {
                 Upload Another
               </button>
               <button
-                onClick={() => router.push(`/finance/invoices/${uploadResult.invoice_id}`)}
+                onClick={() => router.push(`/finance/invoices/${uploadResult.invoice_id}/processing`)}
                 className="btn btn-primary"
                 style={{ flex: 1 }}
               >
-                <span>View Invoice</span>
+                <span>Track AI Processing</span>
                 <ArrowRight size={16} />
               </button>
             </div>

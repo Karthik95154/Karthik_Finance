@@ -1,8 +1,9 @@
 import asyncio
 import base64
+import hashlib
 import logging
 import time
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 import httpx
 from app.core.config import settings
 
@@ -11,16 +12,16 @@ logger = logging.getLogger(__name__)
 
 class AIService:
     def __init__(self, base_url: str = None):
-        self.colab_url = (base_url or settings.vl_service_url).strip().rstrip("/")
+        self.colab_url = (base_url or settings.kimi_k3_url).strip().rstrip("/")
         self.timeout = float(settings.INFERENCE_TIMEOUT)
 
     async def check_colab_health(self) -> bool:
-        """Checks if the Colab / ngrok Qwen3-VL server is reachable."""
+        """Checks if the Kimi K3 Single Colab server is reachable."""
         detailed = await self.check_colab_health_detailed()
         return detailed.get("status") == "online"
 
     async def check_colab_health_detailed(self) -> Dict[str, Any]:
-        """Checks if the Colab / ngrok Qwen3-VL server is reachable with exact status code and latency."""
+        """Checks if the Kimi K3 Single Colab server is reachable with exact status code and latency."""
         import time
         start_t = time.time()
         endpoint = f"{self.colab_url}/health"
@@ -33,7 +34,7 @@ class AIService:
                 latency = round((time.time() - start_t) * 1000, 1)
                 if res.status_code == 200:
                     return {
-                        "name": "Qwen3-VL Vision Engine",
+                        "name": "Kimi K3 Single Colab Engine",
                         "status": "online",
                         "status_code": 200,
                         "message": "200 OK - Active & Responsive",
@@ -42,7 +43,7 @@ class AIService:
                     }
                 elif res.status_code == 404:
                     return {
-                        "name": "Qwen3-VL Vision Engine",
+                        "name": "Kimi K3 Single Colab Engine",
                         "status": "404_error",
                         "status_code": 404,
                         "message": "404 Not Found - Health endpoint missing on server",
@@ -51,7 +52,7 @@ class AIService:
                     }
                 else:
                     return {
-                        "name": "Qwen3-VL Vision Engine",
+                        "name": "Kimi K3 Single Colab Engine",
                         "status": f"{res.status_code}_error",
                         "status_code": res.status_code,
                         "message": f"HTTP {res.status_code} Error",
@@ -60,7 +61,7 @@ class AIService:
                     }
         except httpx.ConnectError:
             return {
-                "name": "Qwen3-VL Vision Engine",
+                "name": "Kimi K3 Single Colab Engine",
                 "status": "offline",
                 "status_code": None,
                 "message": "Offline (Connection Refused / ngrok Tunnel Down)",
@@ -69,7 +70,7 @@ class AIService:
             }
         except httpx.TimeoutException:
             return {
-                "name": "Qwen3-VL Vision Engine",
+                "name": "Kimi K3 Single Colab Engine",
                 "status": "timeout",
                 "status_code": None,
                 "message": "Timeout (>4s) - Endpoint not responding",
@@ -78,7 +79,7 @@ class AIService:
             }
         except Exception as e:
             return {
-                "name": "Qwen3-VL Vision Engine",
+                "name": "Kimi K3 Single Colab Engine",
                 "status": "error",
                 "status_code": None,
                 "message": f"Error: {str(e)}",
@@ -86,21 +87,46 @@ class AIService:
                 "endpoint": self.colab_url,
             }
 
-    async def extract_invoice_vlm(self, file_bytes: bytes) -> Dict[str, Any]:
-        """Calls Qwen3-VL on Colab with the Base64-encoded PDF/Image.
-        
+    async def extract_invoice_vlm(
+        self,
+        file_bytes: bytes,
+        filename: str = "invoice.pdf",
+        content_type: str = "application/pdf",
+        chart_of_accounts: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """Calls Kimi K3 Single Colab service using Base64 JSON payload.
+
+        Sends file Base64 image and authenticated user's active Zoho Chart of Accounts list.
         Uses generous configurable timeout (default 900s) to allow long-running inference.
         """
-        if not file_bytes:
+        if not file_bytes or len(file_bytes) == 0:
             raise ValueError("File content is empty.")
 
-        image_base64 = base64.b64encode(file_bytes).decode("utf-8")
-        payload = {"image_base64": image_base64}
-        endpoint = f"{self.colab_url}/api/infer/extract-invoice"
+        sha256_hash = hashlib.sha256(file_bytes).hexdigest()
+        magic_hex = file_bytes[:16].hex()
+        logger.info(
+            "VLM Request preparation | filename=%s content_type=%s size=%d sha256=%s magic=%s coa_count=%d",
+            filename,
+            content_type,
+            len(file_bytes),
+            sha256_hash,
+            magic_hex,
+            len(chart_of_accounts or []),
+        )
 
-        logger.info(f"Sending extraction request to Colab Qwen3-VL ({endpoint}) with timeout={self.timeout}s")
+        endpoint = f"{self.colab_url}/api/infer/k3-invoice"
+        logger.info(f"Sending extraction request to Kimi K3 Colab ({endpoint}) with timeout={self.timeout}s")
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        file_b64 = base64.b64encode(file_bytes).decode("utf-8")
+        payload = {
+            "image_base64": file_b64,
+            "file_base64": file_b64,
+            "filename": filename,
+            "content_type": content_type,
+            "chart_of_accounts": chart_of_accounts or [],
+        }
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
                 response = await client.post(
                     endpoint,
@@ -111,28 +137,28 @@ class AIService:
                     },
                 )
             except httpx.ConnectError as e:
-                logger.error(f"Failed to connect to Colab Qwen3-VL at {self.colab_url}: {e}")
+                logger.error(f"Failed to connect to Kimi K3 Colab at {self.colab_url}: {e}")
                 raise RuntimeError(
-                    f"Colab Qwen3-VL server unreachable at {self.colab_url}. Please ensure the Colab notebook and ngrok tunnel are running."
+                    f"Kimi K3 Colab server unreachable at {self.colab_url}. Please ensure the Colab notebook and ngrok tunnel are running."
                 ) from e
             except httpx.TimeoutException as e:
-                logger.error(f"Colab Qwen3-VL initial submission timed out after 60s: {e}")
+                logger.error(f"Kimi K3 Colab inference request timed out after {self.timeout}s: {e}")
                 raise TimeoutError(
-                    f"Initial job submission timed out after 60s. The Colab server may be unreachable."
+                    f"Kimi K3 inference timed out after {int(self.timeout)}s. The Colab GPU server may be busy or experiencing high load."
                 ) from e
             except Exception as e:
-                logger.error(f"Unexpected error communicating with Colab Qwen3-VL: {e}")
+                logger.error(f"Unexpected error communicating with Kimi K3 Colab: {e}")
                 raise RuntimeError(f"Colab communication error: {str(e)}") from e
 
             if response.status_code not in (200, 202):
                 resp_text = response.text
                 if "ERR_NGROK" in resp_text or "<!DOCTYPE html>" in resp_text or response.status_code == 404:
                     err_msg = (
-                        f"Colab Qwen3-VL GPU endpoint ({self.colab_url}) is offline or unreachable "
-                        f"(Status {response.status_code}). Please start your Google Colab notebook and update COLAB_API_URL in backend/.env."
+                        f"Kimi K3 Colab GPU endpoint ({self.colab_url}) is offline or unreachable "
+                        f"(Status {response.status_code}). Please start your Google Colab notebook and update KIMI_K3_SERVICE_URL in backend/.env."
                     )
                 else:
-                    err_msg = f"Qwen3-VL extraction request failed [{response.status_code}]: {resp_text[:300]}"
+                    err_msg = f"Kimi K3 extraction request failed [{response.status_code}]: {resp_text[:300]}"
                 logger.error(err_msg)
                 raise RuntimeError(err_msg)
 
@@ -140,7 +166,7 @@ class AIService:
                 init_data = response.json()
             except Exception as e:
                 logger.error(f"Failed to decode JSON from Colab response: {response.text[:300]}")
-                raise ValueError(f"Malformed JSON returned from Qwen3-VL: {str(e)}") from e
+                raise ValueError(f"Malformed JSON returned from Kimi K3: {str(e)}") from e
 
             result = init_data
 
@@ -180,7 +206,7 @@ class AIService:
                                 elif job_status in ("failed", "error"):
                                     err_detail = job_data.get("error") or job_data.get("message") or "Unknown job error"
                                     logger.error(f"Colab job {job_id} failed: {err_detail}")
-                                    raise RuntimeError(f"Qwen3-VL inference job failed: {err_detail}")
+                                    raise RuntimeError(f"Kimi K3 inference job failed: {err_detail}")
                                 else:
                                     logger.debug(f"Colab job {job_id} still {job_status}...")
                             elif poll_res.status_code in (404, 502, 503):

@@ -249,6 +249,34 @@ class ZohoClientService:
         )
         return res.get("chartofaccounts", [])
 
+    async def create_chart_of_account(
+        self,
+        connection: ZohoConnection,
+        db: AsyncSession,
+        account_name: str,
+        account_type: str = "expense",
+        account_code: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Creates a new Chart of Account in Zoho Books."""
+        payload = {
+            "account_name": account_name.strip(),
+            "account_type": account_type.strip().lower(),
+        }
+        if account_code:
+            payload["account_code"] = account_code.strip()
+        if description:
+            payload["description"] = description.strip()
+
+        res = await self._make_authorized_request(
+            connection=connection,
+            db=db,
+            method="POST",
+            endpoint_path="chartofaccounts",
+            json_data=payload,
+        )
+        return res.get("chartofaccount") or res
+
     async def get_taxes(
         self,
         connection: ZohoConnection,

@@ -49,7 +49,20 @@ async def test_user_level_invoice_isolation():
         get_b = await client.get(f"/api/v1/invoices/{invoice_id_a}", headers=headers_b)
         assert get_b.status_code == 404
 
-        # 5. User B CANNOT download User A's invoice file
+        # 5. User A (Owner) CAN download User A's invoice file -> 200 OK
+        file_a = await client.get(f"/api/v1/invoices/{invoice_id_a}/file", headers=headers_a)
+        assert file_a.status_code == 200
+        assert file_a.content == file_content
+
+        # 5b. Unauthenticated user request: when dev auth mode is on, unauth requests default to dev-user-001 so User A's invoice returns 404 Not Found
+        file_unauth = await client.get(f"/api/v1/invoices/{invoice_id_a}/file")
+        assert file_unauth.status_code in (401, 404)
+
+        # 5c. Nonexistent invoice returns 404
+        file_nonexistent = await client.get(f"/api/v1/invoices/{uuid.uuid4()}/file", headers=headers_a)
+        assert file_nonexistent.status_code == 404
+
+        # 5d. User B CANNOT download User A's invoice file -> 404 Not Found
         file_b = await client.get(f"/api/v1/invoices/{invoice_id_a}/file", headers=headers_b)
         assert file_b.status_code == 404
 
@@ -71,18 +84,18 @@ async def test_user_level_invoice_isolation():
             payload_a = {
                 "imap_server": "imap.gmail.com",
                 "imap_port": 993,
-                "email_address": "usera@gmail.com",
+                "email_address": f"usera_{run_id}@gmail.com",
                 "password": "app_password_a"
             }
             cfg_a = await client.post("/api/v1/settings/integrations/imap_email/configure", json=payload_a, headers=headers_a)
             assert cfg_a.status_code == 200
-            assert cfg_a.json()["config"]["email_address"] == "usera@gmail.com"
+            assert cfg_a.json()["config"]["email_address"] == f"usera_{run_id}@gmail.com"
 
             # User A sees connected
             imap_a = await client.get("/api/v1/settings/integrations/imap_email", headers=headers_a)
             assert imap_a.status_code == 200
             assert imap_a.json()["status"] == "connected"
-            assert imap_a.json()["config"]["email_address"] == "usera@gmail.com"
+            assert imap_a.json()["config"]["email_address"] == f"usera_{run_id}@gmail.com"
 
             # User B STILL sees disconnected
             imap_b2 = await client.get("/api/v1/settings/integrations/imap_email", headers=headers_b)
@@ -93,22 +106,22 @@ async def test_user_level_invoice_isolation():
             payload_b = {
                 "imap_server": "imap.gmail.com",
                 "imap_port": 993,
-                "email_address": "userb@gmail.com",
+                "email_address": f"userb_{run_id}@gmail.com",
                 "password": "app_password_b"
             }
             cfg_b = await client.post("/api/v1/settings/integrations/imap_email/configure", json=payload_b, headers=headers_b)
             assert cfg_b.status_code == 200
-            assert cfg_b.json()["config"]["email_address"] == "userb@gmail.com"
+            assert cfg_b.json()["config"]["email_address"] == f"userb_{run_id}@gmail.com"
 
             # User B sees only their email
             imap_b3 = await client.get("/api/v1/settings/integrations/imap_email", headers=headers_b)
             assert imap_b3.status_code == 200
-            assert imap_b3.json()["config"]["email_address"] == "userb@gmail.com"
+            assert imap_b3.json()["config"]["email_address"] == f"userb_{run_id}@gmail.com"
 
             # User A STILL sees only their email
             imap_a2 = await client.get("/api/v1/settings/integrations/imap_email", headers=headers_a)
             assert imap_a2.status_code == 200
-            assert imap_a2.json()["config"]["email_address"] == "usera@gmail.com"
+            assert imap_a2.json()["config"]["email_address"] == f"usera_{run_id}@gmail.com"
 
         # 10. Zoho status is per-user (User B initially sees disconnected)
         zoho_b = await client.get("/api/v1/zoho/status", headers=headers_b)

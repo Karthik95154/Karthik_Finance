@@ -7,6 +7,53 @@ logger = logging.getLogger(__name__)
 PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$")
 
 
+def resolve_tds_tax_details(
+    section_raw: Optional[str] = None,
+    provision_raw: Optional[str] = None,
+    nature_raw: Optional[str] = None,
+) -> Dict[str, str]:
+    """
+    Cleans raw/unformatted TDS section, provision, and nature of payment strings into
+    canonical Indian Income Tax statutory descriptions.
+    """
+    combined = f"{provision_raw or ''} {section_raw or ''} {nature_raw or ''}".upper()
+
+    if "393" in combined or "194J" in combined or "TECHNICAL" in combined or "PROFESSIONAL" in combined:
+        sec = "194J / 393"
+        prov = "Section 194J / 393 - Fees for Technical or Professional Services"
+        nat = nature_raw if (nature_raw and "CLOUI" not in nature_raw and "_" not in nature_raw) else "Fees for Technical Services (FTS) & Cloud Infrastructure"
+    elif "194C" in combined or "CONTRACT" in combined or "SUB_CONTRACT" in combined:
+        sec = "194C"
+        prov = "Section 194C - Payments to Contractors and Sub-contractors"
+        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Work Contracts & Sub-contractor Services"
+    elif "194I" in combined or "RENT" in combined:
+        sec = "194I"
+        prov = "Section 194I - Rent for Land, Building, Plant or Machinery"
+        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Rent of Immovable Property / Equipment"
+    elif "194H" in combined or "COMMISSION" in combined or "BROKER" in combined:
+        sec = "194H"
+        prov = "Section 194H - Commission or Brokerage"
+        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Commission & Brokerage Payments"
+    elif "194Q" in combined or "PURCHASE" in combined or "GOODS" in combined:
+        sec = "194Q"
+        prov = "Section 194Q - Purchase of Goods"
+        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Purchase of Goods exceeding statutory threshold"
+    elif "194A" in combined or "INTEREST" in combined:
+        sec = "194A"
+        prov = "Section 194A - Interest other than Interest on Securities"
+        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Interest Payments"
+    else:
+        sec = section_raw if (section_raw and "_" not in section_raw) else "194J / 194C"
+        prov = provision_raw if (provision_raw and "_" not in provision_raw) else f"Section {sec} - Statutory Deduction"
+        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Technical / Professional Services"
+
+    return {
+        "section": sec,
+        "provision": prov,
+        "nature_of_payment": nat,
+    }
+
+
 def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Single source of truth for statutory TDS assessment across display, validation, journal, and export.
@@ -72,15 +119,46 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
             or tds_assessment.get("approval_status") == "APPROVED"
         )
 
+        section_val = tds_assessment.get("approved_tds_section") or tds_assessment.get("tds_section") or tds_assessment.get("section")
+        provision_val = tds_assessment.get("approved_tds_provision") or tds_assessment.get("tds_provision") or tds_assessment.get("provision")
+        nature_val = tds_assessment.get("approved_nature_of_payment") or tds_assessment.get("nature_of_payment") or tds_assessment.get("nature")
+
+        if is_app:
+            canonical = resolve_tds_tax_details(section_val, provision_val, nature_val)
+            section_val = canonical["section"]
+            provision_val = canonical["provision"]
+            nature_val = canonical["nature_of_payment"]
+
+        if is_app and (rate_float is None or rate_float <= 0):
+            sec_str = f"{provision_val or ''} {section_val or ''} {nature_val or ''}".upper()
+            if "CONTRACT" in sec_str or "194C" in sec_str:
+                rate_float = 2.0
+            elif "RENT" in sec_str or "194I" in sec_str:
+                rate_float = 10.0
+            elif "COMMISSION" in sec_str or "194H" in sec_str:
+                rate_float = 2.0
+            elif "PURCHASE" in sec_str or "194Q" in sec_str:
+                rate_float = 0.1
+            else:
+                rate_float = 2.0
+
+        if is_app and (tds_amt_float is None or tds_amt_float == 0) and base_float and rate_float and rate_float > 0:
+            tds_amt_float = round((base_float * rate_float) / 100.0, 2)
+
         return {
             "applicable": is_app,
-            "section": tds_assessment.get("approved_tds_section") or tds_assessment.get("tds_section") or tds_assessment.get("section"),
-            "provision": tds_assessment.get("approved_tds_provision") or tds_assessment.get("tds_provision") or tds_assessment.get("provision"),
-            "nature_of_payment": tds_assessment.get("approved_nature_of_payment") or tds_assessment.get("nature_of_payment") or tds_assessment.get("nature"),
+            "section": section_val,
+            "tds_section": section_val,
+            "provision": provision_val,
+            "tds_provision": provision_val,
+            "nature_of_payment": nature_val,
             "rate": rate_float if is_app else None,
+            "tds_rate": rate_float if is_app else None,
+            "approved_tds_rate": rate_float if is_app else None,
             "base_amount": base_float if is_app else None,
             "tds_base_amount": base_float if is_app else None,
             "tds_amount": tds_amt_float if is_app else None,
+            "proposed_tds_amount": tds_amt_float if is_app else None,
             "reasoning": tds_assessment.get("tds_reasoning") or tds_assessment.get("reason"),
             "is_approved": is_appr,
             "approval_status": "APPROVED" if is_appr else "PENDING",

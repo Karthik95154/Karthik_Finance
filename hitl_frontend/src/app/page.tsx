@@ -79,25 +79,72 @@ export default function HitlDashboard() {
           </div>
         </div>
 
-        {/* Tab Switcher */}
-        <div style={{ display: "flex", gap: "6px", background: "#f1f5f9", padding: "4px", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+        {/* Tab Switcher & Quick Upload */}
+        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
           <button
-            onClick={() => setActiveTab("pending")}
+            onClick={() => {
+              const el = document.getElementById("hitl-file-upload-input");
+              if (el) el.click();
+            }}
             style={{
               display: "flex",
               alignItems: "center",
               gap: "8px",
               padding: "8px 16px",
-              borderRadius: "6px",
+              borderRadius: "8px",
               fontSize: "13px",
               fontWeight: 600,
-              background: activeTab === "pending" ? "#ffffff" : "transparent",
-              color: activeTab === "pending" ? "#0f172a" : "#64748b",
-              boxShadow: activeTab === "pending" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+              backgroundColor: "#2563eb",
+              color: "#ffffff",
               border: "none",
               cursor: "pointer",
+              boxShadow: "0 1px 3px rgba(37, 99, 235, 0.3)",
             }}
           >
+            <FileText size={16} />
+            <span>Upload Invoice</span>
+          </button>
+
+          <input
+            id="hitl-file-upload-input"
+            type="file"
+            accept=".pdf,.png,.jpg,.jpeg"
+            style={{ display: "none" }}
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              try {
+                setLoading(true);
+                const { uploadInvoice } = await import("@/lib/api");
+                await uploadInvoice(file);
+                await fetchData();
+              } catch (err: any) {
+                setError(err.message || "Upload failed");
+              } finally {
+                setLoading(false);
+                e.target.value = "";
+              }
+            }}
+          />
+
+          <div style={{ display: "flex", gap: "6px", background: "#f1f5f9", padding: "4px", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+            <button
+              onClick={() => setActiveTab("pending")}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+                padding: "8px 16px",
+                borderRadius: "6px",
+                fontSize: "13px",
+                fontWeight: 600,
+                background: activeTab === "pending" ? "#ffffff" : "transparent",
+                color: activeTab === "pending" ? "#0f172a" : "#64748b",
+                boxShadow: activeTab === "pending" ? "0 1px 3px rgba(0,0,0,0.1)" : "none",
+                border: "none",
+                cursor: "pointer",
+              }}
+            >
             <Activity size={15} />
             <span>Pending Queue</span>
             {invoices.length > 0 && (
@@ -133,6 +180,7 @@ export default function HitlDashboard() {
             )}
           </button>
         </div>
+      </div>
       </div>
 
       {error && (

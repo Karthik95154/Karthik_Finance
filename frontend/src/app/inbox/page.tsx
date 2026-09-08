@@ -25,6 +25,7 @@ import {
   pollEmails,
   getIMAPSettings,
   getInvoiceFileUrl,
+  fetchAuthenticatedFileBlobUrl,
   StagedDocument,
 } from "@/lib/api";
 
@@ -38,6 +39,34 @@ export default function InboxPage() {
     message: string;
   } | null>(null);
   const [previewDoc, setPreviewDoc] = useState<StagedDocument | null>(null);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
+  const [isPreviewLoading, setIsPreviewLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    let active = true;
+    if (previewDoc) {
+      setIsPreviewLoading(true);
+      fetchAuthenticatedFileBlobUrl(previewDoc.id)
+        .then((blobUrl) => {
+          if (active) {
+            setPreviewBlobUrl(blobUrl);
+            setIsPreviewLoading(false);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            // Fallback to direct URL if blob fetch fails
+            setPreviewBlobUrl(getInvoiceFileUrl(previewDoc.id));
+            setIsPreviewLoading(false);
+          }
+        });
+    } else {
+      setPreviewBlobUrl(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [previewDoc]);
 
   // Email Account Filtering State
   const [selectedEmail, setSelectedEmail] = useState<string>("ALL");
@@ -544,39 +573,71 @@ export default function InboxPage() {
               </button>
             </div>
             <div style={{ flex: 1, minHeight: 0, backgroundColor: "#f1f3f4", position: "relative", display: "flex", flexDirection: "column" }}>
-              {previewDoc.file_name.toLowerCase().endsWith(".pdf") ? (
-                <iframe
-                  src={getInvoiceFileUrl(previewDoc.id)}
-                  title="PDF Preview"
-                  style={{ width: "100%", height: "100%", border: "none" }}
-                />
-              ) : (
-                <div
-                  style={{
-                    flex: 1,
-                    width: "100%",
-                    height: "100%",
-                    overflowY: "auto",
-                    overflowX: "auto",
-                    padding: "24px",
-                    boxSizing: "border-box",
-                    backgroundColor: "#f1f3f4",
-                  }}
-                >
-                  <img
-                    src={getInvoiceFileUrl(previewDoc.id)}
-                    alt="Invoice Attachment"
-                    style={{
-                      width: "100%",
-                      height: "auto",
-                      display: "block",
-                      margin: "0 auto",
-                      borderRadius: "4px",
-                      boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
-                    }}
-                  />
+              {isPreviewLoading ? (
+                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", color: "var(--text-secondary)" }}>
+                  <RefreshCw size={20} className="animate-spin" /> Loading document preview...
                 </div>
-              )}
+              ) : (() => {
+                const fileUrl = previewBlobUrl || getInvoiceFileUrl(previewDoc.id);
+                const isPdf =
+                  previewDoc.file_name.toLowerCase().endsWith(".pdf") ||
+                  previewDoc.mime_type?.toLowerCase().includes("pdf") ||
+                  (!previewDoc.mime_type?.startsWith("image/") && !previewDoc.file_name.match(/\.(png|jpg|jpeg|webp)$/i));
+
+                if (isPdf) {
+                  return (
+                    <object
+                      data={fileUrl}
+                      type="application/pdf"
+                      style={{ width: "100%", height: "100%", border: "none" }}
+                    >
+                      <iframe
+                        src={fileUrl}
+                        title="PDF Preview"
+                        style={{ width: "100%", height: "100%", border: "none" }}
+                      />
+                    </object>
+                  );
+                }
+
+                return (
+                  <div
+                    style={{
+                      flex: 1,
+                      width: "100%",
+                      height: "100%",
+                      overflowY: "auto",
+                      overflowX: "auto",
+                      padding: "24px",
+                      boxSizing: "border-box",
+                      backgroundColor: "#f1f3f4",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <img
+                      src={fileUrl}
+                      alt={previewDoc.file_name}
+                      style={{
+                        maxWidth: "100%",
+                        maxHeight: "100%",
+                        height: "auto",
+                        display: "block",
+                        margin: "0 auto",
+                        borderRadius: "4px",
+                        boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
+                      }}
+                      onError={(e) => {
+                        const parent = (e.target as HTMLElement).parentElement;
+                        if (parent) {
+                          parent.innerHTML = `<iframe src="${fileUrl}" style="width:100%;height:100%;border:none;"></iframe>`;
+                        }
+                      }}
+                    />
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>

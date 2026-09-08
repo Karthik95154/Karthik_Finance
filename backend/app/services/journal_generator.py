@@ -289,7 +289,7 @@ class JournalGenerator:
                     )
                 elif ai_acc_id and ai_acc_name:
                     account_id = ai_acc_id
-                    account_name = f"[Unapproved] {ai_acc_name}"
+                    account_name = str(ai_acc_name).replace("[Unapproved] ", "").strip()
                     provenance = acc_info.get("provenance") or "AI_PREDICTED"
                 elif ai_acc_id:
                     account_id = ai_acc_id

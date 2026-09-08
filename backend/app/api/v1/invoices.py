@@ -1,7 +1,12 @@
 import hashlib
 import uuid
 import re
+import logging
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
+from pydantic import BaseModel
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -12,7 +17,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sqlalchemy import select, or_, true
+from sqlalchemy import select, or_, true, false
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import (
@@ -42,17 +47,14 @@ router = APIRouter(prefix="/invoices", tags=["Invoices"])
 
 def get_user_filter(current_user: AuthenticatedUser):
     """
-    Returns an SQLAlchemy filter condition based on the user's role and identity.
-    Admins, finance reviewers, and dev default users can see all tenant invoices,
-    while individual customer users are filtered to their own user_id or legacy unassigned records.
+    Returns an SQLAlchemy filter condition restricting access strictly to invoices
+    where Invoice.user_id matches current_user.id.
     """
-    if current_user.role in ("ADMIN", "FINANCE", "DATA_REVIEWER", "FINANCE_REVIEWER"):
-        return true()
     try:
         user_uuid = uuid.UUID(current_user.id)
-        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        return (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        return true()
+        return false()
 
 
 
@@ -81,6 +83,20 @@ async def upload_invoice(
     tenant_id = current_user.tenant_id
 
     content_type = file.content_type or "application/octet-stream"
+    original_name = file.filename or "invoice"
+
+    # Fall back to file extension if browser sends application/octet-stream
+    if content_type not in settings.ALLOWED_MIME_TYPES or content_type == "application/octet-stream":
+        ext = original_name.split(".")[-1].lower() if "." in original_name else ""
+        ext_mime_map = {
+            "pdf": "application/pdf",
+            "png": "image/png",
+            "jpg": "image/jpeg",
+            "jpeg": "image/jpeg",
+        }
+        if ext in ext_mime_map:
+            content_type = ext_mime_map[ext]
+
     if content_type not in settings.ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -107,20 +123,32 @@ async def upload_invoice(
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    # Check for duplicate hash within this tenant
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+    except (ValueError, TypeError):
+        user_uuid = None
+
+    # Check for duplicate hash within this tenant and user
     existing_duplicate = await duplicate_detector.check_file_hash_duplicate(
         file_hash=file_hash,
         tenant_id=tenant_id,
+        user_id=user_uuid,
         db=db,
     )
     if existing_duplicate:
+        # Claim user ownership if invoice was previously unassigned or being re-uploaded by authenticated user
+        if not existing_duplicate.user_id and user_uuid:
+            existing_duplicate.user_id = user_uuid
+
         # If the duplicate is currently STAGED (e.g. from email inbox) or FAILED,
         # the user is manually uploading to process it. Promote to PENDING and start processing.
         if existing_duplicate.status in ["STAGED", "FAILED"]:
             existing_duplicate.status = "PENDING"
             existing_duplicate.error_message = None
-            await db.commit()
-            await db.refresh(existing_duplicate)
+
+        await db.commit()
+        await db.refresh(existing_duplicate)
+        if existing_duplicate.status in ["STAGED", "FAILED", "PENDING"]:
             background_tasks.add_task(process_invoice_background, existing_duplicate.id)
             
         return InvoiceUploadResponse(
@@ -190,6 +218,63 @@ async def upload_invoice(
 
 
 @router.post(
+    "/{invoice_id}/retry_extraction",
+    response_model=InvoiceStatusResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_invoice_extraction(
+    invoice_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Retries VLM extraction on a failed or pending invoice using the original stored file binary.
+    Enforces strict user isolation (Invoice.user_id == current_user.id).
+    """
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    # Verify original file exists in storage before queueing retry
+    try:
+        await storage_service.download_file(invoice.file_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Original invoice file unavailable in storage: {str(e)}",
+        )
+
+    invoice.status = "PENDING"
+    invoice.accounting_status = "PENDING"
+    invoice.error_message = None
+    invoice.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    background_tasks.add_task(process_invoice_background, invoice.id)
+
+    return InvoiceStatusResponse(
+        invoice_id=invoice.id,
+        status=invoice.status,
+        accounting_status=invoice.accounting_status,
+        approval_status=invoice.approval_status,
+        export_status=invoice.export_status,
+        error_message=invoice.error_message,
+        confidence_score=invoice.confidence_score,
+        accounting_confidence=invoice.accounting_confidence,
+        created_at=invoice.created_at,
+        updated_at=invoice.updated_at,
+    )
+
+
+@router.post(
     "/{invoice_id}/categorize",
     response_model=InvoiceStatusResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -206,9 +291,9 @@ async def categorize_invoice_accounting(
     """
     try:
         user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        user_filter = (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
+        user_filter = false()
 
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
@@ -401,9 +486,9 @@ async def update_invoice_extraction(
     """
     try:
         user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        user_filter = (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
+        user_filter = false()
 
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
@@ -518,7 +603,6 @@ async def update_invoice_extraction(
             }
 
             # 5. Stage 6 Double-Entry Journal Generator
-            # If invoice extraction/amounts were updated, OR if passed journal total doesn't match working_payload total_amount, regenerate journal from latest effective payload
             target_total = float(working_payload.get("total_amount") or working_payload.get("subtotal") or 0.0)
             
             passed_journal_lines = update_data.journal_entry.get("lines") if (update_data.journal_entry and isinstance(update_data.journal_entry, dict)) else None
@@ -610,14 +694,97 @@ async def update_invoice_extraction(
             await sync_relational_journal(db, invoice.id, journal_result)
         except Exception as eval_exc:
             # Non-blocking log if deterministic revalidation encountered an issue
-            import logging
-            logging.getLogger(__name__).warning(f"Error during deterministic revalidation on update for {invoice_id}: {eval_exc}")
+            logger.warning(f"Error during deterministic revalidation on update for {invoice_id}: {eval_exc}")
 
     invoice.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(invoice)
 
     return invoice
+
+
+class AssignCOARequest(BaseModel):
+    zoho_account_id: str
+    account_name: str
+    account_type: Optional[str] = "expense"
+    account_code: Optional[str] = None
+    line_item_index: Optional[int] = None
+
+
+@router.post(
+    "/{invoice_id}/assign_coa",
+    response_model=InvoiceResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def assign_invoice_coa(
+    invoice_id: uuid.UUID,
+    payload: AssignCOARequest,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "CUSTOMER"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Associates a selected or newly created Zoho Chart of Account with the invoice line items
+    and persists the update into current_accounting_output in PostgreSQL.
+    """
+    try:
+        user_uuid = uuid.UUID(current_user.id)
+        user_filter = (Invoice.user_id == user_uuid)
+    except (ValueError, TypeError):
+        user_filter = false()
+
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
+    res = await db.execute(query)
+    invoice = res.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    acct_data = (
+        dict(invoice.current_accounting_output)
+        if isinstance(invoice.current_accounting_output, dict)
+        else (dict(invoice.accounting_output) if isinstance(invoice.accounting_output, dict) else {})
+    )
+
+    lines = acct_data.get("accounting") or []
+    if not lines and invoice.current_vlm_output:
+        vlm_data = (
+            invoice.current_vlm_output.get("data")
+            if isinstance(invoice.current_vlm_output, dict) and "data" in invoice.current_vlm_output
+            else invoice.current_vlm_output
+        )
+        if isinstance(vlm_data, dict) and "line_items" in vlm_data:
+            lines = [
+                {
+                    "line_item_index": idx,
+                    "description": item.get("description", f"Line {idx}"),
+                    "approved_account_id": payload.zoho_account_id,
+                    "approved_account_name": payload.account_name,
+                    "account_id": payload.zoho_account_id,
+                    "account_name": payload.account_name,
+                    "account_type": payload.account_type,
+                }
+                for idx, item in enumerate(vlm_data.get("line_items") or [], 1)
+            ]
+
+    if lines:
+        for idx, line in enumerate(lines):
+            if payload.line_item_index is None or payload.line_item_index == idx:
+                line["approved_account_id"] = payload.zoho_account_id
+                line["approved_account_name"] = payload.account_name
+                line["account_id"] = payload.zoho_account_id
+                line["account_name"] = payload.account_name
+                line["account_type"] = payload.account_type
+        acct_data["accounting"] = lines
+
+    invoice.current_accounting_output = acct_data
+    invoice.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(invoice)
+
+    return InvoiceResponse.model_validate(invoice)
 
 
 @router.get("/{invoice_id}/file")
@@ -636,6 +803,21 @@ async def get_invoice_file(
     invoice = result.scalar_one_or_none()
 
     if not invoice:
+        # Diagnostic audit logging for security troubleshooting (returns safe 404 to caller)
+        raw_check = await db.execute(select(Invoice).where(Invoice.id == invoice_id))
+        existing_inv = raw_check.scalar_one_or_none()
+        if not existing_inv:
+            logger.warning(f"GET /invoices/{invoice_id}/file -> 404: Invoice {invoice_id} does not exist in DB.")
+        elif existing_inv.user_id is None:
+            logger.warning(f"GET /invoices/{invoice_id}/file -> 404: Invoice {invoice_id} exists but user_id is NULL.")
+        elif str(existing_inv.user_id) != str(current_user.id):
+            logger.warning(
+                f"GET /invoices/{invoice_id}/file -> 404: Invoice {invoice_id} belongs to user {existing_inv.user_id}, "
+                f"requested by user {current_user.id} ({current_user.email})."
+            )
+        else:
+            logger.warning(f"GET /invoices/{invoice_id}/file -> 404: User filter evaluation failed for user {current_user.id}.")
+
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invoice with ID {invoice_id} not found.",
@@ -644,6 +826,7 @@ async def get_invoice_file(
     try:
         content = await storage_service.download_file(invoice.file_path)
     except FileNotFoundError:
+        logger.error(f"GET /invoices/{invoice_id}/file -> 404: File path {invoice.file_path} missing in storage.")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Invoice file not found in storage.",
@@ -696,9 +879,9 @@ async def get_invoice_pages(
     """
     try:
         user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        user_filter = (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
+        user_filter = false()
 
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)

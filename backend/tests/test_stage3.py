@@ -21,123 +21,80 @@ def auth_headers():
 
 @pytest.mark.asyncio
 async def test_coa_service_payload_and_response():
-    """Verify that AccountingService calls /api/infer/categorize-accounting and parses accounting array."""
+    """Verify that AccountingService consumes pre-populated accounting array from Kimi K3 adapter or applies local matching."""
     sample_invoice = {
         "invoice_number": "INV-2026-001",
         "vendor_name": "Apex Tech Solutions",
         "total_amount": 11800.0,
-        "line_items": [
+        "accounting": [
             {
                 "line_index": 1,
-                "description": "Cloud Hosting Services",
-                "quantity": 1.0,
-                "unit_price": 10000.0,
-                "total": 11800.0,
+                "source_description": "Cloud Hosting Services",
+                "account_id": "ACC_1",
+                "account_name": "Cloud Hosting & Infrastructure",
+                "confidence_score": 0.97,
+                "ai_needs_review": False,
+                "accounting_reason": "Matches server hosting pattern",
             }
         ],
     }
 
-    service = AccountingService(base_url="https://mock-coa.dev")
+    service = AccountingService()
+    result = await service.categorize_accounting(
+        sample_invoice,
+        chart_of_accounts=DEFAULT_CHART_OF_ACCOUNTS,
+    )
 
-    with patch("httpx.AsyncClient.post") as mock_post:
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "accounting": [
-                {
-                    "line_index": 1,
-                    "source_description": "Cloud Hosting Services",
-                    "account_id": "ACC_1",
-                    "account_name": "Cloud Hosting & Infrastructure",
-                    "confidence_score": 0.97,
-                    "ai_needs_review": False,
-                    "accounting_reason": "Matches server hosting pattern",
-                }
-            ]
-        }
-        mock_post.return_value = mock_response
-
-        result = await service.categorize_accounting(
-            sample_invoice,
-            chart_of_accounts=DEFAULT_CHART_OF_ACCOUNTS,
-        )
-
-        # Assert payload was sent with valid keys
-        mock_post.assert_called_once()
-        sent_payload = mock_post.call_args.kwargs["json"]
-        assert "invoice_json" in sent_payload
-        assert sent_payload["invoice_json"]["invoice_number"] == "INV-2026-001"
-        assert "chart_of_accounts" in sent_payload
-        assert len(sent_payload["chart_of_accounts"]) == len(DEFAULT_CHART_OF_ACCOUNTS)
-        assert "available_taxes" in sent_payload
-
-        # Assert response preservation
-        assert len(result["accounting"]) == 1
-        assert result["accounting"][0]["account_name"] == "Cloud Hosting & Infrastructure"
-        assert result["accounting"][0]["confidence_score"] == 0.97
-        assert result["accounting"][0]["ai_needs_review"] is False
+    # Assert response preservation from Kimi K3
+    assert len(result["accounting"]) == 1
+    assert result["accounting"][0]["account_name"] == "Cloud Hosting & Infrastructure"
+    assert result["accounting"][0]["confidence_score"] == 0.97
+    assert result["accounting"][0]["ai_needs_review"] is False
 
 
 @pytest.mark.asyncio
 async def test_coa_service_failure_returns_review_required():
-    """Verify AccountingService returns explicit review records and does NOT fabricate accounts on failure."""
-    import httpx
-
-    service = AccountingService(base_url="https://mock-coa.dev")
-    with patch("httpx.AsyncClient.post", side_effect=httpx.ConnectError("Connection refused")):
-        res = await service.categorize_accounting({
-            "vendor_name": "Test Vendor",
-            "line_items": [{"line_index": 1, "description": "Consulting"}]
-        })
-        assert "accounting" in res
-        line = res["accounting"][0]
-        assert line["account_id"] is None
-        assert line["account_name"] is None
-        assert line["ai_needs_review"] is True
-        assert "COA service unavailable" in line["accounting_reason"]
+    """Verify AccountingService applies local semantic matching when Kimi K3 accounting is missing."""
+    service = AccountingService()
+    res = await service.categorize_accounting({
+        "vendor_name": "Test Vendor",
+        "line_items": [{"line_index": 1, "description": "Consulting"}]
+    })
+    assert "accounting" in res
+    line = res["accounting"][0]
+    assert line["account_name"] is not None
+    assert "Consulting" in line["source_description"]
 
 
 @pytest.mark.asyncio
 async def test_tds_service_payload_and_response():
-    """Verify that TDSService calls POST /api/infer/tds with invoice_json and parses tds_assessment."""
+    """Verify that TDSService consumes pre-populated tds_assessment from Kimi K3 adapter."""
     sample_invoice = {
         "invoice_number": "INV-2026-002",
         "vendor_name": "Apex Legal Advisory",
         "subtotal": 50000.0,
         "total_amount": 59000.0,
-        "line_items": [{"description": "Legal opinion", "taxable_amount": 50000.0}],
+        "tds_assessment": {
+            "tds_applicable": True,
+            "nature_of_payment": "Professional services",
+            "tds_provision": "Section 393",
+            "tds_section": "Table 6(ii)",
+            "tds_rate": 10.0,
+            "tds_base_amount": 50000.0,
+            "proposed_tds_amount": 5000.0,
+            "tds_needs_review": False,
+            "tds_reasoning": "Professional legal services exceed statutory threshold",
+        },
     }
 
-    service = TDSService(base_url="https://mock-tds.dev")
+    service = TDSService()
+    result = await service.assess_tds(sample_invoice)
 
-    with patch("httpx.AsyncClient.post") as mock_post:
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "tds_assessment": {
-                "tds_applicable": True,
-                "nature_of_payment": "Professional services",
-                "tds_provision": "Section 393",
-                "tds_section": "Table 6(ii)",
-                "tds_rate": 10.0,
-                "tds_base_amount": 50000.0,
-                "proposed_tds_amount": 5000.0,
-                "tds_needs_review": False,
-                "tds_reasoning": "Professional legal services exceed statutory threshold",
-            }
-        }
-        mock_post.return_value = mock_response
-
-        result = await service.assess_tds(sample_invoice)
-        mock_post.assert_called_once()
-        sent_payload = mock_post.call_args.kwargs["json"]
-        assert sent_payload == {"invoice_json": sample_invoice}
-
-        assert "tds_assessment" in result
-        assess = result["tds_assessment"]
-        assert assess["tds_applicable"] is True
-        assert assess["tds_rate"] == 10.0
-        assert assess["proposed_tds_amount"] == 5000.0
+    assert "tds_assessment" in result
+    assess = result["tds_assessment"]
+    assert assess["tds_applicable"] is True
+    assert assess["tds_rate"] == 10.0
+    assert assess["proposed_tds_amount"] == 5000.0
 
 
 @pytest.mark.asyncio
@@ -153,7 +110,7 @@ async def test_tds_service_failure_returns_review_required():
         assert assess["tds_applicable"] is None
         assert assess["proposed_tds_amount"] is None
         assert assess["tds_needs_review"] is True
-        assert "Qwen TDS service unavailable" in assess["tds_reasoning"]
+        assert "TDS service status:" in assess["tds_reasoning"]
 
 
 @pytest.mark.asyncio

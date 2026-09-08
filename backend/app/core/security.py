@@ -18,6 +18,38 @@ security_bearer = HTTPBearer(auto_error=False)
 
 
 # ============================================================================
+# Password Hashing Functions (PBKDF2 HMAC SHA256)
+# ============================================================================
+
+import secrets
+
+def hash_password(password: str) -> str:
+    """Hashes plain password using PBKDF2-HMAC-SHA256 with a random salt."""
+    if not password:
+        raise ValueError("Password cannot be empty")
+    salt = secrets.token_hex(8)
+    key = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt.encode('utf-8'), 100000)
+    return f"pbkdf2:sha256:{salt}${key.hex()}"
+
+
+def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
+    """Verifies plain password against stored PBKDF2-HMAC-SHA256 hash."""
+    if not plain_password or not hashed_password:
+        return False
+    try:
+        if not hashed_password.startswith("pbkdf2:sha256:"):
+            return False
+        # Format: pbkdf2:sha256:salt$hex
+        prefix_salt, stored_hex = hashed_password.split("$")
+        salt = prefix_salt.split(":")[-1]
+        key = hashlib.pbkdf2_hmac('sha256', plain_password.encode('utf-8'), salt.encode('utf-8'), 100000)
+        return key.hex() == stored_hex
+    except Exception as e:
+        logger.error(f"Password verification error: {e}")
+        return False
+
+
+# ============================================================================
 # Authenticated User Model
 # ============================================================================
 

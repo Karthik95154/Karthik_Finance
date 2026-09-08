@@ -284,6 +284,15 @@ class FinancialValidator:
 
         return is_valid, errors, computed_values
 
+    def validate_financials(
+        self,
+        invoice_data: Dict[str, Any],
+        gst_result: Optional[Dict[str, Any]] = None,
+        tolerance: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Alias for validate_invoice."""
+        return self.validate_invoice(invoice_data, gst_result, tolerance)
+
     def validate_invoice(
         self,
         invoice_data: Dict[str, Any],
@@ -764,6 +773,7 @@ class FinancialValidator:
         line_math_status = "PASSED" if (line_item_checks and all_lines_valid) else ("MISMATCH" if has_mismatch else ("NOT_APPLICABLE" if not raw_line_items else "REVIEW_REQUIRED"))
         checks.append({
             "name": "line_item_math",
+            "type": "LINE_TOTAL",
             "description": "Per-line arithmetic verification (quantity × unit_price - discount = taxable, and taxable + line taxes = line total)",
             "status": line_math_status,
             "total_lines_checked": len(line_item_checks),
@@ -801,6 +811,7 @@ class FinancialValidator:
 
             checks.append({
                 "name": "line_item_sum_vs_subtotal",
+                "type": "SUBTOTAL",
                 "description": "Sum of line items vs extracted invoice subtotal",
                 "status": sub_status,
                 "source_value": src_subtotal,
@@ -810,6 +821,7 @@ class FinancialValidator:
         elif src_subtotal is not None:
             checks.append({
                 "name": "line_item_sum_vs_subtotal",
+                "type": "SUBTOTAL",
                 "description": "Sum of line items vs extracted invoice subtotal",
                 "status": "PASSED" if not raw_line_items else "REVIEW_REQUIRED",
                 "source_value": src_subtotal,
@@ -822,8 +834,9 @@ class FinancialValidator:
         else:
             checks.append({
                 "name": "line_item_sum_vs_subtotal",
+                "type": "SUBTOTAL",
                 "description": "Sum of line items vs extracted invoice subtotal",
-                "status": "REVIEW_REQUIRED",
+                "status": "NOT_VALIDATED",
                 "source_value": None,
                 "calculated_value": calculated_subtotal,
                 "difference": 0.0,
@@ -851,6 +864,7 @@ class FinancialValidator:
 
             checks.append({
                 "name": "gst_components_vs_gst_total",
+                "type": "TAX",
                 "description": "Sum of GST components (CGST + SGST + IGST + Cess) vs extracted Tax Total",
                 "status": gst_status,
                 "source_value": src_tax_total,
@@ -860,6 +874,7 @@ class FinancialValidator:
         elif calculated_gst_total is not None:
             checks.append({
                 "name": "gst_components_vs_gst_total",
+                "type": "TAX",
                 "description": "Sum of GST components (CGST + SGST + IGST + Cess) vs extracted Tax Total",
                 "status": "PASSED",
                 "source_value": calculated_gst_total,
@@ -871,6 +886,7 @@ class FinancialValidator:
             calculated_gst_total = src_tax_total
             checks.append({
                 "name": "gst_components_vs_gst_total",
+                "type": "TAX",
                 "description": "Sum of GST components (CGST + SGST + IGST + Cess) vs extracted Tax Total",
                 "status": "REVIEW_REQUIRED",
                 "source_value": src_tax_total,
@@ -883,6 +899,7 @@ class FinancialValidator:
             calculated_gst_total = round(sum(calc_line_taxes), 2)
             checks.append({
                 "name": "gst_components_vs_gst_total",
+                "type": "TAX",
                 "description": "Sum of GST components (CGST + SGST + IGST + Cess) vs extracted Tax Total",
                 "status": "PASSED",
                 "source_value": calculated_gst_total,
@@ -893,8 +910,9 @@ class FinancialValidator:
         else:
             checks.append({
                 "name": "gst_components_vs_gst_total",
+                "type": "TAX",
                 "description": "Sum of GST components (CGST + SGST + IGST + Cess) vs extracted Tax Total",
-                "status": "REVIEW_REQUIRED",
+                "status": "NOT_VALIDATED",
                 "source_value": None,
                 "calculated_value": None,
                 "difference": 0.0,
@@ -983,6 +1001,7 @@ class FinancialValidator:
                     errors.append(f"Header vs Line GST mismatch: {mm}.")
                 checks.append({
                     "name": "header_gst_vs_line_gst_reconciliation",
+                    "type": "TAX",
                     "description": "Reconciliation of line-level GST components vs header tax components",
                     "status": "MISMATCH",
                     "details": recon_details,
@@ -991,6 +1010,7 @@ class FinancialValidator:
             else:
                 checks.append({
                     "name": "header_gst_vs_line_gst_reconciliation",
+                    "type": "TAX",
                     "description": "Reconciliation of line-level GST components vs header tax components",
                     "status": "PASSED",
                     "details": recon_details,
@@ -1000,6 +1020,7 @@ class FinancialValidator:
             # Header only or zero tax lines -> valid, do not force line taxes
             checks.append({
                 "name": "header_gst_vs_line_gst_reconciliation",
+                "type": "TAX",
                 "description": "Reconciliation of line-level GST components vs header tax components",
                 "status": "PASSED" if (not raw_line_items or hdr_tax_total_val == 0.0) else "NOT_APPLICABLE",
                 "note": "Header tax summary present without explicit line taxes or zero tax invoice." if (raw_line_items and hdr_tax_total_val == 0.0) else ("Header tax summary present without explicit line taxes." if raw_line_items else "No line items to reconcile."),
@@ -1117,12 +1138,15 @@ class FinancialValidator:
 
             check_entry: Dict[str, Any] = {
                 "name": "extracted_total_vs_calculated_total",
-                "description": "Expected Grand Total equation with deterministic discount reconciliation vs extracted Grand Total",
+                "type": "GRAND_TOTAL",
+                "field": "total_amount",
                 "status": total_status,
+                "invoice_value": src_total_amount,
                 "source_value": src_total_amount,
                 "calculated_value": calculated_grand_total,
                 "difference": total_diff,
                 "discount_treatment": discount_treatment,
+                "message": check_note or f"Grand total mismatch: Extracted ₹{src_total_amount:,.2f}, Calculated ₹{calculated_grand_total:,.2f} (diff: ₹{total_diff:,.2f}).",
             }
             if check_note:
                 check_entry["note"] = check_note
@@ -1132,22 +1156,28 @@ class FinancialValidator:
         elif src_total_amount is not None:
             checks.append({
                 "name": "extracted_total_vs_calculated_total",
-                "description": "Expected Grand Total equation vs extracted Grand Total",
-                "status": "REVIEW_REQUIRED",
+                "type": "GRAND_TOTAL",
+                "field": "total_amount",
+                "status": "NOT_VALIDATED",
+                "invoice_value": src_total_amount,
                 "source_value": src_total_amount,
                 "calculated_value": calculated_grand_total,
                 "difference": 0.0,
+                "message": "Subtotal or tax components missing to compute expected Grand Total.",
                 "note": "Subtotal or tax components missing to compute expected Grand Total.",
             })
             has_review = True
         else:
             checks.append({
                 "name": "extracted_total_vs_calculated_total",
-                "description": "Expected Grand Total equation vs extracted Grand Total",
-                "status": "REVIEW_REQUIRED",
+                "type": "GRAND_TOTAL",
+                "field": "total_amount",
+                "status": "NOT_VALIDATED",
+                "invoice_value": None,
                 "source_value": None,
                 "calculated_value": calculated_grand_total,
                 "difference": 0.0,
+                "message": "Extracted total amount is missing.",
                 "note": "Extracted Grand Total missing from invoice.",
             })
             has_review = True
@@ -1224,7 +1254,7 @@ class FinancialValidator:
                 })
 
         # -------------------------------------------------------------
-        # Overall Status
+        # Overall Status (Legacy Contract Preservation) & New validation_status
         # -------------------------------------------------------------
         if has_mismatch:
             overall_status = "MISMATCH"
@@ -1232,6 +1262,24 @@ class FinancialValidator:
             overall_status = "REVIEW_REQUIRED"
         else:
             overall_status = "PASSED"
+
+        # Derive new structured validation_status:
+        # - MISMATCH if any mathematical check failed
+        # - PARTIAL if some checks passed but others were NOT_VALIDATED or missing fields
+        # - VALID if all applicable checks passed
+        # - NOT_VALIDATED if insufficient data existed
+        mismatch_checks = [c for c in checks if c.get("status") in ("MISMATCH", "FAILED")]
+        passed_checks = [c for c in checks if c.get("status") in ("PASSED", "MATCH")]
+        not_val_checks = [c for c in checks if c.get("status") in ("NOT_VALIDATED", "REVIEW_REQUIRED")]
+
+        if mismatch_checks:
+            validation_status = "MISMATCH"
+        elif passed_checks and not_val_checks:
+            validation_status = "PARTIAL"
+        elif passed_checks and not mismatch_checks:
+            validation_status = "VALID"
+        else:
+            validation_status = "NOT_VALIDATED"
 
         # Construct differences dictionary
         differences: Dict[str, Any] = {}
@@ -1244,6 +1292,7 @@ class FinancialValidator:
 
         return {
             "overall_status": overall_status,
+            "validation_status": validation_status,
             "tolerance": tol,
             "source": {
                 "subtotal": src_subtotal,

@@ -327,7 +327,104 @@ export default function InvoiceWorkspace({
           ...currData,
         };
 
-        if (extracted.invoice_date) {
+        const rawF: any = (rawData as any).raw_fields || (currData as any).raw_fields || {};
+
+        if (!extracted.vendor_phone) {
+          extracted.vendor_phone =
+            rawF.vendor_phone ||
+            rawF.phone ||
+            rawF.vendor_contact ||
+            (rawData.additional_fields as any)?.vendor_phone ||
+            (rawData.additional_fields as any)?.phone ||
+            (currData.additional_fields as any)?.vendor_phone ||
+            (currData.additional_fields as any)?.phone ||
+            (rawData as any)?.vendor_details?.phone ||
+            "";
+        }
+        if (!extracted.vendor_email) {
+          extracted.vendor_email =
+            rawF.vendor_email ||
+            rawF.email ||
+            (rawData.additional_fields as any)?.vendor_email ||
+            (rawData.additional_fields as any)?.email ||
+            (currData.additional_fields as any)?.vendor_email ||
+            (currData.additional_fields as any)?.email ||
+            (rawData as any)?.vendor_details?.email ||
+            "";
+        }
+        if (!extracted.customer_phone) {
+          extracted.customer_phone =
+            rawF.customer_phone ||
+            rawF.client_phone ||
+            (rawData.additional_fields as any)?.customer_phone ||
+            (currData.additional_fields as any)?.customer_phone ||
+            (rawData as any)?.customer_details?.phone ||
+            "";
+        }
+        if (!extracted.customer_email) {
+          extracted.customer_email =
+            rawF.customer_email ||
+            rawF.client_email ||
+            (rawData.additional_fields as any)?.customer_email ||
+            (currData.additional_fields as any)?.customer_email ||
+            (rawData as any)?.customer_details?.email ||
+            "";
+        }
+
+        const bankObj: any = {
+          ...(typeof rawData.bank_details === "object" ? rawData.bank_details : {}),
+          ...(typeof currData.bank_details === "object" ? currData.bank_details : {})
+        };
+        const addBank =
+          (typeof (rawData.additional_fields as any)?.bank_details === "object" ? (rawData.additional_fields as any).bank_details : null) ||
+          (typeof (currData.additional_fields as any)?.bank_details === "object" ? (currData.additional_fields as any).bank_details : null);
+
+        if (addBank) {
+          if (!bankObj.bank_name) bankObj.bank_name = addBank.bank_name || addBank.bank;
+          if (!bankObj.account_number) bankObj.account_number = addBank.account_number || addBank.account_no || addBank.a_c_no;
+          if (!bankObj.ifsc_code) bankObj.ifsc_code = addBank.ifsc_code || addBank.ifsc;
+          if (!bankObj.branch) bankObj.branch = addBank.branch || addBank.branch_name;
+          if (!bankObj.branch_name) bankObj.branch_name = addBank.branch || addBank.branch_name;
+          if (!bankObj.account_holder_name) bankObj.account_holder_name = addBank.account_holder_name || addBank.account_name;
+        }
+
+        const unparsedBankText: string =
+          (typeof rawF.bank_details === "string" ? rawF.bank_details : "") ||
+          (rawData.additional_fields as any)?.unparsed_bank_details ||
+          (currData.additional_fields as any)?.unparsed_bank_details ||
+          (typeof (rawData.additional_fields as any)?.bank_details === "string" ? (rawData.additional_fields as any).bank_details : "") ||
+          (typeof rawData.bank_details === "string" ? rawData.bank_details : "") ||
+          "";
+
+        if (unparsedBankText) {
+          if (!bankObj.bank_name) {
+            const m = unparsedBankText.match(/Bank\s*(?:Name)?[:\s]*([^,\n|]+)/i);
+            if (m) bankObj.bank_name = m[1].trim();
+          }
+          if (!bankObj.branch_name || !bankObj.branch) {
+            const m = unparsedBankText.match(/Branch[:\s]*([^,\n|]+)/i) || unparsedBankText.match(/Bank:[^,]+,\s*([^,\n|]+)/i);
+            if (m) {
+              const val = m[1].trim();
+              bankObj.branch_name = val;
+              bankObj.branch = val;
+            }
+          }
+          if (!bankObj.account_number) {
+            const m = unparsedBankText.match(/(?:A\/C\s*No|Account\s*No|A\/c|Account(?:\s*No|\s*Number)?)[:.\s]*([0-9A-Za-z]+)/i);
+            if (m) bankObj.account_number = m[1].trim();
+          }
+          if (!bankObj.ifsc_code) {
+            const m = unparsedBankText.match(/IFSC\s*(?:Code)?[:.\s]*([A-Z]{4}0[A-Z0-9]{6})/i);
+            if (m) bankObj.ifsc_code = m[1].trim();
+          }
+          if (!bankObj.account_holder_name) {
+            const m = unparsedBankText.match(/Account\s*Name[:.\s]*([^,\n|]+)/i);
+            if (m) bankObj.account_holder_name = m[1].trim();
+          }
+        }
+        if (bankObj.branch_name && !bankObj.branch) bankObj.branch = bankObj.branch_name;
+        if (bankObj.branch && !bankObj.branch_name) bankObj.branch_name = bankObj.branch;
+        extracted.bank_details = bankObj;
           extracted.invoice_date = formatToIndianDate(extracted.invoice_date);
         }
         if (extracted.due_date) {
@@ -2393,7 +2490,24 @@ export default function InvoiceWorkspace({
                               currTds.applicable = isApp;
                               if (!isApp) {
                                 currTds.tds_rate = null;
+                                currTds.rate = null;
+                                currTds.approved_tds_rate = null;
                                 currTds.proposed_tds_amount = 0.0;
+                                currTds.tds_amount = 0.0;
+                              } else {
+                                const secStr = String(currTds.tds_section || currTds.section || currTds.tds_provision || currTds.nature_of_payment || "").toUpperCase();
+                                const rateToUse = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                                currTds.tds_rate = rateToUse;
+                                currTds.rate = rateToUse;
+                                currTds.approved_tds_rate = rateToUse;
+                                const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
+                                if (subtotal > 0) {
+                                  currTds.tds_base_amount = subtotal;
+                                  currTds.base_amount = subtotal;
+                                  const calcAmt = Math.round((subtotal * rateToUse) / 100 * 100) / 100;
+                                  currTds.proposed_tds_amount = calcAmt;
+                                  currTds.tds_amount = calcAmt;
+                                }
                               }
                               return {
                                 ...prev,
@@ -2421,69 +2535,105 @@ export default function InvoiceWorkspace({
                       {/* TDS Section */}
                       <div>
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
-                          TDS Section / Provision
+                          TDS Section
                         </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 194C, 194J, 194Q, 194I"
-                          value={tdsResult.tds_section || tdsResult.tds_provision || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_section = val;
-                              currTds.section = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const secRaw = tdsResult.tds_section || tdsResult.section;
+                          const provRaw = tdsResult.tds_provision || tdsResult.provision;
+                          const natRaw = tdsResult.nature_of_payment;
+                          const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
+                          let displaySec = secRaw || "";
+                          if (isApp && (!displaySec || displaySec.includes("_"))) {
+                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displaySec = "194J / 393";
+                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displaySec = "194C";
+                            else if (combined.includes("194I") || combined.includes("RENT")) displaySec = "194I";
+                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displaySec = "194H";
+                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displaySec = "194Q";
+                            else displaySec = "194J";
+                          }
+                          return (
+                            <input
+                              type="text"
+                              placeholder="e.g. 194C, 194J, 194Q, 194I"
+                              value={displaySec}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_section = val;
+                                  currTds.section = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
-                      {/* Nature of Payment */}
+                      {/* TDS Statutory Provision */}
                       <div>
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
-                          Nature of Payment
+                          TDS Statutory Provision
                         </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. Professional services, Purchase of goods"
-                          value={tdsResult.nature_of_payment || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.nature_of_payment = val;
-                              currTds.nature = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const secRaw = tdsResult.tds_section || tdsResult.section;
+                          const provRaw = tdsResult.tds_provision || tdsResult.provision;
+                          const natRaw = tdsResult.nature_of_payment;
+                          const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
+                          let displayProv = provRaw || "";
+                          if (isApp && (!displayProv || displayProv.includes("_"))) {
+                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displayProv = "Section 194J / 393 - Fees for Technical Services";
+                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displayProv = "Section 194C - Payments to Contractors and Sub-contractors";
+                            else if (combined.includes("194I") || combined.includes("RENT")) displayProv = "Section 194I - Rent for Property / Equipment";
+                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displayProv = "Section 194H - Commission or Brokerage";
+                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displayProv = "Section 194Q - Purchase of Goods";
+                            else displayProv = `Section ${secRaw || "194J"} - Statutory Deduction`;
+                          }
+                          return (
+                            <input
+                              type="text"
+                              placeholder="e.g. Section 194J - Fees for Technical Services"
+                              value={displayProv}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_provision = val;
+                                  currTds.provision = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* TDS Rate (%) */}
@@ -2491,38 +2641,54 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Rate (%)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="e.g. 0.1, 1, 2, 10"
-                          value={tdsResult.tds_rate !== null && tdsResult.tds_rate !== undefined ? tdsResult.tds_rate : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_rate = val;
-                              currTds.rate = val;
-                              const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
-                              if (val !== null && subtotal > 0) {
-                                currTds.proposed_tds_amount = Math.round((subtotal * val) / 100 * 100) / 100;
-                              }
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawRate = tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate;
+                          const secStr = String(tdsResult.tds_section || tdsResult.tds_provision || tdsResult.nature_of_payment || "").toUpperCase();
+                          const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                          const displayRate = isApp
+                            ? (rawRate !== null && rawRate !== undefined && parseFloat(String(rawRate)) > 0
+                                ? rawRate
+                                : fallbackRate)
+                            : (rawRate !== null && rawRate !== undefined ? rawRate : "");
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="e.g. 0.1, 1, 2, 10"
+                              value={displayRate !== null && displayRate !== undefined ? displayRate : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_rate = val;
+                                  currTds.rate = val;
+                                  currTds.approved_tds_rate = val;
+                                  const subtotal = parseFloat(String(currTds.tds_base_amount || currTds.base_amount || formData.subtotal || formData.total_amount || 0));
+                                  if (val !== null && subtotal > 0) {
+                                    const calcAmt = Math.round((subtotal * val) / 100 * 100) / 100;
+                                    currTds.proposed_tds_amount = calcAmt;
+                                    currTds.tds_amount = calcAmt;
+                                  }
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* TDS Base Amount */}
@@ -2530,34 +2696,51 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Base Amount (₹)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined ? tdsResult.tds_base_amount : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_base_amount = val;
-                              currTds.base_amount = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawBase = tdsResult.tds_base_amount ?? tdsResult.base_amount;
+                          const displayBase = isApp
+                            ? (rawBase !== null && rawBase !== undefined && parseFloat(String(rawBase)) > 0
+                                ? rawBase
+                                : (formData.subtotal || (formData as any).taxable_amount || formData.total_amount || ""))
+                            : (rawBase !== null && rawBase !== undefined ? rawBase : "");
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={displayBase !== null && displayBase !== undefined ? displayBase : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_base_amount = val;
+                                  currTds.base_amount = val;
+                                  const rate = parseFloat(String(currTds.approved_tds_rate ?? currTds.tds_rate ?? currTds.rate ?? "0")) || 0;
+                                  if (val !== null && rate > 0) {
+                                    const calcAmt = Math.round((val * rate) / 100 * 100) / 100;
+                                    currTds.proposed_tds_amount = calcAmt;
+                                    currTds.tds_amount = calcAmt;
+                                  }
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* Proposed TDS Amount */}
@@ -2565,36 +2748,54 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Withholding Amount (₹)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={tdsResult.proposed_tds_amount !== null && tdsResult.proposed_tds_amount !== undefined ? tdsResult.proposed_tds_amount : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.proposed_tds_amount = val;
-                              currTds.tds_amount = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            fontWeight: "700",
-                            color: "var(--accent)",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawAmt = tdsResult.proposed_tds_amount ?? tdsResult.tds_amount;
+                          const rawRate = parseFloat(String(tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate ?? "0"));
+                          const secStr = String(tdsResult.tds_section || tdsResult.tds_provision || tdsResult.nature_of_payment || "").toUpperCase();
+                          const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                          const effectiveRate = rawRate > 0 ? rawRate : fallbackRate;
+                          const baseVal = (tdsResult.tds_base_amount ?? tdsResult.base_amount) || (formData.subtotal || (formData as any).taxable_amount || formData.total_amount || 0);
+                          const rawBase = parseFloat(String(baseVal || "0"));
+                          const computedAmt = (rawBase > 0 && effectiveRate > 0) ? Math.round((rawBase * effectiveRate) / 100 * 100) / 100 : 0;
+                          const displayAmt = isApp
+                            ? (rawAmt !== null && rawAmt !== undefined && parseFloat(String(rawAmt)) > 0
+                                ? rawAmt
+                                : computedAmt)
+                            : 0;
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={displayAmt !== null && displayAmt !== undefined ? displayAmt : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.proposed_tds_amount = val;
+                                  currTds.tds_amount = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                fontWeight: "700",
+                                color: "var(--accent)",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {(() => {

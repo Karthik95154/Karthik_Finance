@@ -113,7 +113,7 @@ async def approve_extraction_hitl(
 
     # Update Invoice
     invoice.current_vlm_output = payload.corrected_data
-    invoice.status = "ACCOUNTING_PROCESSING"
+    invoice.status = "PROCESSING_ACCOUNTING"
     await db.commit()
 
     # Trigger downstream asynchronously

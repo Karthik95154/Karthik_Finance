@@ -3,7 +3,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import select, or_, and_, true
+from sqlalchemy import select, or_, and_, true, false
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Invoice, Integration, EmailConnection
@@ -23,9 +23,9 @@ router = APIRouter(prefix="", tags=["Inbox / Ingestion"])
 def get_user_filter(current_user: AuthenticatedUser):
     try:
         user_uuid = uuid.UUID(current_user.id)
-        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        return (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        return true()
+        return false()
 
 
 
@@ -34,12 +34,12 @@ async def get_staged_documents(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieves staged invoices waiting for review belonging to the authenticated user (or legacy unassigned records)."""
+    """Retrieves staged invoices waiting for review belonging strictly to the authenticated user."""
     try:
         user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        user_filter = (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        user_filter = true()
+        user_filter = false()
 
     query = (
         select(Invoice)
@@ -69,9 +69,9 @@ async def process_staged_document(
     """Triggers invoice extraction and Stage 3 accounting pipeline for a staged document."""
     try:
         user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        user_filter = (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
+        user_filter = false()
 
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
@@ -115,9 +115,9 @@ async def delete_staged_document(
     """Deletes a staged invoice from the database instantly, cleaning up Supabase Storage in the background."""
     try:
         user_uuid = uuid.UUID(current_user.id)
-        user_filter = or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        user_filter = (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        user_filter = (Invoice.user_id.is_(None))
+        user_filter = false()
 
     query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
     result = await db.execute(query)
@@ -274,9 +274,9 @@ async def poll_email_inbox(
         existing_invoices = {}
         if hashes:
             if current_user_uuid:
-                user_inv_filter = or_(Invoice.user_id == current_user_uuid, Invoice.user_id.is_(None))
+                user_inv_filter = (Invoice.user_id == current_user_uuid)
             else:
-                user_inv_filter = true()
+                user_inv_filter = false()
 
             dup_query = select(Invoice).where(user_inv_filter, Invoice.file_hash.in_(hashes))
             dup_result = await db.execute(dup_query)

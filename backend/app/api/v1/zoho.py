@@ -250,6 +250,18 @@ async def select_zoho_organization(
             detail="Zoho account is not connected.",
         )
 
+    access_token = await zoho_client_service.get_valid_access_token(connection, db)
+    orgs = await zoho_client_service.get_organizations(
+        access_token=access_token,
+        api_domain=connection.api_domain,
+    )
+    user_org_ids = [str(o.get("organization_id")) for o in orgs if isinstance(o, dict)]
+    if str(req.organization_id) not in user_org_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Specified organization_id does not belong to the current user's connected Zoho account.",
+        )
+
     connection.organization_id = req.organization_id
     if req.organization_name:
         connection.organization_name = req.organization_name
@@ -423,3 +435,59 @@ async def disconnect_zoho(
     await db.commit()
 
     return {"status": "success", "message": "Zoho connection disconnected successfully."}
+
+
+class MatchCOARequest(BaseModel):
+    account_name: Optional[str] = None
+    account_type: Optional[str] = None
+    account_code: Optional[str] = None
+    zoho_account_id: Optional[str] = None
+
+
+class CreateCOARequest(BaseModel):
+    account_name: str
+    account_type: str = "expense"
+    account_code: Optional[str] = None
+    description: Optional[str] = None
+
+
+@router.post("/chart_of_accounts/match")
+async def match_chart_of_account_endpoint(
+    payload: MatchCOARequest,
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hierarchical COA Matcher endpoint strictly scoped to tenant_id & active organization."""
+    return await master_data_service.match_chart_of_account(
+        tenant_id=current_user.tenant_id,
+        db=db,
+        extracted_name=payload.account_name,
+        extracted_type=payload.account_type,
+        extracted_code=payload.account_code,
+        zoho_account_id=payload.zoho_account_id,
+    )
+
+
+@router.post("/chart_of_accounts/create")
+async def create_chart_of_account_endpoint(
+    payload: CreateCOARequest,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Creates a new Chart of Account in Zoho Books after explicit user confirmation with pre-creation duplicate check."""
+    try:
+        res = await master_data_service.create_and_sync_chart_of_account(
+            tenant_id=current_user.tenant_id,
+            db=db,
+            account_name=payload.account_name,
+            account_type=payload.account_type,
+            account_code=payload.account_code,
+            description=payload.description,
+        )
+        return res
+    except Exception as e:
+        logger.error(f"Error creating COA in Zoho: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )

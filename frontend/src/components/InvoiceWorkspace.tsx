@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import {
   getInvoice,
   getInvoiceFileUrl,
+  fetchAuthenticatedFileBlobUrl,
   updateInvoiceExtraction,
   triggerAccountingCategorization,
   listInvoices,
@@ -87,14 +88,9 @@ function formatToIndianDate(val: any): string {
   const s = val.trim();
   // If already DD/MM/YYYY
   if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) return s;
-  // If YYYY-MM-DD or YYYY/MM/DD
-  const iso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-  if (iso) {
-    const y = iso[1];
-    const m = iso[2].padStart(2, "0");
-    const d = iso[3].padStart(2, "0");
-    return `${d}/${m}/${y}`;
-  }
+  // If ISO YYYY-MM-DD
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
   return s;
 }
 
@@ -308,6 +304,24 @@ function extractOrDeriveTax(
   return null;
 }
 
+// Helper to derive Place of Supply based on Indian state codes from GSTINs
+function derivePlaceOfSupply(vendorGstin?: string | null, customerGstin?: string | null): string | null {
+  const g = vendorGstin || customerGstin;
+  if (!g || g.length < 2) return null;
+  const code = g.substring(0, 2);
+  const stateMap: Record<string, string> = {
+    "01": "01-Jammu & Kashmir", "02": "02-Himachal Pradesh", "03": "03-Punjab", "04": "04-Chandigarh",
+    "05": "05-Uttarakhand", "06": "06-Haryana", "07": "07-Delhi", "08": "08-Rajasthan", "09": "09-Uttar Pradesh",
+    "10": "10-Bihar", "11": "11-Sikkim", "12": "12-Arunachal Pradesh", "13": "13-Nagaland", "14": "14-Manipur",
+    "15": "15-Mizoram", "16": "16-Tripura", "17": "17-Meghalaya", "18": "18-Assam", "19": "19-West Bengal",
+    "20": "20-Jharkhand", "21": "21-Odisha", "22": "22-Chhattisgarh", "23": "23-Madhya Pradesh", "24": "24-Gujarat",
+    "26": "26-Dadra & Nagar Haveli", "27": "27-Maharashtra", "28": "28-Andhra Pradesh", "29": "29-Karnataka",
+    "30": "30-Goa", "31": "31-Lakshadweep", "32": "32-Kerala", "33": "33-Tamil Nadu", "34": "34-Puducherry",
+    "35": "35-Andaman & Nicobar Islands", "36": "36-Telangana", "37": "37-Andhra Pradesh (New)", "38": "38-Ladakh"
+  };
+  return stateMap[code] || null;
+}
+
 interface InvoiceWorkspaceProps {
   mode?: "internal" | "customer";
   invoiceId?: string;
@@ -337,6 +351,32 @@ export default function InvoiceWorkspace({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [lineItemErrors, setLineItemErrors] = useState<{ [key: number]: string }>({});
+
+  // Helper to route field & line item errors directly to the target input field instead of displaying top banner
+  const handleFieldErrorOrExportError = (errMsg: string) => {
+    if (!errMsg) return false;
+    const lineItemMatch = errMsg.match(/Line item (\d+)/i);
+    if (lineItemMatch && lineItemMatch[1]) {
+      const lineNum = parseInt(lineItemMatch[1], 10);
+      const lineIdx = lineNum - 1;
+      const cleanMsg = errMsg.replace(/^Export failed:\s*(Zoho export failed:\s*)?/i, "");
+      setLineItemErrors((prev) => ({
+        ...prev,
+        [lineIdx]: cleanMsg,
+      }));
+      setError(null);
+      setActionNotice(null);
+      setTimeout(() => {
+        const el = document.getElementById(`line-item-row-${lineIdx}`);
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+      }, 100);
+      return true;
+    }
+    return false;
+  };
 
   // Editable form state
   const [formData, setFormData] = useState<ExtractedInvoiceData>({});
@@ -347,6 +387,19 @@ export default function InvoiceWorkspace({
   const [journalEntry, setJournalEntry] = useState<JournalEntry | null>(null);
   const [additionalFieldsText, setAdditionalFieldsText] = useState<string>("");
   const [zohoAccounts, setZohoAccounts] = useState<any[]>([]);
+  const [coaMatchResult, setCoaMatchResult] = useState<any | null>(null);
+  const [showCreateCoaModal, setShowCreateCoaModal] = useState<boolean>(false);
+  const [showReviewCoaModal, setShowReviewCoaModal] = useState<boolean>(false);
+  const [reviewCoaModalLineIdx, setReviewCoaModalLineIdx] = useState<number | null>(null);
+  const [modalSelectedAccountId, setModalSelectedAccountId] = useState<string>("");
+  const [createCoaFormData, setCreateCoaFormData] = useState<{ account_name: string; account_type: string; account_code: string; description: string }>({
+    account_name: "",
+    account_type: "expense",
+    account_code: "",
+    description: "",
+  });
+  const [isCreatingCoa, setIsCreatingCoa] = useState<boolean>(false);
+  const [showMathDiscrepancyModal, setShowMathDiscrepancyModal] = useState<boolean>(false);
   const [showRawJsonModal, setShowRawJsonModal] = useState<boolean>(false);
   const [copiedJson, setCopiedJson] = useState<boolean>(false);
   const [warningModalOpen, setWarningModalOpen] = useState<boolean>(false);
@@ -354,6 +407,115 @@ export default function InvoiceWorkspace({
   const [vendorStatus, setVendorStatus] = useState<InvoiceVendorStatusResponse | null>(null);
   const [vendorModalOpen, setVendorModalOpen] = useState<boolean>(false);
   const [isAddingVendor, setIsAddingVendor] = useState<boolean>(false);
+  const [previewBlobUrl, setPreviewBlobUrl] = useState<string | null>(null);
+  const [blobLoading, setBlobLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    let active = true;
+    if (invoiceId) {
+      setBlobLoading(true);
+      fetchAuthenticatedFileBlobUrl(invoiceId)
+        .then((blobUrl) => {
+          if (active) {
+            setPreviewBlobUrl(blobUrl);
+            setBlobLoading(false);
+          }
+        })
+        .catch(() => {
+          if (active) {
+            setPreviewBlobUrl(null);
+            setBlobLoading(false);
+          }
+        });
+    }
+    return () => {
+      active = false;
+    };
+  }, [invoiceId]);
+
+  // Synchronize Line Items and General Ledger lines once Zoho master accounts are loaded
+  useEffect(() => {
+    if (zohoAccounts && zohoAccounts.length > 0 && formData.line_items && formData.line_items.length > 0) {
+      // 1. Auto-fill accountingLines with matched Zoho account IDs
+      setAccountingData((prev) => {
+        const currentAcc = [...(prev.accounting || [])];
+        let changed = false;
+        formData.line_items?.forEach((item, idx) => {
+          const acc = currentAcc[idx] || { line_index: idx + 1 };
+          const predName = String(
+            acc.approved_account_name ||
+            acc.account_name ||
+            acc.ai_account_name ||
+            item.account_name ||
+            ""
+          ).replace(/^\[Unapproved\]\s*/i, "").trim();
+
+          if (predName) {
+            const matched = zohoAccounts.find(
+              (za: any) => za.account_name?.toLowerCase().trim() === predName.toLowerCase()
+            );
+            if (matched) {
+              const zohoId = String(matched.zoho_account_id || matched.id);
+              const zohoName = matched.account_name;
+              if (acc.account_id !== zohoId || acc.approved_account_id !== zohoId || acc.account_name !== zohoName) {
+                currentAcc[idx] = {
+                  ...acc,
+                  account_id: zohoId,
+                  approved_account_id: zohoId,
+                  final_account_id: zohoId,
+                  account_name: zohoName,
+                  approved_account_name: zohoName,
+                  final_account_name: zohoName,
+                };
+                changed = true;
+              }
+            }
+          }
+        });
+        return changed ? { ...prev, accounting: currentAcc } : prev;
+      });
+
+      // 2. Auto-fill journalEntry.lines with matched Zoho accounts
+      setJournalEntry((prev) => {
+        if (!prev || !prev.lines) return prev;
+        let jChanged = false;
+        const jLines = prev.lines.map((l: any, idx: number) => {
+          if (l.line_type === "EXPENSE" || !l.line_type) {
+            const item = formData.line_items?.[idx] || {};
+            const acc = (accountingData.accounting || [])[idx] || {};
+            const predName = String(
+              acc.approved_account_name ||
+              acc.account_name ||
+              acc.ai_account_name ||
+              l.account_name ||
+              item.account_name ||
+              ""
+            ).replace(/^\[Unapproved\]\s*/i, "").trim();
+
+            const matched = zohoAccounts.find(
+              (za: any) => za.account_name?.toLowerCase().trim() === predName.toLowerCase()
+            );
+            if (matched) {
+              const zohoId = String(matched.zoho_account_id || matched.id);
+              const zohoName = matched.account_name;
+              if (l.account_id !== zohoId || l.account_name !== zohoName) {
+                jChanged = true;
+                return {
+                  ...l,
+                  account_id: zohoId,
+                  account_name: zohoName,
+                  match_status: "EXACT_MATCH",
+                  ai_needs_review: false,
+                };
+              }
+            }
+          }
+          return l;
+        });
+        return jChanged ? { ...prev, lines: jLines } : prev;
+      });
+    }
+  }, [zohoAccounts]);
 
   useEffect(() => {
     if (!invoiceId) return;
@@ -390,19 +552,43 @@ export default function InvoiceWorkspace({
         }
 
         // Initialize form state from current_vlm_output (edited) merged over raw_vlm_output (base)
-        const rawData: ExtractedInvoiceData =
-          invData.raw_vlm_output && (invData.raw_vlm_output as any).data
-            ? (invData.raw_vlm_output as any).data
-            : (invData.raw_vlm_output as ExtractedInvoiceData) || {};
+        const getVlmPayload = (obj: any): any => {
+          if (!obj || typeof obj !== "object") return {};
+          let target = obj;
+          if (target.data && typeof target.data === "object") target = target.data;
+          if (target.prediction && typeof target.prediction === "object") target = target.prediction;
+          return target;
+        };
 
-        const currData: ExtractedInvoiceData =
-          invData.current_vlm_output && (invData.current_vlm_output as any).data
-            ? (invData.current_vlm_output as any).data
-            : (invData.current_vlm_output as ExtractedInvoiceData) || {};
+        const rawDataPayload = getVlmPayload(invData.raw_vlm_output);
+        const currDataPayload = getVlmPayload(invData.current_vlm_output);
 
-        // Merge raw extraction with user-edited fields, ensuring line_items and totals are never wiped
-        // Merge raw extraction with user-edited fields, ensuring line_items and totals are never wiped
+        const vDet = {
+          ...(typeof rawDataPayload.vendor_details === "object" ? rawDataPayload.vendor_details : {}),
+          ...(typeof currDataPayload.vendor_details === "object" ? currDataPayload.vendor_details : {}),
+        };
+        const cDet = {
+          ...(typeof rawDataPayload.customer_details === "object" ? rawDataPayload.customer_details : {}),
+          ...(typeof currDataPayload.customer_details === "object" ? currDataPayload.customer_details : {}),
+        };
+        const iDet = {
+          ...(typeof rawDataPayload.invoice_details === "object" ? rawDataPayload.invoice_details : {}),
+          ...(typeof currDataPayload.invoice_details === "object" ? currDataPayload.invoice_details : {}),
+        };
+        const fDet = {
+          ...(typeof rawDataPayload.financial_details === "object" ? rawDataPayload.financial_details : {}),
+          ...(typeof currDataPayload.financial_details === "object" ? currDataPayload.financial_details : {}),
+        };
+
+        const rawData: ExtractedInvoiceData = { ...rawDataPayload };
+        const currData: ExtractedInvoiceData = { ...currDataPayload };
+
+        // Merge raw extraction with user-edited fields, ensuring sub-objects and top level are flattened
         const extracted: ExtractedInvoiceData = {
+          ...vDet,
+          ...cDet,
+          ...iDet,
+          ...fDet,
           ...rawData,
           ...currData,
         };
@@ -443,8 +629,63 @@ export default function InvoiceWorkspace({
         if (!extracted.payment_terms && rawF.payment_terms) {
           extracted.payment_terms = rawF.payment_terms;
         }
-        if (!extracted.vendor_email && rawF.vendor_email) {
-          extracted.vendor_email = rawF.vendor_email;
+        if (!extracted.vendor_name && vDet.vendor_name) extracted.vendor_name = vDet.vendor_name;
+        if (!extracted.vendor_address && vDet.vendor_address) extracted.vendor_address = vDet.vendor_address;
+        if (!extracted.vendor_gstin && vDet.vendor_gstin) extracted.vendor_gstin = vDet.vendor_gstin;
+        if (!extracted.vendor_pan && vDet.vendor_pan) extracted.vendor_pan = vDet.vendor_pan;
+
+        if (!extracted.vendor_phone) {
+          extracted.vendor_phone =
+            (vDet as any).vendor_phone ||
+            (vDet as any).phone ||
+            (vDet as any).mobile ||
+            rawF.vendor_phone ||
+            rawF.phone ||
+            rawF.vendor_contact ||
+            (rawData.additional_fields as any)?.vendor_phone ||
+            (rawData.additional_fields as any)?.phone ||
+            (currData.additional_fields as any)?.vendor_phone ||
+            (currData.additional_fields as any)?.phone ||
+            "";
+        }
+        if (!extracted.vendor_email) {
+          extracted.vendor_email =
+            (vDet as any).vendor_email ||
+            (vDet as any).email ||
+            rawF.vendor_email ||
+            rawF.email ||
+            (rawData.additional_fields as any)?.vendor_email ||
+            (rawData.additional_fields as any)?.email ||
+            (currData.additional_fields as any)?.vendor_email ||
+            (currData.additional_fields as any)?.email ||
+            "";
+        }
+
+        if (!extracted.customer_name && cDet.customer_name) extracted.customer_name = cDet.customer_name;
+        if (!extracted.customer_address && cDet.customer_address) extracted.customer_address = cDet.customer_address;
+        if (!extracted.customer_gstin && cDet.customer_gstin) extracted.customer_gstin = cDet.customer_gstin;
+        if (!extracted.customer_pan && cDet.customer_pan) extracted.customer_pan = cDet.customer_pan;
+
+        if (!extracted.customer_phone) {
+          extracted.customer_phone =
+            (cDet as any).customer_phone ||
+            (cDet as any).phone ||
+            (cDet as any).mobile ||
+            rawF.customer_phone ||
+            rawF.client_phone ||
+            (rawData.additional_fields as any)?.customer_phone ||
+            (currData.additional_fields as any)?.customer_phone ||
+            "";
+        }
+        if (!extracted.customer_email) {
+          extracted.customer_email =
+            (cDet as any).customer_email ||
+            (cDet as any).email ||
+            rawF.customer_email ||
+            rawF.client_email ||
+            (rawData.additional_fields as any)?.customer_email ||
+            (currData.additional_fields as any)?.customer_email ||
+            "";
         }
         if (!extracted.vendor_address && rawF.vendor_address) {
           extracted.vendor_address = rawF.vendor_address;
@@ -467,8 +708,8 @@ export default function InvoiceWorkspace({
         const rawItems = Array.isArray(currData.line_items) && currData.line_items.length > 0
           ? currData.line_items
           : Array.isArray(rawData.line_items) && rawData.line_items.length > 0
-          ? rawData.line_items
-          : [];
+            ? rawData.line_items
+            : [];
 
         extracted.line_items = rawItems.map((item: any, pos: number) => {
           const it = { ...item };
@@ -529,39 +770,59 @@ export default function InvoiceWorkspace({
         }
 
         // Deep resolve Bank Details (parsing structured object or unparsed text)
-        const bankObj: any = { 
-          ...(typeof rawData.bank_details === "object" ? rawData.bank_details : {}), 
-          ...(typeof currData.bank_details === "object" ? currData.bank_details : {}) 
+        const bankObj: any = {
+          ...(typeof rawData.bank_details === "object" ? rawData.bank_details : {}),
+          ...(typeof currData.bank_details === "object" ? currData.bank_details : {})
         };
-        const unparsedBankText: string = 
-          (typeof rawF.bank_details === "string" ? rawF.bank_details : "") || 
-          (rawData.additional_fields as any)?.unparsed_bank_details || 
-          (currData.additional_fields as any)?.unparsed_bank_details || 
-          (typeof rawData.bank_details === "string" ? rawData.bank_details : "") || 
+        const addBank =
+          (typeof (rawData.additional_fields as any)?.bank_details === "object" ? (rawData.additional_fields as any).bank_details : null) ||
+          (typeof (currData.additional_fields as any)?.bank_details === "object" ? (currData.additional_fields as any).bank_details : null);
+
+        if (addBank) {
+          if (!bankObj.bank_name) bankObj.bank_name = addBank.bank_name || addBank.bank;
+          if (!bankObj.account_number) bankObj.account_number = addBank.account_number || addBank.account_no || addBank.a_c_no;
+          if (!bankObj.ifsc_code) bankObj.ifsc_code = addBank.ifsc_code || addBank.ifsc;
+          if (!bankObj.branch) bankObj.branch = addBank.branch || addBank.branch_name;
+          if (!bankObj.branch_name) bankObj.branch_name = addBank.branch || addBank.branch_name;
+          if (!bankObj.account_holder_name) bankObj.account_holder_name = addBank.account_holder_name || addBank.account_name;
+        }
+
+        const unparsedBankText: string =
+          (typeof rawF.bank_details === "string" ? rawF.bank_details : "") ||
+          (rawData.additional_fields as any)?.unparsed_bank_details ||
+          (currData.additional_fields as any)?.unparsed_bank_details ||
+          (typeof (rawData.additional_fields as any)?.bank_details === "string" ? (rawData.additional_fields as any).bank_details : "") ||
+          (typeof rawData.bank_details === "string" ? rawData.bank_details : "") ||
           "";
 
         if (unparsedBankText) {
           if (!bankObj.bank_name) {
-            const m = unparsedBankText.match(/Bank:\s*([^,|]+)/i);
+            const m = unparsedBankText.match(/Bank\s*(?:Name)?[:\s]*([^,\n|]+)/i);
             if (m) bankObj.bank_name = m[1].trim();
           }
-          if (!bankObj.branch_name) {
-            const m = unparsedBankText.match(/Branch[:\s]*([^|]+)/i) || unparsedBankText.match(/Bank:[^,]+,\s*([^|]+)/i);
-            if (m) bankObj.branch_name = m[1].trim();
+          if (!bankObj.branch_name || !bankObj.branch) {
+            const m = unparsedBankText.match(/Branch[:\s]*([^,\n|]+)/i) || unparsedBankText.match(/Bank:[^,]+,\s*([^,\n|]+)/i);
+            if (m) {
+              const val = m[1].trim();
+              bankObj.branch_name = val;
+              bankObj.branch = val;
+            }
           }
           if (!bankObj.account_number) {
-            const m = unparsedBankText.match(/(?:A\/C\s*No|Account\s*No|A\/c|Account)[:.\s]*([0-9A-Za-z]+)/i);
+            const m = unparsedBankText.match(/(?:A\/C\s*No|Account\s*No|A\/c|Account(?:\s*No|\s*Number)?)[:.\s]*([0-9A-Za-z]+)/i);
             if (m) bankObj.account_number = m[1].trim();
           }
           if (!bankObj.ifsc_code) {
-            const m = unparsedBankText.match(/IFSC[:.\s]*([A-Z]{4}0[A-Z0-9]{6})/i);
+            const m = unparsedBankText.match(/IFSC\s*(?:Code)?[:.\s]*([A-Z]{4}0[A-Z0-9]{6})/i);
             if (m) bankObj.ifsc_code = m[1].trim();
           }
           if (!bankObj.account_holder_name) {
-            const m = unparsedBankText.match(/Account\s*Name[:.\s]*([^|]+)/i);
+            const m = unparsedBankText.match(/Account\s*Name[:.\s]*([^,\n|]+)/i);
             if (m) bankObj.account_holder_name = m[1].trim();
           }
         }
+        if (bankObj.branch_name && !bankObj.branch) bankObj.branch = bankObj.branch_name;
+        if (bankObj.branch && !bankObj.branch_name) bankObj.branch_name = bankObj.branch;
         extracted.bank_details = bankObj;
 
         if (!extracted.currency && (rawData.currency || rawF.currency)) {
@@ -590,8 +851,8 @@ export default function InvoiceWorkspace({
           extracted.additional_fields
             ? JSON.stringify(extracted.additional_fields, null, 2)
             : rawData.additional_fields
-            ? JSON.stringify(rawData.additional_fields, null, 2)
-            : ""
+              ? JSON.stringify(rawData.additional_fields, null, 2)
+              : ""
         );
 
         // Initialize accounting data from current_accounting_output or accounting_output
@@ -601,7 +862,52 @@ export default function InvoiceWorkspace({
         setGstResult(invData.gst_result || null);
         setItcResult(invData.itc_result || null);
         setFinancialValidationResult(invData.financial_validation_result || null);
-        setJournalEntry(invData.journal_entry || null);
+
+        // Synchronize initial journal lines with predicted/extracted line item COA names
+        let loadedJournal = invData.journal_entry || null;
+        const actualAccLines = accOutput.accounting || [];
+        if (loadedJournal && loadedJournal.lines && loadedJournal.lines.length > 0) {
+          const syncedLines = loadedJournal.lines.map((jLine: any, idx: number) => {
+            if (jLine.line_type === "EXPENSE" || !jLine.line_type) {
+              const accLine = actualAccLines[idx] || {};
+              const itemLine = extracted.line_items?.[idx] || {};
+              const targetAccName =
+                accLine.approved_account_name ||
+                accLine.final_account_name ||
+                accLine.account_name ||
+                accLine.ai_account_name ||
+                itemLine.account_name;
+
+              if (targetAccName) {
+                const cleanName = String(targetAccName).replace(/^\[Unapproved\]\s*/i, "").trim();
+                return {
+                  ...jLine,
+                  account_name: cleanName,
+                  match_status: jLine.match_status || "EXACT_MATCH",
+                };
+              }
+            }
+            return jLine;
+          });
+          loadedJournal = { ...loadedJournal, lines: syncedLines };
+        }
+        setJournalEntry(loadedJournal);
+
+        // Dynamically trigger COA match using actual extracted line item account_name or accounting line
+        const extractedAccName =
+          actualAccLines[0]?.approved_account_name ||
+          actualAccLines[0]?.account_name ||
+          actualAccLines[0]?.ai_account_name ||
+          extracted.line_items?.[0]?.account_name ||
+          "";
+
+        if (extractedAccName) {
+          import("@/lib/api").then(({ matchZohoCOA }) => {
+            matchZohoCOA({ account_name: extractedAccName })
+              .then(setCoaMatchResult)
+              .catch(() => null);
+          });
+        }
       } catch (err: any) {
         setError(err.message || "Failed to load invoice details.");
       } finally {
@@ -621,7 +927,70 @@ export default function InvoiceWorkspace({
 
   // Form update helpers
   const handleFieldChange = (field: keyof ExtractedInvoiceData, value: any) => {
-    setFormData((prev) => ({ ...prev, [field]: value }));
+    setFormData((prev) => {
+      const next = { ...prev, [field]: value };
+
+      // Auto PAN extraction from GSTIN if PAN is missing or derived
+      if (field === "vendor_gstin" && typeof value === "string") {
+        const cleanedGstin = value.trim().toUpperCase();
+        if (cleanedGstin.length === 15) {
+          const autoPan = cleanedGstin.substring(2, 12);
+          if (!prev.vendor_pan || prev.vendor_pan.length !== 10) {
+            next.vendor_pan = autoPan;
+          }
+        }
+        if (!next.place_of_supply) {
+          const pos = derivePlaceOfSupply(cleanedGstin, prev.customer_gstin);
+          if (pos) next.place_of_supply = pos;
+        }
+      }
+
+      if (field === "customer_gstin" && typeof value === "string") {
+        const cleanedGstin = value.trim().toUpperCase();
+        if (cleanedGstin.length === 15) {
+          const autoPan = cleanedGstin.substring(2, 12);
+          if (!prev.customer_pan || prev.customer_pan.length !== 10) {
+            next.customer_pan = autoPan;
+          }
+        }
+        if (!next.place_of_supply) {
+          const pos = derivePlaceOfSupply(prev.vendor_gstin, cleanedGstin);
+          if (pos) next.place_of_supply = pos;
+        }
+      }
+
+      // Real-time calculation for surrounding header financial fields when manually edited
+      const finFields = ["subtotal", "cgst_amount", "sgst_amount", "igst_amount", "tax_total", "discount_amount", "discount", "round_off", "tds_rate", "tds_amount"];
+      if (finFields.includes(field as string)) {
+        const sub = parseCleanNumeric(next.subtotal) ?? 0;
+        const cgst = parseCleanNumeric(next.cgst_amount) ?? 0;
+        const sgst = parseCleanNumeric(next.sgst_amount) ?? 0;
+        const igst = parseCleanNumeric(next.igst_amount) ?? 0;
+
+        let taxTot = parseCleanNumeric(next.tax_total) ?? 0;
+        if (field === "cgst_amount" || field === "sgst_amount" || field === "igst_amount" || field === "subtotal") {
+          taxTot = Math.round((cgst + sgst + igst) * 100) / 100;
+          next.tax_total = taxTot;
+        }
+
+        const disc = parseCleanNumeric((next as any).discount_amount ?? (next as any).discount) ?? 0;
+        const rOff = parseCleanNumeric((next as any).round_off) ?? 0;
+
+        if (field !== "total_amount") {
+          next.total_amount = Math.round((sub + taxTot + rOff - disc) * 100) / 100;
+        }
+
+        if ((field as string) === "tds_rate" && sub > 0) {
+          const tRate = parseCleanNumeric(value) ?? 0;
+          (next as any).tds_amount = Math.round((sub * (tRate / 100)) * 100) / 100;
+        } else if ((field as string) === "tds_amount" && sub > 0) {
+          const tAmt = parseCleanNumeric(value) ?? 0;
+          (next as any).tds_rate = Math.round(((tAmt / sub) * 100) * 100) / 100;
+        }
+      }
+
+      return next;
+    });
   };
 
   const handleBankChange = (field: keyof BankDetails, value: string) => {
@@ -641,8 +1010,106 @@ export default function InvoiceWorkspace({
   ) => {
     setFormData((prev) => {
       const items = [...(prev.line_items || [])];
-      items[index] = { ...items[index], [field]: value };
-      return { ...prev, line_items: items };
+      const currentItem = { ...items[index], [field]: value };
+
+      // 1. Quantity or Unit Price change -> Taxable Amount
+      if (field === "quantity" || field === "unit_price") {
+        const q = parseFloat(String(currentItem.quantity || 0));
+        const u = parseFloat(String(currentItem.unit_price || 0));
+        if (!isNaN(q) && !isNaN(u) && q >= 0 && u >= 0) {
+          currentItem.taxable_amount = Math.round(q * u * 100) / 100;
+        }
+      }
+
+      const taxable = Number(currentItem.taxable_amount || 0);
+
+      // 2. Tax Rates change -> Tax Amounts
+      if (field === "cgst_rate" || field === "quantity" || field === "unit_price" || field === "taxable_amount") {
+        const rate = parseFloat(String(currentItem.cgst_rate || 0));
+        if (!isNaN(rate) && rate > 0 && taxable > 0) {
+          currentItem.cgst_amount = Math.round((taxable * (rate / 100)) * 100) / 100;
+        }
+      }
+      if (field === "sgst_rate" || field === "quantity" || field === "unit_price" || field === "taxable_amount") {
+        const rate = parseFloat(String(currentItem.sgst_rate || 0));
+        if (!isNaN(rate) && rate > 0 && taxable > 0) {
+          currentItem.sgst_amount = Math.round((taxable * (rate / 100)) * 100) / 100;
+        }
+      }
+      if (field === "igst_rate" || field === "quantity" || field === "unit_price" || field === "taxable_amount") {
+        const rate = parseFloat(String(currentItem.igst_rate || 0));
+        if (!isNaN(rate) && rate > 0 && taxable > 0) {
+          currentItem.igst_amount = Math.round((taxable * (rate / 100)) * 100) / 100;
+        }
+      }
+
+      // 3. Tax Amount direct edit -> Auto calculate Tax Rate %
+      if (field === "cgst_amount" && taxable > 0) {
+        const amt = parseFloat(String(currentItem.cgst_amount || 0));
+        if (!isNaN(amt)) {
+          currentItem.cgst_rate = Math.round(((amt / taxable) * 100) * 100) / 100;
+        }
+      }
+      if (field === "sgst_amount" && taxable > 0) {
+        const amt = parseFloat(String(currentItem.sgst_amount || 0));
+        if (!isNaN(amt)) {
+          currentItem.sgst_rate = Math.round(((amt / taxable) * 100) * 100) / 100;
+        }
+      }
+      if (field === "igst_amount" && taxable > 0) {
+        const amt = parseFloat(String(currentItem.igst_amount || 0));
+        if (!isNaN(amt)) {
+          currentItem.igst_rate = Math.round(((amt / taxable) * 100) * 100) / 100;
+        }
+      }
+
+      // 4. Calculate Line Total
+      const cgst = Number(currentItem.cgst_amount || 0);
+      const sgst = Number(currentItem.sgst_amount || 0);
+      const igst = Number(currentItem.igst_amount || 0);
+      const cess = Number((currentItem as any).cess_amount || 0);
+      const disc = Number(currentItem.discount || 0);
+
+      currentItem.total = Math.round((taxable + cgst + sgst + igst + cess - disc) * 100) / 100;
+      items[index] = currentItem;
+
+      // 5. Recalculate Header Totals without wiping header taxes if line items lack per-line tax
+      const sumSubtotal = items.reduce((acc, it) => acc + (Number(it.taxable_amount) || 0), 0);
+      const sumCgst = items.reduce((acc, it) => acc + (Number(it.cgst_amount) || 0), 0);
+      const sumSgst = items.reduce((acc, it) => acc + (Number(it.sgst_amount) || 0), 0);
+      const sumIgst = items.reduce((acc, it) => acc + (Number(it.igst_amount) || 0), 0);
+      const sumTax = sumCgst + sumSgst + sumIgst;
+
+      const hasPerLineTax = items.some(it => 
+        (Number(it.cgst_amount) || 0) > 0 || 
+        (Number(it.sgst_amount) || 0) > 0 || 
+        (Number(it.igst_amount) || 0) > 0 ||
+        (Number(it.cgst_rate) || 0) > 0 || 
+        (Number(it.sgst_rate) || 0) > 0 || 
+        (Number(it.igst_rate) || 0) > 0
+      );
+
+      const nextSubtotal = sumSubtotal > 0 ? Math.round(sumSubtotal * 100) / 100 : (prev.subtotal ?? 0);
+      const nextCgst = hasPerLineTax ? Math.round(sumCgst * 100) / 100 : (prev.cgst_amount ?? (prev as any).cgst ?? 0);
+      const nextSgst = hasPerLineTax ? Math.round(sumSgst * 100) / 100 : (prev.sgst_amount ?? (prev as any).sgst ?? 0);
+      const nextIgst = hasPerLineTax ? Math.round(sumIgst * 100) / 100 : (prev.igst_amount ?? (prev as any).igst ?? 0);
+      
+      const nextTaxTotal = hasPerLineTax 
+        ? Math.round(sumTax * 100) / 100 
+        : (prev.tax_total ?? Math.round(((Number(nextCgst) || 0) + (Number(nextSgst) || 0) + (Number(nextIgst) || 0)) * 100) / 100);
+        
+      const nextTotal = Math.round(((Number(nextSubtotal) || 0) + (Number(nextTaxTotal) || 0)) * 100) / 100;
+
+      return {
+        ...prev,
+        line_items: items,
+        subtotal: nextSubtotal,
+        cgst_amount: nextCgst,
+        sgst_amount: nextSgst,
+        igst_amount: nextIgst,
+        tax_total: nextTaxTotal,
+        total_amount: nextTotal,
+      };
     });
   };
 
@@ -703,18 +1170,93 @@ export default function InvoiceWorkspace({
   };
 
   // Accounting classification line item editing
+  const updateAccountingLine = (index: number, updates: Partial<AccountingLineItem>) => {
+    setAccountingData((prev) => {
+      const baseLines = (prev.accounting && prev.accounting.length > 0)
+        ? prev.accounting
+        : (invoice?.current_accounting_output?.accounting || invoice?.accounting_output?.accounting || formData.line_items?.map((li: any, i: number) => ({
+          line_index: i + 1,
+          source_description: li.description,
+          account_id: null,
+          account_name: null,
+        })) || []);
+      const list = [...baseLines];
+      while (list.length <= index) {
+        list.push({ line_index: list.length + 1, source_description: "", account_id: null, account_name: null });
+      }
+      const updatedItem = { ...list[index], ...updates };
+      list[index] = updatedItem;
+
+      // Bi-directionally sync to journalEntry.lines
+      const newAccId = updatedItem.approved_account_id || updatedItem.account_id;
+      const newAccName = updatedItem.approved_account_name || updatedItem.account_name;
+      if (newAccName || newAccId) {
+        setJournalEntry((jPrev: any) => {
+          if (!jPrev || !jPrev.lines) return jPrev;
+          const jLines = [...jPrev.lines];
+          if (jLines[index]) {
+            jLines[index] = {
+              ...jLines[index],
+              account_id: newAccId || jLines[index].account_id,
+              account_name: newAccName || jLines[index].account_name,
+              match_status: "EXACT_MATCH",
+              ai_needs_review: false,
+              provenance: "HUMAN_APPROVED",
+            };
+          }
+          return { ...jPrev, lines: jLines };
+        });
+      }
+
+      return { ...prev, accounting: list };
+    });
+  };
+
   const handleAccountingItemChange = (
     index: number,
     field: keyof AccountingLineItem,
     value: any
   ) => {
-    setAccountingData((prev) => {
-      const list = [...(prev.accounting || [])];
-      if (list[index]) {
-        list[index] = { ...list[index], [field]: value };
+    updateAccountingLine(index, { [field]: value });
+  };
+
+  // COA uncertainty checking helper
+  const isUncertainCoaLine = (line: any) => {
+    if (!line) return false;
+    // System lines (Input Tax, Accounts Payable, TDS Payable) generated deterministically do not require user COA review
+    if (
+      line.line_type === "INPUT_TAX" ||
+      line.line_type === "ACCOUNTS_PAYABLE" ||
+      line.line_type === "TDS_PAYABLE" ||
+      line.provenance === "DETERMINISTIC"
+    ) {
+      return false;
+    }
+    // If user explicitly approved or edited manually, it's confirmed!
+    if (line.provenance === "HUMAN_APPROVED" || line.provenance === "CUSTOMER_EDIT" || line.provenance === "HITL_OVERRIDE") {
+      return false;
+    }
+    // If line has explicit EXACT_MATCH status and not flagged for review
+    if (line.match_status === "EXACT_MATCH" && !line.ai_needs_review && !String(line.account_name || "").includes("[Unapproved]")) {
+      return false;
+    }
+    // Flag as uncertain if missing account_id AND account_name, or if explicitly unselected/unassigned
+    const accName = String(line.account_name || "").trim();
+    if (!line.account_id || line.account_id === "" || line.account_id === "ACC_MANUAL" || line.account_id === "ACC_EXPENSE") {
+      if (!accName || accName === "-- Select Account --" || accName === "Unassigned COA" || accName.includes("[Unapproved]")) {
+        return true;
       }
-      return { ...prev, accounting: list };
-    });
+    }
+    if (accName === "-- Select Account --" || accName === "Unassigned COA" || accName.includes("[Unapproved]")) {
+      return true;
+    }
+    if (line.match_status && line.match_status !== "EXACT_MATCH" && line.match_status !== "MATCHED") {
+      return true;
+    }
+    if (line.ai_needs_review) {
+      return true;
+    }
+    return false;
   };
 
   // Journal line editing helpers
@@ -728,6 +1270,27 @@ export default function InvoiceWorkspace({
       const lines = [...(prev.lines || [])];
       const updatedLine = { ...lines[index], [field]: value, provenance: mode === "customer" ? "CUSTOMER_EDIT" : "HITL_OVERRIDE" };
       lines[index] = updatedLine;
+
+      // Bi-directionally sync account changes to accountingLines/line_items
+      if (field === "account_id" || field === "account_name") {
+        const srcIdx = typeof updatedLine.source_line_index === "number" ? updatedLine.source_line_index - 1 : index;
+        if (srcIdx >= 0) {
+          setAccountingData((accPrev: any) => {
+            const list = [...(accPrev.accounting || [])];
+            while (list.length <= srcIdx) {
+              list.push({ line_index: list.length + 1, source_description: "", account_id: null, account_name: null });
+            }
+            list[srcIdx] = {
+              ...list[srcIdx],
+              approved_account_id: field === "account_id" ? value : list[srcIdx].approved_account_id,
+              approved_account_name: field === "account_name" ? value : list[srcIdx].approved_account_name,
+              account_id: field === "account_id" ? value : list[srcIdx].account_id,
+              account_name: field === "account_name" ? value : list[srcIdx].account_name,
+            };
+            return { ...accPrev, accounting: list };
+          });
+        }
+      }
 
       // Recalculate totals
       let totalDr = 0;
@@ -915,7 +1478,14 @@ export default function InvoiceWorkspace({
     // 3. TDS Calculation
     const tdsRaw: any = accountingData.tds_assessment || accountingData.tds || {};
     const tdsApp = Boolean(tdsRaw.tds_applicable ?? tdsRaw.applicable);
-    const tdsRate = parseFloat(String(tdsRaw.approved_tds_rate ?? tdsRaw.tds_rate ?? tdsRaw.rate ?? "0")) || 0;
+    const rawRate = tdsRaw.approved_tds_rate ?? tdsRaw.tds_rate ?? tdsRaw.rate;
+    const secStr = String(tdsRaw.tds_section || tdsRaw.tds_provision || tdsRaw.nature_of_payment || "").toUpperCase();
+    const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+    const tdsRate = tdsApp
+      ? (rawRate !== null && rawRate !== undefined && parseFloat(String(rawRate)) > 0
+          ? parseFloat(String(rawRate))
+          : fallbackRate)
+      : 0;
     let tdsAmount = 0;
     if (tdsApp && tdsRate > 0) {
       tdsAmount = Math.round(((computedSubtotal * tdsRate) / 100) * 100) / 100;
@@ -927,8 +1497,39 @@ export default function InvoiceWorkspace({
     if (updatedItems.length > 0) {
       updatedItems.forEach((item, idx) => {
         const acc = accountingLines[idx] || {};
-        const accId = acc.approved_account_id || acc.final_account_id || acc.account_id || zohoAccounts?.[0]?.zoho_account_id || "ACC_EXPENSE";
-        const accName = acc.approved_account_name || acc.final_account_name || acc.account_name || zohoAccounts?.[0]?.account_name || (item.description || `Line ${idx + 1} Expense`);
+        const rawPredicted =
+          acc.approved_account_name ||
+          acc.final_account_name ||
+          acc.account_name ||
+          acc.ai_account_name ||
+          item.account_name ||
+          (item.description || `Line ${idx + 1} Expense`);
+        const predictedCoaName = String(rawPredicted || "").replace(/^\[Unapproved\]\s*/i, "").trim();
+
+        const matchedZoho = zohoAccounts.find(
+          (za: any) =>
+            za.account_name?.toLowerCase().trim() === predictedCoaName?.toLowerCase().trim()
+        ) || zohoAccounts.find(
+          (za: any) =>
+            String(za.zoho_account_id) === String(acc.approved_account_id || acc.account_id || (item as any).account_id)
+        );
+
+        const accId =
+          acc.approved_account_id ||
+          acc.final_account_id ||
+          acc.account_id ||
+          matchedZoho?.zoho_account_id ||
+          (item as any).account_id ||
+          (item as any).zoho_account_id ||
+          zohoAccounts?.[0]?.zoho_account_id ||
+          "ACC_EXPENSE";
+
+        const accName =
+          matchedZoho?.account_name ||
+          predictedCoaName ||
+          zohoAccounts?.[0]?.account_name ||
+          "General Expenses";
+
         newJournalLines.push({
           account_id: accId,
           account_name: accName,
@@ -937,7 +1538,8 @@ export default function InvoiceWorkspace({
           credit: 0,
           source_line_index: idx + 1,
           description: item.description || `Line ${idx + 1} Expense`,
-          provenance: "DETERMINISTIC",
+          provenance: acc.approved_account_name || item.account_name ? "HUMAN_APPROVED" : "DETERMINISTIC",
+          match_status: "EXACT_MATCH",
         });
       });
     } else {
@@ -1190,21 +1792,21 @@ export default function InvoiceWorkspace({
         setJournalEntry((prev) =>
           prev
             ? {
-                ...prev,
-                status: "APPROVED",
-                approval_status: "APPROVED",
-                approved_by: res.approved_by,
-                approved_at: res.approved_at,
-              }
+              ...prev,
+              status: "APPROVED",
+              approval_status: "APPROVED",
+              approved_by: res.approved_by,
+              approved_at: res.approved_at,
+            }
             : null
         );
       }
       setInvoice((prev) =>
         prev
           ? {
-              ...prev,
-              journal_entry: res.journal_entry || prev.journal_entry,
-            }
+            ...prev,
+            journal_entry: res.journal_entry || prev.journal_entry,
+          }
           : null
       );
       setActionNotice("General Ledger journal approved successfully!");
@@ -1448,7 +2050,11 @@ export default function InvoiceWorkspace({
       const updatedInv = await getInvoice(invoiceId);
       setInvoice(updatedInv);
     } catch (err: any) {
-      setError(err.message || "Failed to export invoice to Zoho Books.");
+      const rawMsg = err.message || "Failed to export invoice to Zoho Books.";
+      const handledLocally = handleFieldErrorOrExportError(rawMsg);
+      if (!handledLocally) {
+        setError(rawMsg);
+      }
     } finally {
       setIsExporting(false);
     }
@@ -1548,53 +2154,6 @@ export default function InvoiceWorkspace({
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-          {invoice?.accounting_confidence !== null && invoice?.accounting_confidence !== undefined && (
-            <span className="badge badge-uploaded" style={{ fontSize: "12px", color: "var(--accent)" }}>
-              COA: {Math.round(invoice.accounting_confidence * 100)}%
-            </span>
-          )}
-
-          {invoice?.approval_status && (
-            <span
-              className={`badge ${
-                invoice.approval_status === "APPROVED"
-                  ? "badge-success"
-                  : invoice.approval_status === "REJECTED"
-                  ? "badge-danger"
-                  : "badge-uploaded"
-              }`}
-              style={{ fontSize: "12px" }}
-            >
-              {invoice.approval_status === "APPROVED"
-                ? "Approved ✓"
-                : invoice.approval_status === "REJECTED"
-                ? "Rejected ✗"
-                : "Pending Review"}
-            </span>
-          )}
-
-          {invoice?.export_status === "EXPORTED" ? (
-            <span className="badge badge-success" style={{ fontSize: "12px", display: "inline-flex", alignItems: "center", gap: "4px" }}>
-              <ShieldCheck size={13} />
-              Zoho Bill: {invoice.zoho_bill_number ? `#${invoice.zoho_bill_number}` : invoice.zoho_bill_id || "Exported ✓"}
-            </span>
-          ) : (
-            <span className="badge badge-uploaded" style={{ fontSize: "12px" }}>
-              {invoice?.export_status || "NOT_EXPORTED"}
-            </span>
-          )}
-
-          {/* Original Model Extraction JSON Modal Trigger */}
-          <button
-            type="button"
-            onClick={() => setShowRawJsonModal(true)}
-            className="btn btn-secondary"
-            style={{ padding: "6px 12px", fontSize: "12px" }}
-            title="View original immutable model extraction JSON for audit & comparison"
-          >
-            <FileText size={13} />
-            <span>Original Model JSON</span>
-          </button>
 
           {/* Save Changes Button */}
           <button
@@ -1623,8 +2182,8 @@ export default function InvoiceWorkspace({
               {isSaving
                 ? "Saving & Re-validating..."
                 : saveSuccess
-                ? "Saved ✓"
-                : "Save Changes"}
+                  ? "Saved ✓"
+                  : "Save Changes"}
             </span>
           </button>
 
@@ -1665,8 +2224,8 @@ export default function InvoiceWorkspace({
                   {isApproving
                     ? "Balancing & Approving..."
                     : invoice?.approval_status === "APPROVED"
-                    ? "Approved ✓"
-                    : "Approve"}
+                      ? "Approved ✓"
+                      : "Approve"}
                 </span>
               </button>
 
@@ -1702,10 +2261,10 @@ export default function InvoiceWorkspace({
                   {isExporting
                     ? "Syncing to Zoho..."
                     : isApproving
-                    ? "Approving & Syncing..."
-                    : invoice?.export_status === "EXPORTED"
-                    ? "Exported to Zoho ✓"
-                    : "Export to Zoho"}
+                      ? "Approving & Syncing..."
+                      : invoice?.export_status === "EXPORTED"
+                        ? "Exported to Zoho ✓"
+                        : "Export to Zoho"}
                 </span>
               </button>
             </>
@@ -1748,6 +2307,269 @@ export default function InvoiceWorkspace({
         </div>
       ) : invoice ? (
         <>
+          {/* ==================================================== */}
+          {/* TOP SUMMARY BANNER: MATHEMATICAL VALIDATION & ZOHO COA MATCHING */}
+          {/* ==================================================== */}
+          <div style={{ marginBottom: "20px", display: "flex", flexDirection: "column", gap: "12px" }}>
+
+            {/* 1. MATHEMATICAL VALIDATION CARD (ONLY SHOWN IF INCORRECT FIELDS EXIST) */}
+            {(() => {
+              const valStatus = financialValidationResult?.validation_status || (
+                financialValidationResult?.overall_status === "PASSED"
+                  ? "VALID"
+                  : financialValidationResult?.overall_status === "MISMATCH"
+                    ? "MISMATCH"
+                    : "PARTIAL"
+              );
+
+              const isMismatch = valStatus === "MISMATCH" || financialValidationResult?.overall_status === "MISMATCH";
+
+              // Only show this message banner if there are fields which are incorrect
+              if (!isMismatch) return null;
+
+              const failedChecks = (financialValidationResult?.checks || []).filter(
+                (c: any) => c.status === "MISMATCH" || c.status === "FAILED"
+              );
+              const errorsList = financialValidationResult?.errors || [];
+
+              return (
+                <div
+                  className="card"
+                  style={{
+                    padding: "14px 18px",
+                    backgroundColor: "#fef2f2",
+                    borderColor: "rgba(239, 68, 68, 0.4)",
+                    borderWidth: "1.5px",
+                    borderRadius: "10px",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px" }}>
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", flex: 1 }}>
+                      <AlertCircle size={20} style={{ color: "#ef4444", marginTop: "2px", flexShrink: 0 }} />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: "700", fontSize: "14px", color: "#b91c1c" }}>
+                          ⚠ Mathematical Discrepancy Detected — Incorrect Fields Found
+                        </div>
+                        <div style={{ fontSize: "12px", color: "#991b1b", marginTop: "4px", lineHeight: "1.5" }}>
+                          The following extracted invoice fields do not reconcile with calculated values:
+                        </div>
+
+                        {/* List of failed checks showing where and what is incorrect */}
+                        <div style={{ marginTop: "8px", display: "flex", flexDirection: "column", gap: "6px" }}>
+                          {failedChecks.length > 0 ? (
+                            failedChecks.map((chk: any, idx: number) => (
+                              <div
+                                key={idx}
+                                style={{
+                                  fontSize: "12px",
+                                  backgroundColor: "#ffffff",
+                                  border: "1px solid #fca5a5",
+                                  padding: "6px 10px",
+                                  borderRadius: "6px",
+                                  color: "#7f1d1d",
+                                }}
+                              >
+                                <strong>Location / Field:</strong> {chk.field || chk.type || chk.name || "Invoice Line / Total"}
+                                {chk.invoice_value !== undefined && chk.calculated_value !== undefined && (
+                                  <span style={{ marginLeft: "8px" }}>
+                                    (Extracted: <strong>₹{Number(chk.invoice_value).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> vs Calculated: <strong>₹{Number(chk.calculated_value).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong> | Diff: <strong style={{ color: "#dc2626" }}>₹{Number(chk.difference || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</strong>)
+                                  </span>
+                                )}
+                                {chk.message && <div style={{ fontSize: "11px", color: "#991b1b", marginTop: "2px" }}>{chk.message}</div>}
+                              </div>
+                            ))
+                          ) : errorsList.length > 0 ? (
+                            errorsList.map((err: string, idx: number) => (
+                              <div
+                                key={idx}
+                                style={{
+                                  fontSize: "12px",
+                                  backgroundColor: "#ffffff",
+                                  border: "1px solid #fca5a5",
+                                  padding: "6px 10px",
+                                  borderRadius: "6px",
+                                  color: "#7f1d1d",
+                                }}
+                              >
+                                • {err}
+                              </div>
+                            ))
+                          ) : (
+                            <div
+                              style={{
+                                fontSize: "12px",
+                                backgroundColor: "#ffffff",
+                                border: "1px solid #fca5a5",
+                                padding: "6px 10px",
+                                borderRadius: "6px",
+                                color: "#7f1d1d",
+                              }}
+                            >
+                              • Extracted line item subtotals or tax values do not balance with the invoice total amount.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowMathDiscrepancyModal(true)}
+                      className="btn btn-secondary"
+                      style={{
+                        padding: "6px 14px",
+                        fontSize: "11px",
+                        borderColor: "#ef4444",
+                        color: "#ef4444",
+                        fontWeight: 600,
+                        flexShrink: 0,
+                      }}
+                    >
+                      View Math Details
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* 2. ZOHO CHART OF ACCOUNTS (COA) VERIFICATION BANNER */}
+            {(() => {
+              const firstLineAcc = accountingLines[0];
+              const primaryAccName =
+                firstLineAcc?.approved_account_name ||
+                firstLineAcc?.account_name ||
+                firstLineAcc?.ai_account_name ||
+                formData?.line_items?.[0]?.account_name ||
+                "Unassigned COA";
+              const matchStatus = coaMatchResult?.match_status || (zohoAccounts.some((za: any) => za.account_name?.toLowerCase().trim() === primaryAccName.toLowerCase().trim()) ? "EXACT_MATCH" : "NO_MATCH");
+
+              // If COA is 100% exact match, hide popup banner box (kept in line items dropdown to edit if needed)
+              if (matchStatus === "EXACT_MATCH") return null;
+
+              const matchedAcc = coaMatchResult?.matched_account || zohoAccounts.find((za: any) => za.account_name?.toLowerCase().trim() === primaryAccName.toLowerCase().trim());
+              const suggestedAcc = coaMatchResult?.suggested_account;
+              const conflictingAcc = coaMatchResult?.conflicting_account;
+
+              let bannerBg = "rgba(2, 132, 199, 0.05)";
+              let bannerBorder = "rgba(2, 132, 199, 0.2)";
+              let statusText = "Zoho Chart of Accounts Status";
+
+              if (matchStatus === "EXACT_MATCH") {
+                bannerBg = "rgba(16, 185, 129, 0.05)";
+                bannerBorder = "rgba(16, 185, 129, 0.2)";
+              } else if (matchStatus === "SUGGESTED_MATCH") {
+                bannerBg = "rgba(245, 158, 11, 0.05)";
+                bannerBorder = "rgba(245, 158, 11, 0.2)";
+              } else if (matchStatus === "COA_CONFLICT") {
+                bannerBg = "rgba(239, 68, 68, 0.05)";
+                bannerBorder = "rgba(239, 68, 68, 0.2)";
+              }
+
+              return (
+                <div
+                  className="card"
+                  style={{
+                    padding: "14px 18px",
+                    backgroundColor: bannerBg,
+                    borderColor: bannerBorder,
+                    borderRadius: "10px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <BookOpen size={18} style={{ color: matchStatus === "EXACT_MATCH" ? "#10b981" : matchStatus === "SUGGESTED_MATCH" ? "#f59e0b" : matchStatus === "COA_CONFLICT" ? "#ef4444" : "#0284c7" }} />
+                    <div>
+                      <div style={{ fontWeight: "700", fontSize: "13px", color: "var(--text-primary)" }}>
+                        {matchStatus === "EXACT_MATCH" && "✓ Extracted COA Exactly Matches Zoho COA"}
+                        {matchStatus === "SUGGESTED_MATCH" && "⚠ No Exact Zoho COA Match Found"}
+                        {matchStatus === "COA_CONFLICT" && "⛔ Account Type Conflict Detected"}
+                        {matchStatus === "NO_MATCH" && "ℹ No Matching Zoho COA Found"}
+                      </div>
+                      <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        {matchStatus === "EXACT_MATCH" && (
+                          <span>
+                            Extracted: <strong>'{primaryAccName}'</strong> → Matched Zoho: <strong>'{matchedAcc?.account_name}'</strong> {matchedAcc?.account_code ? `(${matchedAcc.account_code})` : ""}
+                          </span>
+                        )}
+                        {matchStatus === "SUGGESTED_MATCH" && (
+                          <span>
+                            Extracted: <strong>'{primaryAccName}'</strong> | Suggested Closest Zoho: <strong>'{suggestedAcc?.account_name}'</strong> ({suggestedAcc?.account_type || "expense"}) {coaMatchResult?.similarity_score ? `[${Math.round(coaMatchResult.similarity_score * 100)}% Match]` : ""}
+                          </span>
+                        )}
+                        {matchStatus === "COA_CONFLICT" && (
+                          <span>
+                            Account name matches <strong>'{conflictingAcc?.account_name}'</strong>, but extracted type conflicts with Zoho type <strong>'{conflictingAcc?.account_type}'</strong>.
+                          </span>
+                        )}
+                        {matchStatus === "NO_MATCH" && (
+                          <span>
+                            No active Zoho account matches extracted COA <strong>'{primaryAccName}'</strong>.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    {/* Approve Suggested COA Button (only when SUGGESTED_MATCH exists) */}
+                    {matchStatus === "SUGGESTED_MATCH" && suggestedAcc?.zoho_account_id && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            setIsSaving(true);
+                            const { assignInvoiceCOA } = await import("@/lib/api");
+                            const res = await assignInvoiceCOA(invoiceId, {
+                              zoho_account_id: suggestedAcc.zoho_account_id,
+                              account_name: suggestedAcc.account_name,
+                              account_type: suggestedAcc.account_type || "expense",
+                              account_code: suggestedAcc.account_code,
+                            });
+                            setInvoice(res);
+                            if (res.current_accounting_output) setAccountingData(res.current_accounting_output);
+                            setActionNotice(`✓ Approved & persisted suggested COA '${suggestedAcc.account_name}'!`);
+                            setTimeout(() => setActionNotice(null), 4000);
+                          } catch (err: any) {
+                            setError(err.message || "Failed to approve COA mapping.");
+                          } finally {
+                            setIsSaving(false);
+                          }
+                        }}
+                        className="btn btn-secondary"
+                        style={{ padding: "5px 10px", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px", borderColor: "#10b981", color: "#10b981" }}
+                      >
+                        <Check size={12} />
+                        <span>Approve Suggested COA</span>
+                      </button>
+                    )}
+
+                    {/* Create New COA Modal Trigger */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreateCoaFormData({
+                          account_name: primaryAccName,
+                          account_type: "expense",
+                          account_code: "",
+                          description: `Created from invoice ${formData?.invoice_number || invoiceId}`,
+                        });
+                        setShowCreateCoaModal(true);
+                      }}
+                      className="btn btn-secondary"
+                      style={{ padding: "5px 10px", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px" }}
+                    >
+                      <Plus size={12} />
+                      <span>Create New COA in Zoho</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+          </div>
+
           {/* ==================================================== */}
           {/* TOP: TWO-COLUMN INVOICE WORKSPACE (INDEPENDENT SCROLL) */}
           {/* ==================================================== */}
@@ -1822,14 +2644,18 @@ export default function InvoiceWorkspace({
                   border: "1px solid var(--border-subtle)",
                 }}
               >
-                {isPdf ? (
+                {blobLoading ? (
+                  <div style={{ flex: 1, height: "100%", minHeight: "800px", display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", color: "var(--text-secondary)" }}>
+                    <RefreshCw size={20} className="animate-spin" /> Loading document preview...
+                  </div>
+                ) : isPdf ? (
                   <object
-                    data={fileUrl}
+                    data={previewBlobUrl || fileUrl}
                     type="application/pdf"
                     style={{ width: "100%", height: "100%", minHeight: "800px", border: "none" }}
                   >
                     <iframe
-                      src={fileUrl}
+                      src={previewBlobUrl || fileUrl}
                       style={{ width: "100%", height: "100%", minHeight: "800px", border: "none" }}
                       title="Invoice PDF Preview"
                     />
@@ -1846,7 +2672,7 @@ export default function InvoiceWorkspace({
                     }}
                   >
                     <img
-                      src={fileUrl}
+                      src={previewBlobUrl || fileUrl}
                       alt={invoice.file_name}
                       style={{
                         maxWidth: "100%",
@@ -1893,6 +2719,11 @@ export default function InvoiceWorkspace({
                     <span style={{ fontSize: "11px", fontWeight: "700", letterSpacing: "0.06em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
                       AI Extraction Review
                     </span>
+                    {(!invoice?.approval_status || invoice?.approval_status === "PENDING") && (
+                      <span className="badge" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px", background: "#fef3c7", color: "#d97706", border: "1px solid #fde68a" }}>
+                        <Clock size={10} /> Pending Review
+                      </span>
+                    )}
                     {invoice?.approval_status === "APPROVED" && (
                       <span className="badge badge-success" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px" }}>
                         <Check size={10} /> Approved
@@ -2215,6 +3046,59 @@ export default function InvoiceWorkspace({
                         onChange={(e) => handleFieldChange("vendor_address", e.target.value)}
                       />
                     </div>
+
+                    {/* Vendor Bank Details Sub-block */}
+                    <div style={{ gridColumn: "span 2", background: "#f8fafc", padding: "10px 12px", borderRadius: "6px", border: "1px solid #e2e8f0", marginTop: "4px" }}>
+                      <div style={{ fontSize: "12px", fontWeight: "700", color: "#334155", marginBottom: "8px" }}>
+                        🏦 Vendor Bank Account Details
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                        <div>
+                          <label className="form-label" style={{ fontSize: "11px" }}>Bank Name</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            style={{ fontSize: "11.5px" }}
+                            value={formData.bank_details?.bank_name ?? ""}
+                            placeholder="e.g. HDFC Bank"
+                            onChange={(e) => handleFieldChange("bank_details", { ...(formData.bank_details || {}), bank_name: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" style={{ fontSize: "11px" }}>Account Number</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            style={{ fontSize: "11.5px" }}
+                            value={formData.bank_details?.account_number ?? ""}
+                            placeholder="Account Number"
+                            onChange={(e) => handleFieldChange("bank_details", { ...(formData.bank_details || {}), account_number: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" style={{ fontSize: "11px" }}>IFSC Code</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            style={{ fontSize: "11.5px" }}
+                            value={formData.bank_details?.ifsc_code ?? ""}
+                            placeholder="IFSC Code"
+                            onChange={(e) => handleFieldChange("bank_details", { ...(formData.bank_details || {}), ifsc_code: e.target.value })}
+                          />
+                        </div>
+                        <div>
+                          <label className="form-label" style={{ fontSize: "11px" }}>Branch</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            style={{ fontSize: "11.5px" }}
+                            value={formData.bank_details?.branch ?? ""}
+                            placeholder="Branch Name"
+                            onChange={(e) => handleFieldChange("bank_details", { ...(formData.bank_details || {}), branch: e.target.value })}
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </section>
 
@@ -2256,6 +3140,26 @@ export default function InvoiceWorkspace({
                         value={formData.customer_pan ?? ""}
                         placeholder="10-digit PAN"
                         onChange={(e) => handleFieldChange("customer_pan", e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label">Customer Phone</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={formData.customer_phone ?? ""}
+                        placeholder="Phone / Mobile"
+                        onChange={(e) => handleFieldChange("customer_phone", e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label">Customer Email</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={formData.customer_email ?? ""}
+                        placeholder="Email Address"
+                        onChange={(e) => handleFieldChange("customer_email", e.target.value)}
                       />
                     </div>
                     <div style={{ gridColumn: "span 2" }}>
@@ -2322,6 +3226,21 @@ export default function InvoiceWorkspace({
                       <h3 style={{ fontSize: "14px", fontWeight: "700", letterSpacing: "0.02em", textTransform: "uppercase" }}>
                         5. Line Items
                       </h3>
+                      {(() => {
+                        const unmappedCount = (formData.line_items || []).filter((_, i) => {
+                          const acc = accountingLines[i] || {};
+                          return !(acc.approved_account_id || acc.account_id) || String(acc.account_id) === "None" || String(acc.approved_account_id) === "None";
+                        }).length;
+                        if (unmappedCount > 0) {
+                          return (
+                            <span className="badge" style={{ fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px", background: "#ffffff", color: "#dc2626", border: "1.5px solid #ef4444", fontWeight: 700 }}>
+                              <AlertTriangle size={13} style={{ color: "#ef4444" }} />
+                              <span>⚠️ {unmappedCount} {unmappedCount === 1 ? "item needs" : "items need"} COA Account</span>
+                            </span>
+                          );
+                        }
+                        return null;
+                      })()}
                       <span className="badge badge-uploaded" style={{ fontSize: "11px" }}>
                         {formData.line_items?.length || 0} items
                       </span>
@@ -2375,10 +3294,19 @@ export default function InvoiceWorkspace({
                         {formData.line_items && formData.line_items.length > 0 ? (
                           formData.line_items.map((item, idx) => {
                             const acc = accountingLines[idx] || {};
+                            const itemErrorMsg = lineItemErrors[idx];
+                            const isAccMissing = !(acc.approved_account_id || acc.account_id) || String(acc.account_id) === "None" || String(acc.approved_account_id) === "None";
+                            const isFieldInError = Boolean(itemErrorMsg) || isAccMissing;
                             return (
-                              <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                                <td style={{ padding: "6px", color: "var(--text-tertiary)", textAlign: "center" }}>
-                                  {idx + 1}
+                              <tr key={idx} id={`line-item-row-${idx}`} style={{ borderBottom: "1px solid #e2e8f0", background: "#ffffff" }}>
+                                <td style={{ padding: "6px", textAlign: "center" }}>
+                                  {isFieldInError ? (
+                                    <span title="Action required: Select Chart of Accounts account" style={{ color: "#ef4444", fontWeight: "800", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "2px" }}>
+                                      <AlertTriangle size={13} style={{ flexShrink: 0 }} /> {idx + 1}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: "var(--text-tertiary)" }}>{idx + 1}</span>
+                                  )}
                                 </td>
                                 <td style={{ padding: "6px" }}>
                                   <input
@@ -2389,6 +3317,7 @@ export default function InvoiceWorkspace({
                                     onChange={(e) => handleLineItemChange(idx, "description", e.target.value)}
                                   />
                                 </td>
+                                {(mode as string) !== "hitl_extraction" && (
                                   <td style={{ padding: "6px" }}>
                                     {zohoAccounts && zohoAccounts.length > 0 ? (
                                       <div>
@@ -2396,35 +3325,53 @@ export default function InvoiceWorkspace({
                                           className="table-input"
                                           style={{
                                             background: "#ffffff",
-                                            border: "1px solid var(--border-subtle)",
-                                            borderRadius: "var(--radius-sm)",
-                                            padding: "4px 6px",
+                                            border: isFieldInError ? "2px solid #ef4444" : "1px solid #cbd5e1",
+                                            borderRadius: "6px",
+                                            padding: "5px 8px",
                                             width: "100%",
-                                            fontSize: "11px",
-                                            fontWeight: "500",
-                                            color: "var(--text-primary)",
+                                            fontSize: "12px",
+                                            fontWeight: isFieldInError ? "600" : "500",
+                                            color: isFieldInError ? "#dc2626" : "#0f172a",
+                                            boxShadow: isFieldInError ? "0 0 0 3px rgba(239, 68, 68, 0.15)" : "none",
+                                            cursor: "pointer",
                                           }}
-                                          value={
-                                            zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(acc.approved_account_id || acc.final_account_id || acc.account_id))
-                                              ? String(acc.approved_account_id || acc.final_account_id || acc.account_id)
-                                              : (zohoAccounts.find((za: any) => za.account_name.toLowerCase().trim() === String(acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || "").toLowerCase().trim())?.zoho_account_id || (acc.account_id || "PROPOSED"))
-                                          }
+                                          value={(() => {
+                                            const curId = String(acc.approved_account_id || acc.final_account_id || acc.account_id || "").trim();
+                                            if (curId && curId !== "None" && curId !== "PROPOSED" && curId !== "null" && curId !== "undefined") {
+                                              if (zohoAccounts.some((za: any) => String(za.zoho_account_id || za.id).trim() === curId)) {
+                                                return curId;
+                                              }
+                                            }
+                                            const curName = String(acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || "").toLowerCase().trim();
+                                            if (curName && curName !== "none" && curName !== "null") {
+                                              const matched = zohoAccounts.find((za: any) => String(za.account_name || "").toLowerCase().trim() === curName);
+                                              if (matched) return String(matched.zoho_account_id || matched.id);
+                                            }
+                                            return "";
+                                          })()}
                                           onChange={(e) => {
+                                            setLineItemErrors((prev) => {
+                                              const next = { ...prev };
+                                              delete next[idx];
+                                              return next;
+                                            });
                                             const selId = e.target.value;
-                                            const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(selId));
+                                            const match = zohoAccounts.find((za: any) => String(za.zoho_account_id || za.id) === String(selId));
                                             const selName = match ? match.account_name : selId;
-                                            handleAccountingItemChange(idx, "approved_account_id", selId);
-                                            handleAccountingItemChange(idx, "approved_account_name", selName);
-                                            handleAccountingItemChange(idx, "final_account_id", selId);
-                                            handleAccountingItemChange(idx, "final_account_name", selName);
-                                            handleAccountingItemChange(idx, "account_id", selId);
-                                            handleAccountingItemChange(idx, "account_name", selName);
-                                            handleAccountingItemChange(idx, "line_index", idx + 1);
+                                            updateAccountingLine(idx, {
+                                              approved_account_id: selId,
+                                              approved_account_name: selName,
+                                              final_account_id: selId,
+                                              final_account_name: selName,
+                                              account_id: selId,
+                                              account_name: selName,
+                                              line_index: idx + 1,
+                                            });
                                           }}
                                         >
-                                          <option value="">-- Select COA Account --</option>
+                                          <option value="">⚠️ Select COA Account (Required)</option>
                                           {/* Custom AI option if not directly in zoho master list */}
-                                          {(acc.approved_account_name || acc.account_name || acc.ai_account_name) && !zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(acc.account_id) || za.account_name.toLowerCase().trim() === String(acc.approved_account_name || acc.account_name || acc.ai_account_name || "").toLowerCase().trim()) && (
+                                          {(acc.approved_account_name || acc.account_name || acc.ai_account_name) && !zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(acc.account_id) || za.account_name.toLowerCase().trim() === String(acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || "").toLowerCase().trim()) && (
                                             <option value={acc.account_id || "PROPOSED"}>
                                               {acc.approved_account_name || acc.account_name || acc.ai_account_name} (AI Proposed)
                                             </option>
@@ -2435,18 +3382,141 @@ export default function InvoiceWorkspace({
                                             </option>
                                           ))}
                                         </select>
-                                        {(acc.ai_account_name || acc.account_name) && (
-                                          <div style={{ fontSize: "10px", color: "#2563eb", marginTop: "2px", fontWeight: 500 }}>
-                                            🤖 AI: {acc.ai_account_name || acc.account_name}
+
+                                        {itemErrorMsg && (
+                                          <div
+                                            style={{
+                                              marginTop: "4px",
+                                              padding: "4px 8px",
+                                              background: "#fee2e2",
+                                              border: "1px solid #fca5a5",
+                                              borderRadius: "4px",
+                                              color: "#b91c1c",
+                                              fontSize: "10.5px",
+                                              fontWeight: "700",
+                                              display: "flex",
+                                              alignItems: "flex-start",
+                                              gap: "4px",
+                                              boxShadow: "0 2px 4px rgba(239,68,68,0.15)",
+                                            }}
+                                          >
+                                            <AlertTriangle size={12} style={{ flexShrink: 0, color: "#dc2626", marginTop: "1px" }} />
+                                            <span>{itemErrorMsg}</span>
                                           </div>
                                         )}
+                                        {(() => {
+                                           const currentAccId = String(acc.approved_account_id || acc.account_id || "");
+                                           const currentAccName = (
+                                             zohoAccounts.find((za: any) => String(za.zoho_account_id || za.id) === currentAccId)?.account_name ||
+                                             acc.approved_account_name ||
+                                             acc.final_account_name ||
+                                             acc.account_name ||
+                                             ""
+                                           );
+
+                                           const sugName = acc.ai_account_name || acc.account_name || "";
+                                           const isExactSelected = Boolean(
+                                             currentAccName &&
+                                             sugName &&
+                                             currentAccName.toLowerCase().trim() === sugName.toLowerCase().trim()
+                                           );
+
+                                           // 1. If COA is 100% matching:
+                                           if (isExactSelected) {
+                                             return (
+                                               <div
+                                                 style={{
+                                                   display: "flex",
+                                                   alignItems: "center",
+                                                   gap: "5px",
+                                                   marginTop: "4px",
+                                                   padding: "3px 7px",
+                                                   background: "#f0fdf4",
+                                                   border: "1px solid #bbf7d0",
+                                                   borderRadius: "4px",
+                                                   fontSize: "10.5px",
+                                                   color: "#15803d",
+                                                   fontWeight: 600,
+                                                 }}
+                                               >
+                                                 <CheckCircle2 size={12} color="#16a34a" style={{ flexShrink: 0 }} />
+                                                 <span>I matched this line item with '{currentAccName}' COA.</span>
+                                               </div>
+                                             );
+                                           }
+
+                                           // 2. If COA is uncertain / mapped to nearest:
+                                           if (sugName) {
+                                             return (
+                                               <div
+                                                 style={{
+                                                   display: "flex",
+                                                   alignItems: "center",
+                                                   justifyContent: "space-between",
+                                                   gap: "6px",
+                                                   marginTop: "4px",
+                                                   padding: "4px 8px",
+                                                   background: "#fffbeb",
+                                                   border: "1px solid #fde68a",
+                                                   borderRadius: "4px",
+                                                   fontSize: "10.5px",
+                                                   color: "#b45309",
+                                                 }}
+                                               >
+                                                 <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                                                   <AlertTriangle size={12} color="#d97706" style={{ flexShrink: 0 }} />
+                                                   <span>I mapped COA to nearest '{sugName}'. Edit if needed.</span>
+                                                 </div>
+                                                 <button
+                                                   type="button"
+                                                   onClick={() => {
+                                                     setLineItemErrors((prev) => {
+                                                       const next = { ...prev };
+                                                       delete next[idx];
+                                                       return next;
+                                                     });
+                                                     const match = zohoAccounts.find((za: any) => String(za.account_name || "").toLowerCase().trim() === String(sugName).toLowerCase().trim()) || zohoAccounts[0];
+                                                     if (match) {
+                                                       const selId = String(match.zoho_account_id || match.id);
+                                                       const selName = match.account_name;
+                                                       updateAccountingLine(idx, {
+                                                         approved_account_id: selId,
+                                                         approved_account_name: selName,
+                                                         final_account_id: selId,
+                                                         final_account_name: selName,
+                                                         account_id: selId,
+                                                         account_name: selName,
+                                                         line_index: idx + 1,
+                                                       });
+                                                     }
+                                                   }}
+                                                   style={{
+                                                     padding: "1px 6px",
+                                                     fontSize: "9.5px",
+                                                     fontWeight: 700,
+                                                     backgroundColor: "#fef3c7",
+                                                     color: "#92400e",
+                                                     border: "1px solid #fcd34d",
+                                                     borderRadius: "4px",
+                                                     cursor: "pointer",
+                                                     flexShrink: 0,
+                                                   }}
+                                                 >
+                                                   ✓ Accept AI
+                                                 </button>
+                                               </div>
+                                             );
+                                           }
+
+                                           return null;
+                                         })()}
                                       </div>
                                     ) : (
                                       <div>
                                         <input
                                           type="text"
                                           className="table-input"
-                                          style={{ fontSize: "11px", fontWeight: "600", color: "#1e293b" }}
+                                          style={{ fontSize: "11px", fontWeight: "600", color: "#1e293b", background: !(acc.approved_account_name || acc.account_name) ? "#fee2e2" : "#ffffff", border: !(acc.approved_account_name || acc.account_name) ? "2px solid #ef4444" : "1px solid var(--border-subtle)" }}
                                           value={acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || ""}
                                           placeholder="Approved Account"
                                           onChange={(e) => {
@@ -2464,6 +3534,7 @@ export default function InvoiceWorkspace({
                                       </div>
                                     )}
                                   </td>
+                                )}
                                 <td style={{ padding: "6px" }}>
                                   <input
                                     type="text"
@@ -2474,13 +3545,22 @@ export default function InvoiceWorkspace({
                                   />
                                 </td>
                                 <td style={{ padding: "6px" }}>
-                                  <input
-                                    type="number"
-                                    className="table-input"
-                                    value={item.quantity ?? ""}
-                                    placeholder="1"
-                                    onChange={(e) => handleLineItemChange(idx, "quantity", parseFloat(e.target.value) || 0)}
-                                  />
+                                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                                    <input
+                                      type="number"
+                                      className="table-input"
+                                      value={item.quantity ?? ""}
+                                      placeholder="1"
+                                      onChange={(e) => handleLineItemChange(idx, "quantity", parseFloat(e.target.value) || 0)}
+                                      style={
+                                        (financialValidationResult?.checks || []).some(
+                                          (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && c.line_item_index === idx + 1
+                                        )
+                                          ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.05)" }
+                                          : {}
+                                      }
+                                    />
+                                  </div>
                                 </td>
                                 <td style={{ padding: "6px" }}>
                                   <input
@@ -2492,17 +3572,26 @@ export default function InvoiceWorkspace({
                                   />
                                 </td>
                                 <td style={{ padding: "6px" }}>
-                                  <input
-                                    type="number"
-                                    className="table-input"
-                                    value={item.unit_price ?? item.rate ?? ""}
-                                    placeholder="0.00"
-                                    onChange={(e) => {
-                                      const val = parseFloat(e.target.value) || 0;
-                                      handleLineItemChange(idx, "unit_price", val);
-                                      handleLineItemChange(idx, "rate", val);
-                                    }}
-                                  />
+                                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                                    <input
+                                      type="number"
+                                      className="table-input"
+                                      value={item.unit_price ?? item.rate ?? ""}
+                                      placeholder="0.00"
+                                      onChange={(e) => {
+                                        const val = parseFloat(e.target.value) || 0;
+                                        handleLineItemChange(idx, "unit_price", val);
+                                        handleLineItemChange(idx, "rate", val);
+                                      }}
+                                      style={
+                                        (financialValidationResult?.checks || []).some(
+                                          (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && c.line_item_index === idx + 1
+                                        )
+                                          ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.05)" }
+                                          : {}
+                                      }
+                                    />
+                                  </div>
                                 </td>
                                 <td style={{ padding: "6px" }}>
                                   <input
@@ -2514,13 +3603,29 @@ export default function InvoiceWorkspace({
                                   />
                                 </td>
                                 <td style={{ padding: "6px" }}>
-                                  <input
-                                    type="number"
-                                    className="table-input"
-                                    value={item.taxable_amount ?? ""}
-                                    placeholder="0.00"
-                                    onChange={(e) => handleLineItemChange(idx, "taxable_amount", parseFloat(e.target.value) || 0)}
-                                  />
+                                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                                    <input
+                                      type="number"
+                                      className="table-input"
+                                      value={item.taxable_amount ?? ""}
+                                      placeholder="0.00"
+                                      onChange={(e) => handleLineItemChange(idx, "taxable_amount", parseFloat(e.target.value) || 0)}
+                                      style={
+                                        (financialValidationResult?.checks || []).some(
+                                          (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && c.line_item_index === idx + 1
+                                        )
+                                          ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.05)" }
+                                          : {}
+                                      }
+                                    />
+                                    {(financialValidationResult?.checks || []).some(
+                                      (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && c.line_item_index === idx + 1
+                                    ) && (
+                                        <span title="Line item math mismatch detected (Qty × Unit Price ≠ Taxable Amount)" style={{ position: "absolute", right: "6px", cursor: "pointer" }}>
+                                          <AlertCircle size={13} style={{ color: "#ef4444" }} />
+                                        </span>
+                                      )}
+                                  </div>
                                 </td>
                                 <td style={{ padding: "6px" }}>
                                   <input
@@ -2723,13 +3828,29 @@ export default function InvoiceWorkspace({
 
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
                     <div>
-                      <label className="form-label">Subtotal (Taxable Amount)</label>
+                      <label className="form-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span>Subtotal (Taxable Amount)</span>
+                        {(financialValidationResult?.checks || []).some(
+                          (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "LINE_TOTAL" || c.name?.includes("subtotal"))
+                        ) && (
+                            <span title="Subtotal mismatch detected" style={{ display: "inline-flex", alignItems: "center", gap: "2px", color: "#ef4444", fontSize: "11px", fontWeight: 600 }}>
+                              <AlertCircle size={12} /> Math Discrepancy
+                            </span>
+                          )}
+                      </label>
                       <input
                         type="number"
                         className="form-input"
                         value={formData.subtotal ?? ""}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("subtotal", e.target.value === "" ? null : parseFloat(e.target.value))}
+                        style={
+                          (financialValidationResult?.checks || []).some(
+                            (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "LINE_TOTAL" || c.name?.includes("subtotal"))
+                          )
+                            ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.05)" }
+                            : {}
+                        }
                       />
                     </div>
                     <div>
@@ -2799,13 +3920,29 @@ export default function InvoiceWorkspace({
                       />
                     </div>
                     <div>
-                      <label className="form-label">Total Tax Amount (Tax Total)</label>
+                      <label className="form-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span>Total Tax Amount (Tax Total)</span>
+                        {(financialValidationResult?.checks || []).some(
+                          (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "TAX" || c.name?.includes("gst"))
+                        ) && (
+                            <span title="GST tax total mismatch detected" style={{ display: "inline-flex", alignItems: "center", gap: "2px", color: "#ef4444", fontSize: "11px", fontWeight: 600 }}>
+                              <AlertCircle size={12} /> Tax Mismatch
+                            </span>
+                          )}
+                      </label>
                       <input
                         type="number"
                         className="form-input"
                         value={formData.tax_total ?? ""}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("tax_total", e.target.value === "" ? null : parseFloat(e.target.value))}
+                        style={
+                          (financialValidationResult?.checks || []).some(
+                            (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "TAX" || c.name?.includes("gst"))
+                          )
+                            ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.05)" }
+                            : {}
+                        }
                       />
                     </div>
                     <div>
@@ -2829,6 +3966,16 @@ export default function InvoiceWorkspace({
                       />
                     </div>
                     <div>
+                      <label className="form-label">Adjustment</label>
+                      <input
+                        type="number"
+                        className="form-input"
+                        value={formData.adjustment ?? ""}
+                        placeholder="0.00"
+                        onChange={(e) => handleFieldChange("adjustment", e.target.value === "" ? null : parseFloat(e.target.value))}
+                      />
+                    </div>
+                    <div>
                       <label className="form-label">Round Off</label>
                       <input
                         type="number"
@@ -2839,18 +3986,66 @@ export default function InvoiceWorkspace({
                       />
                     </div>
                     <div style={{ gridColumn: "span 2" }}>
-                      <label className="form-label" style={{ fontWeight: "700" }}>Total Amount (Grand Total)</label>
+                      <label className="form-label" style={{ fontWeight: "700", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span>Total Amount (Grand Total)</span>
+                        {(financialValidationResult?.checks || []).some(
+                          (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "GRAND_TOTAL" || c.name?.includes("total"))
+                        ) && (
+                            <span title="Grand total equation mismatch detected" style={{ display: "inline-flex", alignItems: "center", gap: "2px", color: "#ef4444", fontSize: "11px", fontWeight: 600 }}>
+                              <AlertCircle size={12} /> Math Discrepancy
+                            </span>
+                          )}
+                      </label>
                       <input
                         type="number"
                         className="form-input"
-                        style={{ fontSize: "16px", fontWeight: "700", color: "var(--accent)" }}
+                        style={{
+                          fontSize: "16px",
+                          fontWeight: "700",
+                          color: (financialValidationResult?.checks || []).some(
+                            (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "GRAND_TOTAL" || c.name?.includes("total"))
+                          ) ? "#ef4444" : "var(--accent)",
+                          borderColor: (financialValidationResult?.checks || []).some(
+                            (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "GRAND_TOTAL" || c.name?.includes("total"))
+                          ) ? "#ef4444" : undefined,
+                          backgroundColor: (financialValidationResult?.checks || []).some(
+                            (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "GRAND_TOTAL" || c.name?.includes("total"))
+                          ) ? "rgba(239, 68, 68, 0.05)" : undefined,
+                        }}
                         value={formData.total_amount ?? ""}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("total_amount", e.target.value === "" ? null : parseFloat(e.target.value))}
                       />
                     </div>
                   </div>
+
+                  {/* Invoice Notes / Terms */}
+                  {formData.notes && (
+                    <div style={{ marginTop: "12px" }}>
+                      <label className="form-label">Invoice Notes</label>
+                      <textarea
+                        className="form-input"
+                        rows={2}
+                        value={formData.notes ?? ""}
+                        onChange={(e) => handleFieldChange("notes", e.target.value)}
+                      />
+                    </div>
+                  )}
                 </section>
+
+                {/* 7.5. ADDITIONAL EXTRACTED DETAILS & UNMAPPED METADATA */}
+                {formData.additional_fields && Object.keys(formData.additional_fields).length > 0 && (
+                  <section style={{ borderTop: "1px solid var(--border-subtle)", paddingTop: "18px" }}>
+                    <details style={{ background: "#f8fafc", padding: "10px 14px", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+                      <summary style={{ cursor: "pointer", fontWeight: 700, fontSize: "13px", color: "#334155" }}>
+                        🔍 Additional Extracted AI Metadata ({Object.keys(formData.additional_fields).length} extra fields)
+                      </summary>
+                      <pre style={{ marginTop: "10px", fontSize: "11px", background: "#ffffff", padding: "10px", borderRadius: "6px", border: "1px solid #cbd5e1", overflowX: "auto" }}>
+                        {JSON.stringify(formData.additional_fields, null, 2)}
+                      </pre>
+                    </details>
+                  </section>
+                )}
 
                 {/* 8. STATUTORY TDS ASSESSMENT */}
                 {tdsResult && (
@@ -2957,7 +4152,24 @@ export default function InvoiceWorkspace({
                               currTds.applicable = isApp;
                               if (!isApp) {
                                 currTds.tds_rate = null;
+                                currTds.rate = null;
+                                currTds.approved_tds_rate = null;
                                 currTds.proposed_tds_amount = 0.0;
+                                currTds.tds_amount = 0.0;
+                              } else {
+                                const secStr = String(currTds.tds_section || currTds.section || currTds.tds_provision || currTds.nature_of_payment || "").toUpperCase();
+                                const rateToUse = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                                currTds.tds_rate = rateToUse;
+                                currTds.rate = rateToUse;
+                                currTds.approved_tds_rate = rateToUse;
+                                const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
+                                if (subtotal > 0) {
+                                  currTds.tds_base_amount = subtotal;
+                                  currTds.base_amount = subtotal;
+                                  const calcAmt = Math.round((subtotal * rateToUse) / 100 * 100) / 100;
+                                  currTds.proposed_tds_amount = calcAmt;
+                                  currTds.tds_amount = calcAmt;
+                                }
                               }
                               return {
                                 ...prev,
@@ -2985,69 +4197,105 @@ export default function InvoiceWorkspace({
                       {/* TDS Section */}
                       <div>
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
-                          TDS Section / Provision
+                          TDS Section
                         </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 194C, 194J, 194Q, 194I"
-                          value={tdsResult.tds_section || tdsResult.tds_provision || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_section = val;
-                              currTds.section = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const secRaw = tdsResult.tds_section || tdsResult.section;
+                          const provRaw = tdsResult.tds_provision || tdsResult.provision;
+                          const natRaw = tdsResult.nature_of_payment;
+                          const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
+                          let displaySec = secRaw || "";
+                          if (isApp && (!displaySec || displaySec.includes("_"))) {
+                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displaySec = "194J / 393";
+                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displaySec = "194C";
+                            else if (combined.includes("194I") || combined.includes("RENT")) displaySec = "194I";
+                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displaySec = "194H";
+                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displaySec = "194Q";
+                            else displaySec = "194J";
+                          }
+                          return (
+                            <input
+                              type="text"
+                              placeholder="e.g. 194C, 194J, 194Q, 194I"
+                              value={displaySec}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_section = val;
+                                  currTds.section = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
-                      {/* Nature of Payment */}
+                      {/* TDS Statutory Provision */}
                       <div>
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
-                          Nature of Payment
+                          TDS Statutory Provision
                         </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. Professional services, Purchase of goods"
-                          value={tdsResult.nature_of_payment || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.nature_of_payment = val;
-                              currTds.nature = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const secRaw = tdsResult.tds_section || tdsResult.section;
+                          const provRaw = tdsResult.tds_provision || tdsResult.provision;
+                          const natRaw = tdsResult.nature_of_payment;
+                          const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
+                          let displayProv = provRaw || "";
+                          if (isApp && (!displayProv || displayProv.includes("_"))) {
+                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displayProv = "Section 194J / 393 - Fees for Technical Services";
+                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displayProv = "Section 194C - Payments to Contractors and Sub-contractors";
+                            else if (combined.includes("194I") || combined.includes("RENT")) displayProv = "Section 194I - Rent for Property / Equipment";
+                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displayProv = "Section 194H - Commission or Brokerage";
+                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displayProv = "Section 194Q - Purchase of Goods";
+                            else displayProv = `Section ${secRaw || "194J"} - Statutory Deduction`;
+                          }
+                          return (
+                            <input
+                              type="text"
+                              placeholder="e.g. Section 194J - Fees for Technical Services"
+                              value={displayProv}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_provision = val;
+                                  currTds.provision = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* TDS Rate (%) */}
@@ -3055,38 +4303,54 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Rate (%)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="e.g. 0.1, 1, 2, 10"
-                          value={tdsResult.tds_rate !== null && tdsResult.tds_rate !== undefined ? tdsResult.tds_rate : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_rate = val;
-                              currTds.rate = val;
-                              const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
-                              if (val !== null && subtotal > 0) {
-                                currTds.proposed_tds_amount = Math.round((subtotal * val) / 100 * 100) / 100;
-                              }
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawRate = tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate;
+                          const secStr = String(tdsResult.tds_section || tdsResult.tds_provision || tdsResult.nature_of_payment || "").toUpperCase();
+                          const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                          const displayRate = isApp
+                            ? (rawRate !== null && rawRate !== undefined && parseFloat(String(rawRate)) > 0
+                                ? rawRate
+                                : fallbackRate)
+                            : (rawRate !== null && rawRate !== undefined ? rawRate : "");
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="e.g. 0.1, 1, 2, 10"
+                              value={displayRate !== null && displayRate !== undefined ? displayRate : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_rate = val;
+                                  currTds.rate = val;
+                                  currTds.approved_tds_rate = val;
+                                  const subtotal = parseFloat(String(currTds.tds_base_amount || currTds.base_amount || formData.subtotal || formData.total_amount || 0));
+                                  if (val !== null && subtotal > 0) {
+                                    const calcAmt = Math.round((subtotal * val) / 100 * 100) / 100;
+                                    currTds.proposed_tds_amount = calcAmt;
+                                    currTds.tds_amount = calcAmt;
+                                  }
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* TDS Base Amount */}
@@ -3094,34 +4358,51 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Base Amount (₹)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="e.g. 50000.00"
-                          value={tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined ? tdsResult.tds_base_amount : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_base_amount = val;
-                              currTds.base_amount = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawBase = tdsResult.tds_base_amount ?? tdsResult.base_amount;
+                          const displayBase = isApp
+                            ? (rawBase !== null && rawBase !== undefined && parseFloat(String(rawBase)) > 0
+                                ? rawBase
+                                : (formData.subtotal || (formData as any).taxable_amount || formData.total_amount || ""))
+                            : (rawBase !== null && rawBase !== undefined ? rawBase : "");
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="e.g. 50000.00"
+                              value={displayBase !== null && displayBase !== undefined ? displayBase : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_base_amount = val;
+                                  currTds.base_amount = val;
+                                  const rate = parseFloat(String(currTds.approved_tds_rate ?? currTds.tds_rate ?? currTds.rate ?? "0")) || 0;
+                                  if (val !== null && rate > 0) {
+                                    const calcAmt = Math.round((val * rate) / 100 * 100) / 100;
+                                    currTds.proposed_tds_amount = calcAmt;
+                                    currTds.tds_amount = calcAmt;
+                                  }
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* Proposed TDS Amount */}
@@ -3129,36 +4410,54 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Withholding Amount (₹)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={tdsResult.proposed_tds_amount !== null && tdsResult.proposed_tds_amount !== undefined ? tdsResult.proposed_tds_amount : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.proposed_tds_amount = val;
-                              currTds.tds_amount = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            fontWeight: "700",
-                            color: "var(--accent)",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawAmt = tdsResult.proposed_tds_amount ?? tdsResult.tds_amount;
+                          const rawRate = parseFloat(String(tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate ?? "0"));
+                          const secStr = String(tdsResult.tds_section || tdsResult.tds_provision || tdsResult.nature_of_payment || "").toUpperCase();
+                          const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                          const effectiveRate = rawRate > 0 ? rawRate : fallbackRate;
+                          const baseVal = (tdsResult.tds_base_amount ?? tdsResult.base_amount) || (formData.subtotal || (formData as any).taxable_amount || formData.total_amount || 0);
+                          const rawBase = parseFloat(String(baseVal || "0"));
+                          const computedAmt = (rawBase > 0 && effectiveRate > 0) ? Math.round((rawBase * effectiveRate) / 100 * 100) / 100 : 0;
+                          const displayAmt = isApp
+                            ? (rawAmt !== null && rawAmt !== undefined && parseFloat(String(rawAmt)) > 0
+                                ? rawAmt
+                                : computedAmt)
+                            : 0;
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={displayAmt !== null && displayAmt !== undefined ? displayAmt : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.proposed_tds_amount = val;
+                                  currTds.tds_amount = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                fontWeight: "700",
+                                color: "var(--accent)",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {(() => {
@@ -3211,11 +4510,10 @@ export default function InvoiceWorkspace({
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                       <span
-                        className={`badge ${
-                          (gstResult?.supply_type === "INTRA_STATE" || (!gstResult && (formData.cgst_amount || formData.cgst || formData.sgst_amount || formData.sgst)))
+                        className={`badge ${(gstResult?.supply_type === "INTRA_STATE" || (!gstResult && (formData.cgst_amount || formData.cgst || formData.sgst_amount || formData.sgst)))
                             ? "badge-success"
                             : "badge-uploaded"
-                        }`}
+                          }`}
                         style={{ fontSize: "11px", fontWeight: "600" }}
                       >
                         {(gstResult?.supply_type === "INTRA_STATE" || (!gstResult && (formData.cgst_amount || formData.cgst || formData.sgst_amount || formData.sgst)))
@@ -3224,13 +4522,12 @@ export default function InvoiceWorkspace({
                       </span>
                       {gstResult && (
                         <span
-                          className={`badge ${
-                            gstResult.validation_status === "PASSED"
+                          className={`badge ${gstResult.validation_status === "PASSED"
                               ? "badge-success"
                               : gstResult.validation_status === "GST_MISMATCH"
-                              ? "badge-warning"
-                              : "badge-uploaded"
-                          }`}
+                                ? "badge-warning"
+                                : "badge-uploaded"
+                            }`}
                           style={{ fontSize: "11px", fontWeight: "700" }}
                         >
                           {gstResult.validation_status === "PASSED" ? "GST Validated ✓" : (gstResult.validation_status || "PENDING")}
@@ -3342,20 +4639,19 @@ export default function InvoiceWorkspace({
                     </div>
                     {itcResult && (
                       <span
-                        className={`badge ${
-                          itcResult.status === "ELIGIBLE"
+                        className={`badge ${itcResult.status === "ELIGIBLE"
                             ? "badge-success"
                             : itcResult.status === "INELIGIBLE"
-                            ? "badge-danger"
-                            : "badge-warning"
-                        }`}
+                              ? "badge-danger"
+                              : "badge-warning"
+                          }`}
                         style={{ fontSize: "11px", fontWeight: "700" }}
                       >
                         {itcResult.status === "ELIGIBLE"
                           ? "✓ ELIGIBLE"
                           : itcResult.status === "INELIGIBLE"
-                          ? "✗ INELIGIBLE"
-                          : (itcResult.status || "REVIEW REQUIRED")}
+                            ? "✗ INELIGIBLE"
+                            : (itcResult.status || "REVIEW REQUIRED")}
                       </span>
                     )}
                   </div>
@@ -3379,8 +4675,8 @@ export default function InvoiceWorkspace({
                         {itcResult?.status === "ELIGIBLE"
                           ? "Eligible (Full ITC)"
                           : itcResult?.status === "INELIGIBLE"
-                          ? "Ineligible / Blocked"
-                          : (itcResult?.status || "Standard ITC Available")}
+                            ? "Ineligible / Blocked"
+                            : (itcResult?.status || "Standard ITC Available")}
                       </div>
                     </div>
 
@@ -3516,11 +4812,10 @@ export default function InvoiceWorkspace({
                       <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
                         {/* Status Badge */}
                         <span
-                          className={`badge ${
-                            (journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
+                          className={`badge ${(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
                               ? "badge-success"
                               : "badge-danger"
-                          }`}
+                            }`}
                           style={{ fontSize: "11px", fontWeight: "700" }}
                         >
                           {(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
@@ -3530,20 +4825,19 @@ export default function InvoiceWorkspace({
 
                         {/* Approval Badge */}
                         <span
-                          className={`badge ${
-                            journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
+                          className={`badge ${journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
                               ? "badge-success"
                               : (journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
-                              ? "badge-warning"
-                              : "badge-danger"
-                          }`}
+                                ? "badge-warning"
+                                : "badge-danger"
+                            }`}
                           style={{ fontSize: "11px", fontWeight: "700" }}
                         >
                           {journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
                             ? "Approval: APPROVED ✓"
                             : (journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
-                            ? "Approval: PENDING"
-                            : "❌ Journal cannot be approved"}
+                              ? "Approval: PENDING"
+                              : "❌ Journal cannot be approved"}
                         </span>
                       </div>
                     </div>
@@ -3555,14 +4849,14 @@ export default function InvoiceWorkspace({
                           journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
                             ? "#f0fdf4"
                             : !(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
-                            ? "#fef2f2"
-                            : "#fefce8",
+                              ? "#fef2f2"
+                              : "#fefce8",
                         border:
                           journalEntry.status === "APPROVED" || journalEntry.approval_status === "APPROVED"
                             ? "1px solid #bbf7d0"
                             : !(journalEntry.validation?.balanced ?? (journalEntry.difference === 0 && journalEntry.total_debit > 0))
-                            ? "1px solid #fecaca"
-                            : "1px solid #fde68a",
+                              ? "1px solid #fecaca"
+                              : "1px solid #fde68a",
                         borderRadius: "var(--radius-sm)",
                         padding: "12px 16px",
                         marginBottom: "14px",
@@ -3769,54 +5063,180 @@ export default function InvoiceWorkspace({
                           </tr>
                         </thead>
                         <tbody>
-                          {journalEntry.lines?.map((line, idx) => (
-                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                              <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{idx + 1}</td>
-                              <td style={{ padding: "6px" }}>
-                                {zohoAccounts && zohoAccounts.length > 0 ? (
-                                  <select
-                                    className="table-input"
-                                    style={{
-                                      background: "#ffffff",
-                                      border: "1px solid var(--border-subtle)",
-                                      borderRadius: "var(--radius-sm)",
-                                      padding: "4px 6px",
-                                      width: "100%",
-                                      fontSize: "11px",
-                                      fontWeight: "500",
-                                      color: "var(--text-primary)",
-                                    }}
-                                    value={
-                                      zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(line.account_id))
-                                        ? String(line.account_id)
-                                        : (zohoAccounts.find((za: any) => za.account_name.toLowerCase().trim() === String(line.account_name || "").toLowerCase().trim())?.zoho_account_id || "")
-                                    }
-                                    onChange={(e) => {
-                                      const selId = e.target.value;
-                                      const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(selId));
-                                      const selName = match ? match.account_name : selId;
-                                      handleJournalLineChange(idx, "account_id", selId);
-                                      handleJournalLineChange(idx, "account_name", selName);
-                                    }}
-                                  >
-                                    <option value="">-- Select Account --</option>
-                                    {zohoAccounts.map((za: any) => (
-                                      <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
-                                        {za.account_name} ({za.account_type || "account"})
-                                      </option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <input
-                                    type="text"
-                                    className="table-input"
-                                    style={{ fontSize: "11px", fontWeight: "600" }}
-                                    value={line.account_name ?? ""}
-                                    placeholder="Account Name"
-                                    onChange={(e) => handleJournalLineChange(idx, "account_name", e.target.value)}
-                                  />
-                                )}
-                              </td>
+                          {journalEntry.lines?.map((line, idx) => {
+                            const isUncertain = isUncertainCoaLine(line);
+                            const isTaxLine = line.line_type === "INPUT_TAX";
+                            const isApLine = line.line_type === "ACCOUNTS_PAYABLE";
+
+                            let selAccValue = "";
+                            if (zohoAccounts && zohoAccounts.length > 0) {
+                              const cleanLineAccName = String(line.account_name || "").replace(/^\[Unapproved\]\s*/i, "").trim();
+                              const accIdStr = String(line.account_id || "").trim();
+                              const lineTypeStr = String(line.line_type || "").toUpperCase();
+
+                              const matchedZohoAcc = zohoAccounts.find(
+                                (za: any) =>
+                                  String(za.zoho_account_id) === accIdStr ||
+                                  za.account_name.toLowerCase().trim() === cleanLineAccName.toLowerCase()
+                              );
+
+                              if (matchedZohoAcc) {
+                                selAccValue = String(matchedZohoAcc.zoho_account_id);
+                              } else if (isTaxLine || accIdStr.startsWith("TAX_") || cleanLineAccName.toLowerCase().includes("tax")) {
+                                let taxMatch = null;
+                                if (cleanLineAccName.toLowerCase().includes("igst") || accIdStr.includes("IGST")) {
+                                  taxMatch = zohoAccounts.find((za: any) => za.account_name.toLowerCase().includes("input igst"));
+                                } else if (cleanLineAccName.toLowerCase().includes("cgst") || accIdStr.includes("CGST")) {
+                                  taxMatch = zohoAccounts.find((za: any) => za.account_name.toLowerCase().includes("input cgst"));
+                                } else if (cleanLineAccName.toLowerCase().includes("sgst") || accIdStr.includes("SGST")) {
+                                  taxMatch = zohoAccounts.find((za: any) => za.account_name.toLowerCase().includes("input sgst"));
+                                }
+                                if (!taxMatch) {
+                                  taxMatch = zohoAccounts.find(
+                                    (za: any) =>
+                                      (za.account_type || "").toLowerCase().includes("tax") ||
+                                      (za.account_name || "").toLowerCase().includes("input tax") ||
+                                      (za.account_name || "").toLowerCase().includes("tax credit")
+                                  );
+                                }
+                                if (taxMatch) selAccValue = String(taxMatch.zoho_account_id);
+                              } else if (isApLine || accIdStr.startsWith("LIAB_") || cleanLineAccName.toLowerCase().includes("payable")) {
+                                const apMatch = zohoAccounts.find(
+                                  (za: any) =>
+                                    za.account_type === "accounts_payable" ||
+                                    za.account_name.toLowerCase().includes("accounts payable")
+                                );
+                                if (apMatch) selAccValue = String(apMatch.zoho_account_id);
+                              }
+                            }
+
+                            return (
+                              <tr
+                                key={idx}
+                                style={{
+                                  borderBottom: "1px solid var(--border-subtle)",
+                                  background: isUncertain ? "rgba(254, 242, 242, 0.4)" : "transparent",
+                                }}
+                              >
+                                <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{idx + 1}</td>
+                                <td style={{ padding: "6px" }}>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                    {zohoAccounts && zohoAccounts.length > 0 ? (
+                                      <select
+                                        className="table-input"
+                                        style={{
+                                          background: isUncertain ? "#fef2f2" : "#ffffff",
+                                          border: isUncertain ? "1.5px solid #ef4444" : "1px solid var(--border-subtle)",
+                                          borderRadius: "var(--radius-sm)",
+                                          padding: "4px 6px",
+                                          width: "100%",
+                                          fontSize: "11px",
+                                          fontWeight: isUncertain ? "600" : "500",
+                                          color: isUncertain ? "#991b1b" : "var(--text-primary)",
+                                          boxShadow: isUncertain ? "0 0 0 1px rgba(239, 68, 68, 0.15)" : "none",
+                                        }}
+                                        value={selAccValue}
+                                        onChange={(e) => {
+                                          const selId = e.target.value;
+                                          const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(selId));
+                                          const selName = match ? match.account_name : selId;
+                                          handleJournalLineChange(idx, "account_id", selId);
+                                          handleJournalLineChange(idx, "account_name", selName);
+                                          handleJournalLineChange(idx, "match_status", "EXACT_MATCH");
+                                          handleJournalLineChange(idx, "ai_needs_review", false);
+                                          handleJournalLineChange(idx, "provenance", "HUMAN_APPROVED");
+                                        }}
+                                      >
+                                        <option value="">-- Select Account --</option>
+                                        {!zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(selAccValue)) && Boolean(selAccValue) && (
+                                          <option value={selAccValue}>{line.account_name || selAccValue}</option>
+                                        )}
+                                        {zohoAccounts.map((za: any) => (
+                                          <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
+                                            {za.account_name} ({za.account_type || "account"})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        className="table-input"
+                                        style={{
+                                          fontSize: "11px",
+                                          fontWeight: "600",
+                                          border: isUncertain ? "1.5px solid #ef4444" : "1px solid var(--border-subtle)",
+                                          background: isUncertain ? "#fef2f2" : "#ffffff",
+                                          color: isUncertain ? "#991b1b" : "var(--text-primary)",
+                                        }}
+                                        value={line.account_name ?? ""}
+                                        placeholder="Account Name"
+                                        onChange={(e) => {
+                                          handleJournalLineChange(idx, "account_name", e.target.value);
+                                          handleJournalLineChange(idx, "match_status", "EXACT_MATCH");
+                                          handleJournalLineChange(idx, "ai_needs_review", false);
+                                          handleJournalLineChange(idx, "provenance", "HUMAN_APPROVED");
+                                        }}
+                                      />
+                                    )}
+
+                                    {/* Interactive Badge to open COA Review Modal */}
+                                    <div>
+                                      {isUncertain ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setReviewCoaModalLineIdx(idx);
+                                            setModalSelectedAccountId(selAccValue);
+                                            setShowReviewCoaModal(true);
+                                          }}
+                                          style={{
+                                            padding: "2px 6px",
+                                            fontSize: "10px",
+                                            fontWeight: "600",
+                                            color: "#dc2626",
+                                            background: "#fee2e2",
+                                            border: "1px solid #fca5a5",
+                                            borderRadius: "4px",
+                                            cursor: "pointer",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px",
+                                          }}
+                                          title="Uncertain or unverified COA - Click to open review & approval popup"
+                                        >
+                                          <AlertTriangle size={11} />
+                                          ⚠️ Review COA (Detected)
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setReviewCoaModalLineIdx(idx);
+                                            setModalSelectedAccountId(selAccValue);
+                                            setShowReviewCoaModal(true);
+                                          }}
+                                          style={{
+                                            padding: "1px 5px",
+                                            fontSize: "9px",
+                                            fontWeight: "500",
+                                            color: "#059669",
+                                            background: "#ecfdf5",
+                                            border: "1px solid #a7f3d0",
+                                            borderRadius: "4px",
+                                            cursor: "pointer",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "3px",
+                                          }}
+                                          title="COA Verified - Click to edit or review detection details"
+                                        >
+                                          <CheckCircle2 size={10} />
+                                          ✓ COA Verified (Review / Edit)
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </td>
                               <td style={{ padding: "6px" }}>
                                 <input
                                   type="text"
@@ -3906,7 +5326,8 @@ export default function InvoiceWorkspace({
                                 </button>
                               </td>
                             </tr>
-                          ))}
+                          );
+                        })}
                           <tr style={{ background: "var(--bg-main)", fontWeight: "700", borderTop: "2px solid var(--border-subtle)" }}>
                             <td colSpan={4} style={{ padding: "8px", textAlign: "right" }}>
                               Total (INR)
@@ -4773,6 +6194,460 @@ export default function InvoiceWorkspace({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* REAL REACT MODAL FOR CREATING COA IN ZOHO BOOKS       */}
+      {/* ==================================================== */}
+      {showCreateCoaModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.65)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: "480px",
+              maxWidth: "92vw",
+              backgroundColor: "#ffffff",
+              borderRadius: "12px",
+              padding: "24px",
+              boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Plus size={18} style={{ color: "#2563eb" }} />
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>Create New Chart of Account in Zoho</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateCoaModal(false)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
+                  Account Name <span style={{ color: "#ef4444" }}>*</span>
+                </label>
+                <input
+                  type="text"
+                  className="table-input"
+                  style={{ width: "100%", padding: "8px 10px", fontSize: "13px" }}
+                  value={createCoaFormData.account_name}
+                  onChange={(e) => setCreateCoaFormData({ ...createCoaFormData, account_name: e.target.value })}
+                  placeholder="e.g. Office Expenses"
+                />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
+                  Account Type <span style={{ color: "#ef4444" }}>*</span>
+                </label>
+                <select
+                  className="table-input"
+                  style={{ width: "100%", padding: "8px 10px", fontSize: "13px" }}
+                  value={createCoaFormData.account_type}
+                  onChange={(e) => setCreateCoaFormData({ ...createCoaFormData, account_type: e.target.value })}
+                >
+                  <option value="expense">Expense</option>
+                  <option value="cost_of_goods_sold">Cost of Goods Sold</option>
+                  <option value="fixed_asset">Fixed Asset</option>
+                  <option value="other_current_asset">Other Current Asset</option>
+                  <option value="other_current_liability">Other Current Liability</option>
+                  <option value="other_expense">Other Expense</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
+                  Account Code (Optional)
+                </label>
+                <input
+                  type="text"
+                  className="table-input"
+                  style={{ width: "100%", padding: "8px 10px", fontSize: "13px" }}
+                  value={createCoaFormData.account_code}
+                  onChange={(e) => setCreateCoaFormData({ ...createCoaFormData, account_code: e.target.value })}
+                  placeholder="e.g. 5010"
+                />
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "#334155", marginBottom: "4px" }}>
+                  Description (Optional)
+                </label>
+                <textarea
+                  className="table-input"
+                  rows={2}
+                  style={{ width: "100%", padding: "8px 10px", fontSize: "13px", resize: "none" }}
+                  value={createCoaFormData.description}
+                  onChange={(e) => setCreateCoaFormData({ ...createCoaFormData, description: e.target.value })}
+                  placeholder="Account description..."
+                />
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "20px" }}>
+              <button
+                type="button"
+                onClick={() => setShowCreateCoaModal(false)}
+                className="btn btn-secondary"
+                disabled={isCreatingCoa}
+                style={{ padding: "8px 16px", fontSize: "13px" }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isCreatingCoa || !createCoaFormData.account_name.trim()}
+                onClick={async () => {
+                  try {
+                    setIsCreatingCoa(true);
+                    const { createZohoCOA, assignInvoiceCOA } = await import("@/lib/api");
+                    const created = await createZohoCOA({
+                      account_name: createCoaFormData.account_name.trim(),
+                      account_type: createCoaFormData.account_type,
+                      account_code: createCoaFormData.account_code.trim() || undefined,
+                      description: createCoaFormData.description.trim() || undefined,
+                    });
+                    const newId = created.chart_of_account?.zoho_account_id;
+                    if (!newId) throw new Error("No Zoho Account ID returned from server.");
+                    const res = await assignInvoiceCOA(invoiceId, {
+                      zoho_account_id: newId,
+                      account_name: created.chart_of_account?.account_name || createCoaFormData.account_name,
+                      account_type: createCoaFormData.account_type,
+                      account_code: createCoaFormData.account_code || undefined,
+                    });
+                    setInvoice(res);
+                    if (res.current_accounting_output) setAccountingData(res.current_accounting_output);
+                    getZohoMasterData().then((m) => setZohoAccounts(m.accounts || [])).catch(() => null);
+                    setShowCreateCoaModal(false);
+                    setActionNotice(`✓ Created & persisted new Zoho COA '${createCoaFormData.account_name}'!`);
+                    setTimeout(() => setActionNotice(null), 4000);
+                  } catch (err: any) {
+                    setError(err.message || "Failed to create/assign COA.");
+                  } finally {
+                    setIsCreatingCoa(false);
+                  }
+                }}
+                className="btn btn-primary"
+                style={{ padding: "8px 18px", fontSize: "13px" }}
+              >
+                {isCreatingCoa ? "Creating in Zoho..." : "Create COA"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* REAL REACT MODAL FOR MATHEMATICAL DISCREPANCY DETAILS */}
+      {/* ==================================================== */}
+      {showMathDiscrepancyModal && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.65)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              width: "720px",
+              maxWidth: "92vw",
+              maxHeight: "85vh",
+              overflowY: "auto",
+              backgroundColor: "#ffffff",
+              borderRadius: "12px",
+              padding: "24px",
+              boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <AlertCircle size={18} style={{ color: "#ef4444" }} />
+                <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>Mathematical Discrepancy Breakdown</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMathDiscrepancyModal(false)}
+                style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "16px", lineHeight: "1.5" }}>
+              Extracted invoice values do not mathematically reconcile. Please review the comparison below against the original invoice document.
+            </p>
+
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", fontSize: "12px", borderCollapse: "collapse", color: "var(--text-primary)" }}>
+                <thead>
+                  <tr style={{ background: "rgba(239, 68, 68, 0.1)", textAlign: "left", borderBottom: "1px solid rgba(239, 68, 68, 0.2)" }}>
+                    <th style={{ padding: "8px 10px" }}>Check Type</th>
+                    <th style={{ padding: "8px 10px" }}>Field / Location</th>
+                    <th style={{ padding: "8px 10px" }}>Extracted</th>
+                    <th style={{ padding: "8px 10px" }}>Calculated</th>
+                    <th style={{ padding: "8px 10px" }}>Difference</th>
+                    <th style={{ padding: "8px 10px" }}>Explanation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(financialValidationResult?.checks || []).map((chk: any, cIdx: number) => {
+                    if (chk.status !== "MISMATCH" && chk.status !== "FAILED") return null;
+                    return (
+                      <tr key={cIdx} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "8px 10px", fontWeight: "600", color: "#ef4444" }}>{chk.type || chk.name || "CHECK"}</td>
+                        <td style={{ padding: "8px 10px" }}>{chk.field || "Header/Line"}</td>
+                        <td style={{ padding: "8px 10px" }}>₹{Number(chk.invoice_value ?? chk.source_value ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                        <td style={{ padding: "8px 10px" }}>₹{Number(chk.calculated_value ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                        <td style={{ padding: "8px 10px", fontWeight: "700", color: "#ef4444" }}>₹{Number(chk.difference ?? 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</td>
+                        <td style={{ padding: "8px 10px", fontSize: "11px", color: "var(--text-secondary)" }}>{chk.message || chk.note || "Calculated equation does not reconcile with extracted value."}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "20px" }}>
+              <button
+                type="button"
+                onClick={() => setShowMathDiscrepancyModal(false)}
+                className="btn btn-secondary"
+                style={{ padding: "8px 18px", fontSize: "13px" }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* REAL REACT MODAL FOR COA DETECTION & APPROVAL        */}
+      {/* ==================================================== */}
+      {showReviewCoaModal && reviewCoaModalLineIdx !== null && journalEntry?.lines?.[reviewCoaModalLineIdx] && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.65)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+          }}
+        >
+          {(() => {
+            const lineIdx = reviewCoaModalLineIdx;
+            const targetLine = journalEntry.lines[lineIdx];
+            const isUncertain = isUncertainCoaLine(targetLine);
+            const currentAccName = targetLine.account_name || "Unassigned";
+            const currentAccCode = targetLine.account_id || "N/A";
+            const currentMatchStatus = targetLine.match_status || (isUncertain ? "NEEDS_REVIEW" : "EXACT_MATCH");
+
+            return (
+              <div
+                className="card"
+                style={{
+                  width: "540px",
+                  maxWidth: "92vw",
+                  backgroundColor: "#ffffff",
+                  borderRadius: "12px",
+                  padding: "24px",
+                  boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <BookOpen size={20} style={{ color: isUncertain ? "#dc2626" : "#059669" }} />
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>
+                        COA Detection & Verification
+                      </h3>
+                      <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        Journal Line #{lineIdx + 1} ({targetLine.line_type || "EXPENSE"})
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowReviewCoaModal(false)}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {/* AI Detection Info Card */}
+                <div
+                  style={{
+                    backgroundColor: isUncertain ? "#fef2f2" : "#f0fdf4",
+                    border: isUncertain ? "1px solid #fecaca" : "1px solid #bbf7d0",
+                    borderRadius: "8px",
+                    padding: "14px",
+                    marginBottom: "16px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: "700", color: isUncertain ? "#991b1b" : "#166534" }}>
+                      AI Detected Account Classification
+                    </div>
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        fontWeight: "700",
+                        padding: "2px 8px",
+                        borderRadius: "12px",
+                        backgroundColor: isUncertain ? "#fee2e2" : "#dcfce7",
+                        color: isUncertain ? "#b91c1c" : "#15803d",
+                      }}
+                    >
+                      {currentMatchStatus}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", marginBottom: "4px" }}>
+                    {currentAccName} {currentAccCode ? `(${currentAccCode})` : ""}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "var(--text-secondary)", lineHeight: "1.4" }}>
+                    {targetLine.description ? `Description: "${targetLine.description}"` : `Line Item #${targetLine.source_line_index || lineIdx + 1}`}
+                  </div>
+                  <div style={{ fontSize: "11px", color: isUncertain ? "#b91c1c" : "#15803d", marginTop: "8px", fontStyle: "italic" }}>
+                    {isUncertain
+                      ? "⚠️ Warning: This COA detection is unverified or uncertain. Please review or select the correct account below."
+                      : "✓ This COA classification is verified and matches your Chart of Accounts."}
+                  </div>
+                </div>
+
+                {/* Account Selection Form */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "20px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "#334155" }}>
+                    Select Chart of Account (Zoho Books)
+                  </label>
+                  {zohoAccounts && zohoAccounts.length > 0 ? (
+                    <select
+                      className="table-input"
+                      style={{ width: "100%", padding: "10px", fontSize: "13px", borderRadius: "6px", border: "1px solid var(--border-subtle)" }}
+                      value={modalSelectedAccountId}
+                      onChange={(e) => setModalSelectedAccountId(e.target.value)}
+                    >
+                      <option value="">-- Select Account --</option>
+                      {zohoAccounts.map((za: any) => (
+                        <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
+                          {za.account_name} ({za.account_type || "account"})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      className="table-input"
+                      style={{ width: "100%", padding: "10px", fontSize: "13px", borderRadius: "6px" }}
+                      value={modalSelectedAccountId}
+                      onChange={(e) => setModalSelectedAccountId(e.target.value)}
+                      placeholder="Account Name / Code"
+                    />
+                  )}
+
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowReviewCoaModal(false);
+                        setShowCreateCoaModal(true);
+                      }}
+                      style={{ background: "none", border: "none", color: "#2563eb", fontSize: "11px", fontWeight: "600", cursor: "pointer", padding: 0 }}
+                    >
+                      + Create New COA in Zoho Books
+                    </button>
+                  </div>
+                </div>
+
+                {/* Modal Buttons */}
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowReviewCoaModal(false)}
+                    className="btn btn-secondary"
+                    style={{ padding: "8px 16px", fontSize: "13px" }}
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // Apply COA & Approve Line
+                      let finalId = modalSelectedAccountId;
+                      let finalName = currentAccName;
+
+                      if (zohoAccounts && zohoAccounts.length > 0) {
+                        const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(finalId));
+                        if (match) {
+                          finalName = match.account_name;
+                        } else if (!finalId) {
+                          // Default to first zoho account if unselected
+                          finalId = zohoAccounts[0].zoho_account_id;
+                          finalName = zohoAccounts[0].account_name;
+                        }
+                      }
+
+                      handleJournalLineChange(lineIdx, "account_id", finalId);
+                      handleJournalLineChange(lineIdx, "account_name", finalName.replace(" [Unapproved]", ""));
+                      handleJournalLineChange(lineIdx, "match_status", "EXACT_MATCH");
+                      handleJournalLineChange(lineIdx, "ai_needs_review", false);
+                      handleJournalLineChange(lineIdx, "provenance", "HUMAN_APPROVED");
+
+                      setShowReviewCoaModal(false);
+                      setActionNotice(`✓ Approved COA '${finalName}' for line #${lineIdx + 1}!`);
+                      setTimeout(() => setActionNotice(null), 3000);
+                    }}
+                    className="btn btn-primary"
+                    style={{
+                      padding: "8px 18px",
+                      fontSize: "13px",
+                      background: "linear-gradient(135deg, #059669 0%, #047857 100%)",
+                      color: "#ffffff",
+                    }}
+                  >
+                    ✓ Approve & Confirm COA
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

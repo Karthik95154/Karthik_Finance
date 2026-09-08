@@ -1,4 +1,5 @@
 export interface LineItem {
+  line_index?: number | null;
   description?: string | null;
   hsn_code?: string | null;
   quantity?: number | null;
@@ -6,7 +7,10 @@ export interface LineItem {
   unit_price?: number | null;
   rate?: number | null;
   discount?: number | null;
+  discount_type?: string | null;
+  line_amount?: number | null;
   taxable_amount?: number | null;
+  gst_rate?: number | null;
   cgst_rate?: number | null;
   cgst_amount?: number | null;
   sgst_rate?: number | null;
@@ -28,6 +32,8 @@ export interface BankDetails {
 }
 
 export interface ExtractedInvoiceData {
+  schema_version?: string | null;
+  knowledge_version?: string | null;
   invoice_number?: string | null;
   invoice_date?: string | null;
   due_date?: string | null;
@@ -46,6 +52,8 @@ export interface ExtractedInvoiceData {
   customer_address?: string | null;
   customer_gstin?: string | null;
   customer_pan?: string | null;
+  customer_phone?: string | null;
+  customer_email?: string | null;
 
   shipping_name?: string | null;
   shipping_address?: string | null;
@@ -69,6 +77,7 @@ export interface ExtractedInvoiceData {
   cess_amount?: number | null;
   shipping_charges?: number | null;
   other_charges?: number | null;
+  adjustment?: number | null;
   round_off?: number | null;
   total_amount?: number | null;
   currency?: string | null;
@@ -125,14 +134,20 @@ export interface TdsResult {
   tds_type?: string | null;
   nature_of_payment?: string | null;
   tds_provision?: string | null;
+  provision?: string | null;
   tds_section?: string | null;
+  section?: string | null;
   tds_rate?: number | null;
+  rate?: number | null;
+  approved_tds_rate?: number | null;
   rate_source?: string | null;
   tds_base_amount?: number | null;
+  base_amount?: number | null;
   base_source?: string | null;
   extracted_tds_amount?: number | null;
   calculated_tds_amount?: number | null;
   proposed_tds_amount?: number | null;
+  tds_amount?: number | null;
   calculation?: string | null;
   confidence?: number | null;
   needs_review?: boolean | null;
@@ -311,6 +326,9 @@ export interface JournalLine {
   source_line_index?: number | null;
   provenance: "AI_PREDICTED" | "HITL_OVERRIDE" | "DETERMINISTIC" | string;
   description?: string | null;
+  match_status?: string | null;
+  ai_needs_review?: boolean | null;
+  match_message?: string | null;
 }
 
 export interface JournalValidation {

@@ -1,4 +1,4 @@
-﻿"""
+"""
 email_scheduler.py
 Daily 7:00 AM UTC automatic email polling scheduler.
 
@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from sqlalchemy import select
+from sqlalchemy import select, false
 
 from app.db.database import AsyncSessionLocal
 from app.db.models import EmailConnection, Invoice
@@ -107,9 +107,9 @@ async def _run_automatic_poll_for_connection(email_conn: EmailConnection) -> Non
                 from sqlalchemy import or_
                 dup_q = select(Invoice).where(Invoice.file_hash.in_(hashes))
                 if conn.user_id:
-                    dup_q = dup_q.where(
-                        or_(Invoice.user_id == conn.user_id, Invoice.user_id.is_(None))
-                    )
+                    dup_q = dup_q.where(Invoice.user_id == conn.user_id)
+                else:
+                    dup_q = dup_q.where(false())
                 dup_res = await db.execute(dup_q)
                 existing_hashes = {inv.file_hash for inv in dup_res.scalars().all()}
 

@@ -45,14 +45,13 @@ export default function SignUpPage() {
 
     try {
       setIsLoading(true);
-      const res = await fetch(`${API_BASE}/auth/token`, {
+      const res = await fetch(`${API_BASE}/auth/signup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          full_name: fullName.trim(),
           email: email.trim().toLowerCase(),
-          dev_role: "ADMIN",
-          dev_tenant_id: "default-tenant-001",
-          dev_name: fullName.trim() || email.split("@")[0],
+          password: password,
         }),
       });
 

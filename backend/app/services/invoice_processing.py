@@ -173,9 +173,8 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
 
 async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
     """
-    Runs Stage 3 (Qwen3-4B COA & Qwen3-4B/Groq TDS) and Stage 4-6 (Deterministic GST, ITC,
-    Financial Validator & Journal Generator) on an existing invoice using its stored extraction.
-    DOES NOT call Qwen3-VL again.
+    Runs downstream Stage 3-6 (COA mapping, TDS, GST, ITC, Financial Validator & Journal Generator)
+    on an existing invoice using its stored extraction. Does not re-call Kimi K3 AI inference.
     """
     logger.info(f"Starting Stage 3, 4, 5 & 6 processing for invoice {invoice_id}")
 
@@ -296,13 +295,20 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             "accounting": accounting_lines,
             "tds_assessment": {
                 **tds_assessment,
+                "applicable": tds_applicable,
                 "tds_applicable": tds_applicable,
+                "section": tds_section,
                 "tds_section": tds_section,
+                "provision": tds_provision,
                 "tds_provision": tds_provision,
                 "nature_of_payment": tds_nature,
                 "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+                "rate": final_tds_calc.get("rate") if tds_applicable else None,
+                "approved_tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
                 "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+                "base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
                 "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+                "tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
                 "tds_reasoning": final_tds_calc.get("reason"),
             },
             "tds_final": final_tds_calc,
@@ -361,7 +367,7 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             invoice.financial_validation_result = financial_validation_result
             invoice.journal_entry = journal_result
             invoice.accounting_status = "COMPLETED"
-            invoice.status = "FINAL_HITL_REVIEW"
+            invoice.status = "COMPLETED"
             invoice.error_message = None
             invoice.updated_at = datetime.now(timezone.utc)
             if avg_confidence is not None:
@@ -388,15 +394,23 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
 async def process_invoice_background(invoice_id: uuid.UUID) -> None:
     """
     Asynchronous background pipeline executing:
-    Stage 2: Qwen3-VL Extraction ->
-    Stage 3: Qwen3-4B COA & Qwen3-4B TDS Proposal (Concurrent with exact same normalized JSON) ->
+    Stage 1: Kimi K3 Single Colab Extraction + Line Item COA + TDS Proposal ->
+    Stage 2: KimiK3ResponseAdapter Normalization & Per-Line Zoho COA Verification ->
+    Stage 3: Deterministic Statutory TDS Calculation ->
     Stage 4: Deterministic GST & ITC Engine ->
     Stage 5: Deterministic Financial Validation / Reconciliation ->
     Stage 6: Deterministic Balanced Journal Generation Preview
     """
     logger.info(f"Starting full background processing for invoice {invoice_id}")
 
-    # 1. Update status to PROCESSING_VLM in a short-lived session
+    tenant_id = "default-tenant-001"
+    user_id = None
+    file_path = None
+    file_name = None
+    file_mime_type = None
+    cached_coa = []
+
+    # 1. Retrieve invoice, user context, and user's active Zoho COA in a short-lived session
     async with AsyncSessionLocal() as session:
         try:
             query = select(Invoice).where(Invoice.id == invoice_id)
@@ -408,8 +422,10 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 return
 
             tenant_id = invoice.tenant_id or "default-tenant-001"
+            user_id = invoice.user_id
             file_path = invoice.file_path
             file_name = invoice.file_name
+            file_mime_type = invoice.mime_type or "application/pdf"
 
             invoice.status = "PROCESSING_VLM"
             invoice.accounting_status = "PENDING"
@@ -417,6 +433,17 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             invoice.updated_at = datetime.now(timezone.utc)
             await session.commit()
             logger.info(f"Invoice {invoice_id} status updated to PROCESSING_VLM")
+
+            # Retrieve authenticated user's active Zoho Chart of Accounts strictly scoped to user_id & organization_id
+            if user_id:
+                try:
+                    cached_coa = await master_data_service.get_cached_chart_of_accounts(
+                        tenant_id=tenant_id,
+                        db=session,
+                    )
+                except Exception as coa_exc:
+                    logger.warning(f"Could not fetch Zoho COA for user {user_id}: {coa_exc}")
+                    cached_coa = []
         except Exception as exc:
             logger.exception(f"Error marking invoice {invoice_id} as PROCESSING_VLM: {exc}")
             return
@@ -439,93 +466,70 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 pass
         return
 
-    # 3. Call Qwen3-VL on Colab with graceful fallback (no DB connection held during HTTP/polling)
-    extraction_result = None
+    # 3. Call Kimi K3 Single Colab service with Base64 image & user's Zoho COA
+    kimi_raw_response = None
     try:
-        extraction_result = await ai_service.extract_invoice_vlm(file_bytes)
-    except Exception as vlm_err:
-        logger.warning(
-            f"Colab Qwen3-VL extraction unavailable for invoice {invoice_id} ({vlm_err}). "
-            f"Initializing structured draft workspace for manual review & editing."
+        kimi_raw_response = await ai_service.extract_invoice_vlm(
+            file_bytes=file_bytes,
+            filename=file_name or "invoice.pdf",
+            content_type=file_mime_type,
+            chart_of_accounts=cached_coa,
         )
-        clean_inv_num = f"INV-{str(invoice_id)[:8].upper()}"
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        base_fname = (file_name or "Vendor").replace("_", " ").replace("-", " ")
-        vendor_candidate = base_fname.split(".")[0].strip()
-        if len(vendor_candidate) > 40:
-            vendor_candidate = vendor_candidate[:40]
+    except Exception as vlm_err:
+        err_msg = f"Kimi K3 inference failed: {str(vlm_err)}"
+        logger.error(f"Invoice {invoice_id} extraction failed: {err_msg}")
+        async with AsyncSessionLocal() as session:
+            try:
+                res = await session.execute(select(Invoice).where(Invoice.id == invoice_id))
+                inv = res.scalar_one_or_none()
+                if inv:
+                    inv.status = "FAILED"
+                    inv.accounting_status = "FAILED"
+                    inv.error_message = err_msg
+                    inv.updated_at = datetime.now(timezone.utc)
+                    await session.commit()
+            except Exception as commit_err:
+                logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_err}")
+        return
 
-        extraction_result = {
-            "confidence_score": 0.5,
-            "data": {
-                "invoice_number": clean_inv_num,
-                "invoice_date": today_str,
-                "due_date": today_str,
-                "vendor_name": vendor_candidate or "Vendor Invoice",
-                "vendor_gstin": "36AABCU9603R1ZM",
-                "vendor_pan": "AABCU9603R",
-                "place_of_supply": "36-Telangana",
-                "buyer_name": "Sakshi Finance",
-                "buyer_gstin": "36AAACH7409R1ZZ",
-                "subtotal": 1000.0,
-                "tax_total": 180.0,
-                "total_amount": 1180.0,
-                "cgst_amount": 90.0,
-                "sgst_amount": 90.0,
-                "igst_amount": 0.0,
-                "line_items": [
-                    {
-                        "line_index": 1,
-                        "description": f"Invoice items ({file_name})",
-                        "quantity": 1.0,
-                        "unit_price": 1000.0,
-                        "taxable_amount": 1000.0,
-                        "cgst_rate": 9.0,
-                        "cgst_amount": 90.0,
-                        "sgst_rate": 9.0,
-                        "sgst_amount": 90.0,
-                        "total": 1180.0,
-                    }
-                ],
-            },
-        }
+    # 4. Normalize Kimi response via KimiK3ResponseAdapter
+    from app.services.kimi_adapter import KimiK3ResponseAdapter
+    normalized = KimiK3ResponseAdapter.normalize_kimi_response(
+        kimi_response=kimi_raw_response,
+        user_zoho_coa=cached_coa,
+    )
 
-    # Normalize extracted dates (Indian/ISO format) in extraction_result
-    from app.core.date_utils import parse_and_normalize_date
-    if isinstance(extraction_result, dict):
-        data_sub = extraction_result.get("data") if isinstance(extraction_result.get("data"), dict) else extraction_result
-        if data_sub.get("invoice_date"):
-            data_sub["invoice_date"] = parse_and_normalize_date(data_sub["invoice_date"])
-        if data_sub.get("due_date"):
-            data_sub["due_date"] = parse_and_normalize_date(data_sub["due_date"])
+    raw_snapshot = normalized["raw_vlm_output"]
+    norm_vlm_dict = {"data": normalized["normalized_data"]}
+    norm_accounting_dict = normalized["normalized_accounting"]
 
-    # Calculate Indian Accounting Period category based on extracted invoice_date
+    # Calculate Indian Accounting Period category based on normalized invoice_date
     from app.core.date_utils import calculate_invoice_accounting_period
     period_category = None
     period_decision = "NOT_REQUIRED"
-    if isinstance(extraction_result, dict):
-        data_sub = extraction_result.get("data") if isinstance(extraction_result.get("data"), dict) else extraction_result
-        inv_d_val = data_sub.get("invoice_date")
-        if inv_d_val:
-            period_category, _, _ = calculate_invoice_accounting_period(inv_d_val)
-            if period_category == "PREVIOUS_FINANCIAL_YEAR":
-                period_decision = "PENDING"
+    inv_d_val = normalized["normalized_data"].get("invoice_date")
+    if inv_d_val:
+        period_category, _, _ = calculate_invoice_accounting_period(inv_d_val)
+        if period_category == "PREVIOUS_FINANCIAL_YEAR":
+            period_decision = "PENDING"
 
-    # 4. Persist extraction result into invoice record in a clean session
+    # 5. Persist extraction result & initial normalized outputs in database
     async with AsyncSessionLocal() as session:
         try:
             query = select(Invoice).where(Invoice.id == invoice_id)
             result = await session.execute(query)
             invoice = result.scalar_one_or_none()
             if invoice:
-                invoice.raw_vlm_output = extraction_result
-                invoice.current_vlm_output = extraction_result
-                invoice.status = "HITL_REVIEW"
+                invoice.raw_vlm_output = raw_snapshot
+                invoice.current_vlm_output = norm_vlm_dict
+                invoice.accounting_output = norm_accounting_dict
+                invoice.current_accounting_output = norm_accounting_dict
+                invoice.status = "PROCESSING_ACCOUNTING"
                 invoice.period_category = period_category
                 invoice.period_decision = period_decision
                 invoice.updated_at = datetime.now(timezone.utc)
                 await session.commit()
-                logger.info(f"Invoice {invoice_id} Stage 2 VLM complete (period: {period_category}, decision: {period_decision}). Stopping for HITL_REVIEW.")
+                logger.info(f"Invoice {invoice_id} Kimi K3 extraction complete (period: {period_category}). Executing downstream deterministic engines...")
         except Exception as exc:
             logger.exception(f"Error persisting extraction result for invoice {invoice_id}: {exc}")
             try:
@@ -538,6 +542,10 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                     await session.commit()
             except Exception as commit_exc:
                 logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
+            return
+
+    # 6. Execute downstream Stage 3-6 Deterministic Engines (GST, ITC, Financial Validator, Journal Generator)
+    await process_accounting_downstream_background(invoice_id)
 
 
 async def process_accounting_downstream_background(invoice_id) -> None:
@@ -647,13 +655,20 @@ async def process_accounting_downstream_background(invoice_id) -> None:
             "accounting": accounting_lines,
             "tds_assessment": {
                 **tds_assessment,
+                "applicable": tds_applicable,
                 "tds_applicable": tds_applicable,
+                "section": tds_section,
                 "tds_section": tds_section,
+                "provision": tds_provision,
                 "tds_provision": tds_provision,
                 "nature_of_payment": tds_nature,
                 "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+                "rate": final_tds_calc.get("rate") if tds_applicable else None,
+                "approved_tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
                 "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+                "base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
                 "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+                "tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
                 "tds_reasoning": final_tds_calc.get("reason"),
             },
             "tds_final": final_tds_calc,
@@ -711,7 +726,7 @@ async def process_accounting_downstream_background(invoice_id) -> None:
             invoice.financial_validation_result = financial_validation_result
             invoice.journal_entry = journal_result
             invoice.accounting_status = "COMPLETED"
-            invoice.status = "FINAL_HITL_REVIEW"
+            invoice.status = "COMPLETED"
             invoice.error_message = None
             invoice.updated_at = datetime.now(timezone.utc)
             if avg_confidence is not None:

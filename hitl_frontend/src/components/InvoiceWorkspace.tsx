@@ -278,6 +278,9 @@ export default function InvoiceWorkspace({
   const [journalEntry, setJournalEntry] = useState<JournalEntry | null>(null);
   const [additionalFieldsText, setAdditionalFieldsText] = useState<string>("");
   const [zohoAccounts, setZohoAccounts] = useState<any[]>([]);
+  const [showReviewCoaModal, setShowReviewCoaModal] = useState<boolean>(false);
+  const [reviewCoaModalLineIdx, setReviewCoaModalLineIdx] = useState<number | null>(null);
+  const [modalSelectedAccountId, setModalSelectedAccountId] = useState<string>("");
   const [showRawJsonModal, setShowRawJsonModal] = useState<boolean>(false);
   const [copiedJson, setCopiedJson] = useState<boolean>(false);
   const [warningModalOpen, setWarningModalOpen] = useState<boolean>(false);
@@ -330,18 +333,43 @@ export default function InvoiceWorkspace({
         }
 
         // Initialize form state from current_vlm_output (edited) merged over raw_vlm_output (base)
-        const rawData: ExtractedInvoiceData =
-          invData.raw_vlm_output && (invData.raw_vlm_output as any).data
-            ? (invData.raw_vlm_output as any).data
-            : (invData.raw_vlm_output as ExtractedInvoiceData) || {};
+        const getVlmPayload = (obj: any): any => {
+          if (!obj || typeof obj !== "object") return {};
+          let target = obj;
+          if (target.data && typeof target.data === "object") target = target.data;
+          if (target.prediction && typeof target.prediction === "object") target = target.prediction;
+          return target;
+        };
 
-        const currData: ExtractedInvoiceData =
-          invData.current_vlm_output && (invData.current_vlm_output as any).data
-            ? (invData.current_vlm_output as any).data
-            : (invData.current_vlm_output as ExtractedInvoiceData) || {};
+        const rawDataPayload = getVlmPayload(invData.raw_vlm_output);
+        const currDataPayload = getVlmPayload(invData.current_vlm_output);
 
-        // Merge raw extraction with user-edited fields, ensuring line_items and totals are never wiped
+        const vDet = {
+          ...(typeof rawDataPayload.vendor_details === "object" ? rawDataPayload.vendor_details : {}),
+          ...(typeof currDataPayload.vendor_details === "object" ? currDataPayload.vendor_details : {}),
+        };
+        const cDet = {
+          ...(typeof rawDataPayload.customer_details === "object" ? rawDataPayload.customer_details : {}),
+          ...(typeof currDataPayload.customer_details === "object" ? currDataPayload.customer_details : {}),
+        };
+        const iDet = {
+          ...(typeof rawDataPayload.invoice_details === "object" ? rawDataPayload.invoice_details : {}),
+          ...(typeof currDataPayload.invoice_details === "object" ? currDataPayload.invoice_details : {}),
+        };
+        const fDet = {
+          ...(typeof rawDataPayload.financial_details === "object" ? rawDataPayload.financial_details : {}),
+          ...(typeof currDataPayload.financial_details === "object" ? currDataPayload.financial_details : {}),
+        };
+
+        const rawData: ExtractedInvoiceData = { ...rawDataPayload };
+        const currData: ExtractedInvoiceData = { ...currDataPayload };
+
+        // Merge raw extraction with user-edited fields, ensuring sub-objects and top level are flattened
         const extracted: ExtractedInvoiceData = {
+          ...vDet,
+          ...cDet,
+          ...iDet,
+          ...fDet,
           ...rawData,
           ...currData,
         };
@@ -382,8 +410,64 @@ export default function InvoiceWorkspace({
         if (!extracted.payment_terms && rawF.payment_terms) {
           extracted.payment_terms = rawF.payment_terms;
         }
-        if (!extracted.vendor_email && rawF.vendor_email) {
-          extracted.vendor_email = rawF.vendor_email;
+
+        if (!extracted.vendor_name && vDet.vendor_name) extracted.vendor_name = vDet.vendor_name;
+        if (!extracted.vendor_address && vDet.vendor_address) extracted.vendor_address = vDet.vendor_address;
+        if (!extracted.vendor_gstin && vDet.vendor_gstin) extracted.vendor_gstin = vDet.vendor_gstin;
+        if (!extracted.vendor_pan && vDet.vendor_pan) extracted.vendor_pan = vDet.vendor_pan;
+
+        if (!extracted.vendor_phone) {
+          extracted.vendor_phone =
+            (vDet as any).vendor_phone ||
+            (vDet as any).phone ||
+            (vDet as any).mobile ||
+            rawF.vendor_phone ||
+            rawF.phone ||
+            rawF.vendor_contact ||
+            (rawData.additional_fields as any)?.vendor_phone ||
+            (rawData.additional_fields as any)?.phone ||
+            (currData.additional_fields as any)?.vendor_phone ||
+            (currData.additional_fields as any)?.phone ||
+            "";
+        }
+        if (!extracted.vendor_email) {
+          extracted.vendor_email =
+            (vDet as any).vendor_email ||
+            (vDet as any).email ||
+            rawF.vendor_email ||
+            rawF.email ||
+            (rawData.additional_fields as any)?.vendor_email ||
+            (rawData.additional_fields as any)?.email ||
+            (currData.additional_fields as any)?.vendor_email ||
+            (currData.additional_fields as any)?.email ||
+            "";
+        }
+
+        if (!extracted.customer_name && cDet.customer_name) extracted.customer_name = cDet.customer_name;
+        if (!extracted.customer_address && cDet.customer_address) extracted.customer_address = cDet.customer_address;
+        if (!extracted.customer_gstin && cDet.customer_gstin) extracted.customer_gstin = cDet.customer_gstin;
+        if (!extracted.customer_pan && cDet.customer_pan) extracted.customer_pan = cDet.customer_pan;
+
+        if (!extracted.customer_phone) {
+          extracted.customer_phone =
+            (cDet as any).customer_phone ||
+            (cDet as any).phone ||
+            (cDet as any).mobile ||
+            rawF.customer_phone ||
+            rawF.client_phone ||
+            (rawData.additional_fields as any)?.customer_phone ||
+            (currData.additional_fields as any)?.customer_phone ||
+            "";
+        }
+        if (!extracted.customer_email) {
+          extracted.customer_email =
+            (cDet as any).customer_email ||
+            (cDet as any).email ||
+            rawF.customer_email ||
+            rawF.client_email ||
+            (rawData.additional_fields as any)?.customer_email ||
+            (currData.additional_fields as any)?.customer_email ||
+            "";
         }
         if (!extracted.vendor_address && rawF.vendor_address) {
           extracted.vendor_address = rawF.vendor_address;
@@ -472,35 +556,55 @@ export default function InvoiceWorkspace({
           ...(typeof rawData.bank_details === "object" ? rawData.bank_details : {}), 
           ...(typeof currData.bank_details === "object" ? currData.bank_details : {}) 
         };
+        const addBank =
+          (typeof (rawData.additional_fields as any)?.bank_details === "object" ? (rawData.additional_fields as any).bank_details : null) ||
+          (typeof (currData.additional_fields as any)?.bank_details === "object" ? (currData.additional_fields as any).bank_details : null);
+
+        if (addBank) {
+          if (!bankObj.bank_name) bankObj.bank_name = addBank.bank_name || addBank.bank;
+          if (!bankObj.account_number) bankObj.account_number = addBank.account_number || addBank.account_no || addBank.a_c_no;
+          if (!bankObj.ifsc_code) bankObj.ifsc_code = addBank.ifsc_code || addBank.ifsc;
+          if (!bankObj.branch) bankObj.branch = addBank.branch || addBank.branch_name;
+          if (!bankObj.branch_name) bankObj.branch_name = addBank.branch || addBank.branch_name;
+          if (!bankObj.account_holder_name) bankObj.account_holder_name = addBank.account_holder_name || addBank.account_name;
+        }
+
         const unparsedBankText: string = 
           (typeof rawF.bank_details === "string" ? rawF.bank_details : "") || 
           (rawData.additional_fields as any)?.unparsed_bank_details || 
           (currData.additional_fields as any)?.unparsed_bank_details || 
+          (typeof (rawData.additional_fields as any)?.bank_details === "string" ? (rawData.additional_fields as any).bank_details : "") ||
           (typeof rawData.bank_details === "string" ? rawData.bank_details : "") || 
           "";
 
         if (unparsedBankText) {
           if (!bankObj.bank_name) {
-            const m = unparsedBankText.match(/Bank:\s*([^,|]+)/i);
+            const m = unparsedBankText.match(/Bank\s*(?:Name)?[:\s]*([^,\n|]+)/i);
             if (m) bankObj.bank_name = m[1].trim();
           }
-          if (!bankObj.branch_name) {
-            const m = unparsedBankText.match(/Branch[:\s]*([^|]+)/i) || unparsedBankText.match(/Bank:[^,]+,\s*([^|]+)/i);
-            if (m) bankObj.branch_name = m[1].trim();
+          if (!bankObj.branch_name || !bankObj.branch) {
+            const m = unparsedBankText.match(/Branch[:\s]*([^,\n|]+)/i) || unparsedBankText.match(/Bank:[^,]+,\s*([^,\n|]+)/i);
+            if (m) {
+              const val = m[1].trim();
+              bankObj.branch_name = val;
+              bankObj.branch = val;
+            }
           }
           if (!bankObj.account_number) {
-            const m = unparsedBankText.match(/(?:A\/C\s*No|Account\s*No|A\/c|Account)[:.\s]*([0-9A-Za-z]+)/i);
+            const m = unparsedBankText.match(/(?:A\/C\s*No|Account\s*No|A\/c|Account(?:\s*No|\s*Number)?)[:.\s]*([0-9A-Za-z]+)/i);
             if (m) bankObj.account_number = m[1].trim();
           }
           if (!bankObj.ifsc_code) {
-            const m = unparsedBankText.match(/IFSC[:.\s]*([A-Z]{4}0[A-Z0-9]{6})/i);
+            const m = unparsedBankText.match(/IFSC\s*(?:Code)?[:.\s]*([A-Z]{4}0[A-Z0-9]{6})/i);
             if (m) bankObj.ifsc_code = m[1].trim();
           }
           if (!bankObj.account_holder_name) {
-            const m = unparsedBankText.match(/Account\s*Name[:.\s]*([^|]+)/i);
+            const m = unparsedBankText.match(/Account\s*Name[:.\s]*([^,\n|]+)/i);
             if (m) bankObj.account_holder_name = m[1].trim();
           }
         }
+        if (bankObj.branch_name && !bankObj.branch) bankObj.branch = bankObj.branch_name;
+        if (bankObj.branch && !bankObj.branch_name) bankObj.branch_name = bankObj.branch;
         extracted.bank_details = bankObj;
 
         if (!extracted.currency && (rawData.currency || rawF.currency)) {
@@ -657,6 +761,37 @@ export default function InvoiceWorkspace({
   };
 
   // Journal line editing helpers
+  // COA uncertainty checking helper
+  const isUncertainCoaLine = (line: any) => {
+    if (!line) return false;
+    if (line.provenance === "HUMAN_APPROVED" || line.provenance === "CUSTOMER_EDIT" || line.provenance === "HITL_OVERRIDE") {
+      return false;
+    }
+    if (line.match_status === "EXACT_MATCH" && !line.ai_needs_review && !String(line.account_name || "").includes("[Unapproved]")) {
+      return false;
+    }
+    if (!line.account_id || line.account_id === "" || line.account_id === "ACC_MANUAL" || line.account_id === "ACC_EXPENSE") {
+      return true;
+    }
+    const accName = String(line.account_name || "").trim();
+    if (!accName || accName === "-- Select Account --" || accName === "Unassigned COA" || accName.includes("[Unapproved]")) {
+      return true;
+    }
+    if (line.match_status && line.match_status !== "EXACT_MATCH") {
+      return true;
+    }
+    if (line.ai_needs_review) {
+      return true;
+    }
+    if (zohoAccounts && zohoAccounts.length > 0) {
+      const match = zohoAccounts.some(
+        (za: any) => String(za.zoho_account_id) === String(line.account_id) || za.account_name.toLowerCase().trim() === accName.toLowerCase()
+      );
+      if (!match) return true;
+    }
+    return false;
+  };
+
   const handleJournalLineChange = (
     index: number,
     field: string,
@@ -851,7 +986,14 @@ export default function InvoiceWorkspace({
     // 3. TDS Calculation
     const tdsRaw: any = accountingData.tds_assessment || accountingData.tds || {};
     const tdsApp = Boolean(tdsRaw.tds_applicable ?? tdsRaw.applicable);
-    const tdsRate = parseFloat(String(tdsRaw.approved_tds_rate ?? tdsRaw.tds_rate ?? tdsRaw.rate ?? "0")) || 0;
+    const rawRate = tdsRaw.approved_tds_rate ?? tdsRaw.tds_rate ?? tdsRaw.rate;
+    const secStr = String(tdsRaw.tds_section || tdsRaw.tds_provision || tdsRaw.nature_of_payment || "").toUpperCase();
+    const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+    const tdsRate = tdsApp
+      ? (rawRate !== null && rawRate !== undefined && parseFloat(String(rawRate)) > 0
+          ? parseFloat(String(rawRate))
+          : fallbackRate)
+      : 0;
     let tdsAmount = 0;
     if (tdsApp && tdsRate > 0) {
       tdsAmount = Math.round(((computedSubtotal * tdsRate) / 100) * 100) / 100;
@@ -1946,6 +2088,11 @@ export default function InvoiceWorkspace({
                     <span style={{ fontSize: "11px", fontWeight: "700", letterSpacing: "0.06em", color: "var(--text-secondary)", textTransform: "uppercase" }}>
                       AI Extraction Review
                     </span>
+                    {(!invoice?.approval_status || invoice?.approval_status === "PENDING") && (
+                      <span className="badge" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px", background: "#fef3c7", color: "#d97706", border: "1px solid #fde68a" }}>
+                        <Clock size={10} /> Pending Review
+                      </span>
+                    )}
                     {invoice?.approval_status === "APPROVED" && (
                       <span className="badge badge-success" style={{ fontSize: "10px", display: "inline-flex", alignItems: "center", gap: "3px" }}>
                         <Check size={10} /> Approved
@@ -2954,7 +3101,24 @@ export default function InvoiceWorkspace({
                               currTds.applicable = isApp;
                               if (!isApp) {
                                 currTds.tds_rate = null;
+                                currTds.rate = null;
+                                currTds.approved_tds_rate = null;
                                 currTds.proposed_tds_amount = 0.0;
+                                currTds.tds_amount = 0.0;
+                              } else {
+                                const secStr = String(currTds.tds_section || currTds.section || currTds.tds_provision || currTds.nature_of_payment || "").toUpperCase();
+                                const rateToUse = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                                currTds.tds_rate = rateToUse;
+                                currTds.rate = rateToUse;
+                                currTds.approved_tds_rate = rateToUse;
+                                const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
+                                if (subtotal > 0) {
+                                  currTds.tds_base_amount = subtotal;
+                                  currTds.base_amount = subtotal;
+                                  const calcAmt = Math.round((subtotal * rateToUse) / 100 * 100) / 100;
+                                  currTds.proposed_tds_amount = calcAmt;
+                                  currTds.tds_amount = calcAmt;
+                                }
                               }
                               return {
                                 ...prev,
@@ -2982,69 +3146,105 @@ export default function InvoiceWorkspace({
                       {/* TDS Section */}
                       <div>
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
-                          TDS Section / Provision
+                          TDS Section
                         </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 194C, 194J, 194Q, 194I"
-                          value={tdsResult.tds_section || tdsResult.tds_provision || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_section = val;
-                              currTds.section = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const secRaw = tdsResult.tds_section || tdsResult.section;
+                          const provRaw = tdsResult.tds_provision || tdsResult.provision;
+                          const natRaw = tdsResult.nature_of_payment;
+                          const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
+                          let displaySec = secRaw || "";
+                          if (isApp && (!displaySec || displaySec.includes("_"))) {
+                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displaySec = "194J / 393";
+                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displaySec = "194C";
+                            else if (combined.includes("194I") || combined.includes("RENT")) displaySec = "194I";
+                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displaySec = "194H";
+                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displaySec = "194Q";
+                            else displaySec = "194J";
+                          }
+                          return (
+                            <input
+                              type="text"
+                              placeholder="e.g. 194C, 194J, 194Q, 194I"
+                              value={displaySec}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_section = val;
+                                  currTds.section = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
-                      {/* Nature of Payment */}
+                      {/* TDS Statutory Provision */}
                       <div>
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
-                          Nature of Payment
+                          TDS Statutory Provision
                         </label>
-                        <input
-                          type="text"
-                          placeholder="e.g. Professional services, Purchase of goods"
-                          value={tdsResult.nature_of_payment || ""}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.nature_of_payment = val;
-                              currTds.nature = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const secRaw = tdsResult.tds_section || tdsResult.section;
+                          const provRaw = tdsResult.tds_provision || tdsResult.provision;
+                          const natRaw = tdsResult.nature_of_payment;
+                          const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
+                          let displayProv = provRaw || "";
+                          if (isApp && (!displayProv || displayProv.includes("_"))) {
+                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displayProv = "Section 194J / 393 - Fees for Technical Services";
+                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displayProv = "Section 194C - Payments to Contractors and Sub-contractors";
+                            else if (combined.includes("194I") || combined.includes("RENT")) displayProv = "Section 194I - Rent for Property / Equipment";
+                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displayProv = "Section 194H - Commission or Brokerage";
+                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displayProv = "Section 194Q - Purchase of Goods";
+                            else displayProv = `Section ${secRaw || "194J"} - Statutory Deduction`;
+                          }
+                          return (
+                            <input
+                              type="text"
+                              placeholder="e.g. Section 194J - Fees for Technical Services"
+                              value={displayProv}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_provision = val;
+                                  currTds.provision = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* TDS Rate (%) */}
@@ -3052,38 +3252,54 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Rate (%)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="e.g. 0.1, 1, 2, 10"
-                          value={tdsResult.tds_rate !== null && tdsResult.tds_rate !== undefined ? tdsResult.tds_rate : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_rate = val;
-                              currTds.rate = val;
-                              const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
-                              if (val !== null && subtotal > 0) {
-                                currTds.proposed_tds_amount = Math.round((subtotal * val) / 100 * 100) / 100;
-                              }
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawRate = tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate;
+                          const secStr = String(tdsResult.tds_section || tdsResult.tds_provision || tdsResult.nature_of_payment || "").toUpperCase();
+                          const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                          const displayRate = isApp
+                            ? (rawRate !== null && rawRate !== undefined && parseFloat(String(rawRate)) > 0
+                                ? rawRate
+                                : fallbackRate)
+                            : (rawRate !== null && rawRate !== undefined ? rawRate : "");
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="e.g. 0.1, 1, 2, 10"
+                              value={displayRate !== null && displayRate !== undefined ? displayRate : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_rate = val;
+                                  currTds.rate = val;
+                                  currTds.approved_tds_rate = val;
+                                  const subtotal = parseFloat(String(currTds.tds_base_amount || currTds.base_amount || formData.subtotal || formData.total_amount || 0));
+                                  if (val !== null && subtotal > 0) {
+                                    const calcAmt = Math.round((subtotal * val) / 100 * 100) / 100;
+                                    currTds.proposed_tds_amount = calcAmt;
+                                    currTds.tds_amount = calcAmt;
+                                  }
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* TDS Base Amount */}
@@ -3091,34 +3307,51 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Base Amount (₹)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={tdsResult.tds_base_amount !== null && tdsResult.tds_base_amount !== undefined ? tdsResult.tds_base_amount : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.tds_base_amount = val;
-                              currTds.base_amount = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawBase = tdsResult.tds_base_amount ?? tdsResult.base_amount;
+                          const displayBase = isApp
+                            ? (rawBase !== null && rawBase !== undefined && parseFloat(String(rawBase)) > 0
+                                ? rawBase
+                                : (formData.subtotal || (formData as any).taxable_amount || formData.total_amount || ""))
+                            : (rawBase !== null && rawBase !== undefined ? rawBase : "");
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={displayBase !== null && displayBase !== undefined ? displayBase : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.tds_base_amount = val;
+                                  currTds.base_amount = val;
+                                  const rate = parseFloat(String(currTds.approved_tds_rate ?? currTds.tds_rate ?? currTds.rate ?? "0")) || 0;
+                                  if (val !== null && rate > 0) {
+                                    const calcAmt = Math.round((val * rate) / 100 * 100) / 100;
+                                    currTds.proposed_tds_amount = calcAmt;
+                                    currTds.tds_amount = calcAmt;
+                                  }
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {/* Proposed TDS Amount */}
@@ -3126,36 +3359,54 @@ export default function InvoiceWorkspace({
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
                           TDS Withholding Amount (₹)
                         </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          placeholder="0.00"
-                          value={tdsResult.proposed_tds_amount !== null && tdsResult.proposed_tds_amount !== undefined ? tdsResult.proposed_tds_amount : ""}
-                          onChange={(e) => {
-                            const val = e.target.value === "" ? null : parseFloat(e.target.value);
-                            setAccountingData((prev: any) => {
-                              const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
-                              currTds.proposed_tds_amount = val;
-                              currTds.tds_amount = val;
-                              return {
-                                ...prev,
-                                tds_assessment: currTds,
-                                tds: currTds,
-                                tds_final: currTds,
-                              };
-                            });
-                          }}
-                          style={{
-                            width: "100%",
-                            padding: "6px 10px",
-                            fontSize: "12px",
-                            fontWeight: "700",
-                            color: "var(--accent)",
-                            borderRadius: "var(--radius-sm)",
-                            border: "1px solid var(--border-subtle)",
-                            background: "#ffffff",
-                          }}
-                        />
+                        {(() => {
+                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                          const rawAmt = tdsResult.proposed_tds_amount ?? tdsResult.tds_amount;
+                          const rawRate = parseFloat(String(tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate ?? "0"));
+                          const secStr = String(tdsResult.tds_section || tdsResult.tds_provision || tdsResult.nature_of_payment || "").toUpperCase();
+                          const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                          const effectiveRate = rawRate > 0 ? rawRate : fallbackRate;
+                          const baseVal = (tdsResult.tds_base_amount ?? tdsResult.base_amount) || (formData.subtotal || (formData as any).taxable_amount || formData.total_amount || 0);
+                          const rawBase = parseFloat(String(baseVal || "0"));
+                          const computedAmt = (rawBase > 0 && effectiveRate > 0) ? Math.round((rawBase * effectiveRate) / 100 * 100) / 100 : 0;
+                          const displayAmt = isApp
+                            ? (rawAmt !== null && rawAmt !== undefined && parseFloat(String(rawAmt)) > 0
+                                ? rawAmt
+                                : computedAmt)
+                            : 0;
+                          return (
+                            <input
+                              type="number"
+                              step="0.01"
+                              placeholder="0.00"
+                              value={displayAmt !== null && displayAmt !== undefined ? displayAmt : ""}
+                              onChange={(e) => {
+                                const val = e.target.value === "" ? null : parseFloat(e.target.value);
+                                setAccountingData((prev: any) => {
+                                  const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                                  currTds.proposed_tds_amount = val;
+                                  currTds.tds_amount = val;
+                                  return {
+                                    ...prev,
+                                    tds_assessment: currTds,
+                                    tds: currTds,
+                                    tds_final: currTds,
+                                  };
+                                });
+                              }}
+                              style={{
+                                width: "100%",
+                                padding: "6px 10px",
+                                fontSize: "12px",
+                                fontWeight: "700",
+                                color: "var(--accent)",
+                                borderRadius: "var(--radius-sm)",
+                                border: "1px solid var(--border-subtle)",
+                                background: "#ffffff",
+                              }}
+                            />
+                          );
+                        })()}
                       </div>
 
                       {(() => {
@@ -3766,54 +4017,140 @@ export default function InvoiceWorkspace({
                           </tr>
                         </thead>
                         <tbody>
-                          {journalEntry.lines?.map((line, idx) => (
-                            <tr key={idx} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
-                              <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{idx + 1}</td>
-                              <td style={{ padding: "6px" }}>
-                                {zohoAccounts && zohoAccounts.length > 0 ? (
-                                  <select
-                                    className="table-input"
-                                    style={{
-                                      background: "#ffffff",
-                                      border: "1px solid var(--border-subtle)",
-                                      borderRadius: "var(--radius-sm)",
-                                      padding: "4px 6px",
-                                      width: "100%",
-                                      fontSize: "11px",
-                                      fontWeight: "500",
-                                      color: "var(--text-primary)",
-                                    }}
-                                    value={
-                                      zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(line.account_id))
-                                        ? String(line.account_id)
-                                        : (zohoAccounts.find((za: any) => za.account_name.toLowerCase().trim() === String(line.account_name || "").toLowerCase().trim())?.zoho_account_id || "")
-                                    }
-                                    onChange={(e) => {
-                                      const selId = e.target.value;
-                                      const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(selId));
-                                      const selName = match ? match.account_name : selId;
-                                      handleJournalLineChange(idx, "account_id", selId);
-                                      handleJournalLineChange(idx, "account_name", selName);
-                                    }}
-                                  >
-                                    <option value="">-- Select Account --</option>
-                                    {zohoAccounts.map((za: any) => (
-                                      <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
-                                        {za.account_name} ({za.account_type || "account"})
-                                      </option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <input
-                                    type="text"
-                                    className="table-input"
-                                    style={{ fontSize: "11px", fontWeight: "600" }}
-                                    value={line.account_name ?? ""}
-                                    placeholder="Account Name"
-                                    onChange={(e) => handleJournalLineChange(idx, "account_name", e.target.value)}
-                                  />
-                                )}
-                              </td>
+                          {journalEntry.lines?.map((line, idx) => {
+                            const isUncertain = isUncertainCoaLine(line);
+                            const matchedZohoAcc = zohoAccounts.find(
+                              (za: any) =>
+                                String(za.zoho_account_id) === String(line.account_id) ||
+                                za.account_name.toLowerCase().trim() === String(line.account_name || "").toLowerCase().trim()
+                            );
+                            const selAccValue = matchedZohoAcc
+                              ? String(matchedZohoAcc.zoho_account_id)
+                              : String(line.account_id || "");
+
+                            return (
+                              <tr
+                                key={idx}
+                                style={{
+                                  borderBottom: "1px solid var(--border-subtle)",
+                                  background: isUncertain ? "rgba(254, 242, 242, 0.4)" : "transparent",
+                                }}
+                              >
+                                <td style={{ padding: "6px", color: "var(--text-secondary)" }}>{idx + 1}</td>
+                                <td style={{ padding: "6px" }}>
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                                    {zohoAccounts && zohoAccounts.length > 0 ? (
+                                      <select
+                                        className="table-input"
+                                        style={{
+                                          background: isUncertain ? "#fef2f2" : "#ffffff",
+                                          border: isUncertain ? "1.5px solid #ef4444" : "1px solid var(--border-subtle)",
+                                          borderRadius: "var(--radius-sm)",
+                                          padding: "4px 6px",
+                                          width: "100%",
+                                          fontSize: "11px",
+                                          fontWeight: isUncertain ? "600" : "500",
+                                          color: isUncertain ? "#991b1b" : "var(--text-primary)",
+                                          boxShadow: isUncertain ? "0 0 0 1px rgba(239, 68, 68, 0.15)" : "none",
+                                        }}
+                                        value={selAccValue}
+                                        onChange={(e) => {
+                                          const selId = e.target.value;
+                                          const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(selId));
+                                          const selName = match ? match.account_name : selId;
+                                          handleJournalLineChange(idx, "account_id", selId);
+                                          handleJournalLineChange(idx, "account_name", selName);
+                                          handleJournalLineChange(idx, "match_status", "EXACT_MATCH");
+                                          handleJournalLineChange(idx, "ai_needs_review", false);
+                                          handleJournalLineChange(idx, "provenance", "HUMAN_APPROVED");
+                                        }}
+                                      >
+                                        <option value="">-- Select Account --</option>
+                                        {zohoAccounts.map((za: any) => (
+                                          <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
+                                            {za.account_name} ({za.account_type || "account"})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <input
+                                        type="text"
+                                        className="table-input"
+                                        style={{
+                                          fontSize: "11px",
+                                          fontWeight: "600",
+                                          border: isUncertain ? "1.5px solid #ef4444" : "1px solid var(--border-subtle)",
+                                          background: isUncertain ? "#fef2f2" : "#ffffff",
+                                          color: isUncertain ? "#991b1b" : "var(--text-primary)",
+                                        }}
+                                        value={line.account_name ?? ""}
+                                        placeholder="Account Name"
+                                        onChange={(e) => {
+                                          handleJournalLineChange(idx, "account_name", e.target.value);
+                                          handleJournalLineChange(idx, "match_status", "EXACT_MATCH");
+                                          handleJournalLineChange(idx, "ai_needs_review", false);
+                                          handleJournalLineChange(idx, "provenance", "HUMAN_APPROVED");
+                                        }}
+                                      />
+                                    )}
+
+                                    <div>
+                                      {isUncertain ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setReviewCoaModalLineIdx(idx);
+                                            setModalSelectedAccountId(selAccValue);
+                                            setShowReviewCoaModal(true);
+                                          }}
+                                          style={{
+                                            padding: "2px 6px",
+                                            fontSize: "10px",
+                                            fontWeight: "600",
+                                            color: "#dc2626",
+                                            background: "#fee2e2",
+                                            border: "1px solid #fca5a5",
+                                            borderRadius: "4px",
+                                            cursor: "pointer",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "4px",
+                                          }}
+                                          title="Uncertain or unverified COA - Click to open review & approval popup"
+                                        >
+                                          <AlertTriangle size={11} />
+                                          ⚠️ Review COA (Detected)
+                                        </button>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setReviewCoaModalLineIdx(idx);
+                                            setModalSelectedAccountId(selAccValue);
+                                            setShowReviewCoaModal(true);
+                                          }}
+                                          style={{
+                                            padding: "1px 5px",
+                                            fontSize: "9px",
+                                            fontWeight: "500",
+                                            color: "#059669",
+                                            background: "#ecfdf5",
+                                            border: "1px solid #a7f3d0",
+                                            borderRadius: "4px",
+                                            cursor: "pointer",
+                                            display: "inline-flex",
+                                            alignItems: "center",
+                                            gap: "3px",
+                                          }}
+                                          title="COA Verified - Click to edit or review detection details"
+                                        >
+                                          <CheckCircle2 size={10} />
+                                          ✓ COA Verified (Review / Edit)
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                </td>
                               <td style={{ padding: "6px" }}>
                                 <input
                                   type="text"
@@ -3903,7 +4240,8 @@ export default function InvoiceWorkspace({
                                 </button>
                               </td>
                             </tr>
-                          ))}
+                          );
+                        })}
                           <tr style={{ background: "var(--bg-main)", fontWeight: "700", borderTop: "2px solid var(--border-subtle)" }}>
                             <td colSpan={4} style={{ padding: "8px", textAlign: "right" }}>
                               Total (INR)
@@ -4169,10 +4507,7 @@ export default function InvoiceWorkspace({
                 onClick={() => {
                   navigator.clipboard.writeText(JSON.stringify(invoice?.raw_vlm_output || {}, null, 2));
                   setCopiedJson(true);
-                  setTimeout(() => setCopiedJson(false), 2000);
-                }}
-                className="btn btn-secondary"
-                style={{ padding: "6px 14px", fontSize: "12px" }}
+                    style={{ padding: "6px 14px", fontSize: "12px" }}
               >
                 {copiedJson ? <Check size={14} color="var(--success)" /> : <FileSpreadsheet size={14} />}
                 <span>{copiedJson ? "Copied JSON!" : "Copy Raw JSON"}</span>
@@ -4588,6 +4923,186 @@ export default function InvoiceWorkspace({
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* COA Review Modal */}
+      {showReviewCoaModal && reviewCoaModalLineIdx !== null && journalEntry?.lines?.[reviewCoaModalLineIdx] && (
+        <div
+          style={{
+            position: "fixed",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: "rgba(15, 23, 42, 0.65)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+          }}
+        >
+          {(() => {
+            const lineIdx = reviewCoaModalLineIdx;
+            const targetLine = journalEntry.lines[lineIdx];
+            const isUncertain = isUncertainCoaLine(targetLine);
+            const currentAccName = targetLine.account_name || "Unassigned";
+            const currentAccCode = targetLine.account_id || "N/A";
+            const currentMatchStatus = targetLine.match_status || (isUncertain ? "NEEDS_REVIEW" : "EXACT_MATCH");
+
+            return (
+              <div
+                className="card"
+                style={{
+                  width: "540px",
+                  maxWidth: "92vw",
+                  backgroundColor: "#ffffff",
+                  borderRadius: "12px",
+                  padding: "24px",
+                  boxShadow: "0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)",
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <BookOpen size={20} style={{ color: isUncertain ? "#dc2626" : "#059669" }} />
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 700, color: "#0f172a" }}>
+                        COA Detection & Verification
+                      </h3>
+                      <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                        Journal Line #{lineIdx + 1} ({targetLine.line_type || "EXPENSE"})
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowReviewCoaModal(false)}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b" }}
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <div
+                  style={{
+                    backgroundColor: isUncertain ? "#fef2f2" : "#f0fdf4",
+                    border: isUncertain ? "1px solid #fecaca" : "1px solid #bbf7d0",
+                    borderRadius: "8px",
+                    padding: "14px",
+                    marginBottom: "16px",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                    <div style={{ fontSize: "12px", fontWeight: "700", color: isUncertain ? "#991b1b" : "#166534" }}>
+                      AI Detected Account Classification
+                    </div>
+                    <span
+                      style={{
+                        fontSize: "10px",
+                        fontWeight: "700",
+                        padding: "2px 8px",
+                        borderRadius: "12px",
+                        backgroundColor: isUncertain ? "#fee2e2" : "#dcfce7",
+                        color: isUncertain ? "#b91c1c" : "#15803d",
+                      }}
+                    >
+                      {currentMatchStatus}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "13px", fontWeight: "600", color: "#0f172a", marginBottom: "4px" }}>
+                    {currentAccName} {currentAccCode ? `(${currentAccCode})` : ""}
+                  </div>
+                  <div style={{ fontSize: "11px", color: "var(--text-secondary)", lineHeight: "1.4" }}>
+                    {targetLine.description ? `Description: "${targetLine.description}"` : `Line Item #${targetLine.source_line_index || lineIdx + 1}`}
+                  </div>
+                  <div style={{ fontSize: "11px", color: isUncertain ? "#b91c1c" : "#15803d", marginTop: "8px", fontStyle: "italic" }}>
+                    {isUncertain
+                      ? "⚠️ Warning: This COA detection is unverified or uncertain. Please review or select the correct account below."
+                      : "✓ This COA classification is verified and matches your Chart of Accounts."}
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "20px" }}>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "#334155" }}>
+                    Select Chart of Account (Zoho Books)
+                  </label>
+                  {zohoAccounts && zohoAccounts.length > 0 ? (
+                    <select
+                      className="table-input"
+                      style={{ width: "100%", padding: "10px", fontSize: "13px", borderRadius: "6px", border: "1px solid var(--border-subtle)" }}
+                      value={modalSelectedAccountId}
+                      onChange={(e) => setModalSelectedAccountId(e.target.value)}
+                    >
+                      <option value="">-- Select Account --</option>
+                      {zohoAccounts.map((za: any) => (
+                        <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
+                          {za.account_name} ({za.account_type || "account"})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      className="table-input"
+                      style={{ width: "100%", padding: "10px", fontSize: "13px", borderRadius: "6px" }}
+                      value={modalSelectedAccountId}
+                      onChange={(e) => setModalSelectedAccountId(e.target.value)}
+                      placeholder="Account Name / Code"
+                    />
+                  )}
+                </div>
+
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+                  <button
+                    type="button"
+                    onClick={() => setShowReviewCoaModal(false)}
+                    className="btn btn-secondary"
+                    style={{ padding: "8px 16px", fontSize: "13px" }}
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      let finalId = modalSelectedAccountId;
+                      let finalName = currentAccName;
+
+                      if (zohoAccounts && zohoAccounts.length > 0) {
+                        const match = zohoAccounts.find((za: any) => String(za.zoho_account_id) === String(finalId));
+                        if (match) {
+                          finalName = match.account_name;
+                        } else if (!finalId) {
+                          finalId = zohoAccounts[0].zoho_account_id;
+                          finalName = zohoAccounts[0].account_name;
+                        }
+                      }
+
+                      handleJournalLineChange(lineIdx, "account_id", finalId);
+                      handleJournalLineChange(lineIdx, "account_name", finalName.replace(" [Unapproved]", ""));
+                      handleJournalLineChange(lineIdx, "match_status", "EXACT_MATCH");
+                      handleJournalLineChange(lineIdx, "ai_needs_review", false);
+                      handleJournalLineChange(lineIdx, "provenance", "HUMAN_APPROVED");
+
+                      setShowReviewCoaModal(false);
+                      setActionNotice(`✓ Approved COA '${finalName}' for line #${lineIdx + 1}!`);
+                      setTimeout(() => setActionNotice(null), 3000);
+                    }}
+                    className="btn btn-primary"
+                    style={{
+                      padding: "8px 18px",
+                      fontSize: "13px",
+                      background: "linear-gradient(135deg, #059669 0%, #047857 100%)",
+                      color: "#ffffff",
+                    }}
+                  >
+                    ✓ Approve & Confirm COA
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

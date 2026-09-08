@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select, delete, or_, true
+from sqlalchemy import select, delete, or_, true, false
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import (
@@ -37,9 +37,9 @@ class JournalPreviewResponse(BaseModel):
 def get_user_filter(current_user: AuthenticatedUser):
     try:
         user_uuid = UUID(current_user.id)
-        return or_(Invoice.user_id == user_uuid, Invoice.user_id.is_(None))
+        return (Invoice.user_id == user_uuid)
     except (ValueError, TypeError):
-        return true()
+        return false()
 
 
 @router.get("/invoices/{invoice_id}/journal")

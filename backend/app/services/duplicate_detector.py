@@ -17,13 +17,16 @@ class DuplicateDetector:
         file_hash: str,
         tenant_id: str,
         db: AsyncSession,
+        user_id: Optional[UUID] = None,
         exclude_id: Optional[UUID] = None,
     ) -> Optional[Invoice]:
-        """Checks if identical file hash already exists in tenant's records."""
+        """Checks if identical file hash already exists in tenant and user's records."""
         query = select(Invoice).where(
             Invoice.file_hash == file_hash,
             Invoice.tenant_id == tenant_id,
         )
+        if user_id is not None:
+            query = query.where(Invoice.user_id == user_id)
         if exclude_id:
             query = query.where(Invoice.id != exclude_id)
 

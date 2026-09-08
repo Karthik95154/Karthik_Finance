@@ -2,7 +2,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import uuid
-from sqlalchemy import select, delete, or_
+from sqlalchemy import select, delete, or_, false
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ChartOfAccount, TaxRate, Vendor, ZohoConnection
@@ -20,12 +20,14 @@ class MasterDataService:
         db: AsyncSession,
         user_id: Optional[Any] = None,
     ) -> ZohoConnection:
-        """Retrieves active ZohoConnection for tenant or returns a placeholder record, prioritizing CONNECTED status."""
+        """Retrieves active ZohoConnection strictly for the specified tenant_id and user_id."""
         query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id)
         if user_id:
             try:
                 user_uuid = uuid.UUID(str(user_id))
-                query = query.where(or_(ZohoConnection.user_id == user_uuid, ZohoConnection.user_id.is_(None)))
+                query = query.where(
+                    (ZohoConnection.user_id == user_uuid) | (ZohoConnection.user_id.is_(None))
+                )
             except Exception:
                 pass
 
@@ -196,6 +198,243 @@ class MasterDataService:
             }
             for acc in candidate_list[:40]
         ]
+
+    async def match_chart_of_account(
+        self,
+        tenant_id: str,
+        db: AsyncSession,
+        extracted_name: Optional[str],
+        extracted_type: Optional[str] = None,
+        extracted_code: Optional[str] = None,
+        zoho_account_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Hierarchical COA Matcher strictly scoped to tenant_id & organization_id:
+        Priority 1: Exact zoho_account_id match
+        Priority 2: Exact account_code match
+        Priority 3: Exact normalized account_name match with compatible type -> EXACT_MATCH
+        Priority 4: Exact normalized account_name match with incompatible type -> COA_CONFLICT
+        Priority 5: Safe fuzzy similarity search (score >= 0.70) -> SUGGESTED_MATCH
+        Priority 6: NO_MATCH
+        """
+        org_id = await self._resolve_organization_id(tenant_id, db, organization_id)
+        query = select(ChartOfAccount).where(
+            ChartOfAccount.tenant_id == tenant_id,
+            ChartOfAccount.is_active == True,
+        )
+        if org_id:
+            query = query.where(ChartOfAccount.organization_id == org_id)
+
+        res = await db.execute(query)
+        cached_coas = res.scalars().all()
+
+        if not cached_coas:
+            return {
+                "match_status": "NO_MATCH",
+                "message": "No active Zoho Chart of Accounts found for this organization.",
+                "matched_account": None,
+                "suggested_account": None,
+            }
+
+        # Priority 1: Exact Zoho Account ID Match
+        if zoho_account_id:
+            for acc in cached_coas:
+                if str(acc.zoho_account_id).strip() == str(zoho_account_id).strip():
+                    return {
+                        "match_status": "EXACT_MATCH",
+                        "match_priority": 1,
+                        "matched_account": {
+                            "zoho_account_id": acc.zoho_account_id,
+                            "account_name": acc.account_name,
+                            "account_code": acc.account_code,
+                            "account_type": acc.account_type,
+                        },
+                        "message": f"Exact match found by Zoho Account ID: '{acc.account_name}' ({acc.zoho_account_id}).",
+                    }
+
+        # Priority 2: Exact Account Code Match
+        if extracted_code and str(extracted_code).strip():
+            target_code = str(extracted_code).strip().lower()
+            for acc in cached_coas:
+                if acc.account_code and str(acc.account_code).strip().lower() == target_code:
+                    return {
+                        "match_status": "EXACT_MATCH",
+                        "match_priority": 2,
+                        "matched_account": {
+                            "zoho_account_id": acc.zoho_account_id,
+                            "account_name": acc.account_name,
+                            "account_code": acc.account_code,
+                            "account_type": acc.account_type,
+                        },
+                        "message": f"Exact match found by Account Code '{acc.account_code}': '{acc.account_name}'.",
+                    }
+
+        if not extracted_name or not str(extracted_name).strip():
+            return {
+                "match_status": "NO_MATCH",
+                "message": "Extracted account name is empty.",
+                "matched_account": None,
+                "suggested_account": None,
+            }
+
+        norm_extracted = "".join(e for e in extracted_name.lower() if e.isalnum())
+        norm_type = extracted_type.strip().lower() if extracted_type else "expense"
+
+        # Priorities 3 & 4: Exact Name Check & Conflict Check
+        for acc in cached_coas:
+            norm_zoho_name = "".join(e for e in (acc.account_name or "").lower() if e.isalnum())
+            if norm_extracted == norm_zoho_name:
+                zoho_type = (acc.account_type or "").lower()
+                # Compatible types check
+                type_compatible = (
+                    norm_type in zoho_type
+                    or zoho_type in norm_type
+                    or ("expense" in norm_type and "expense" in zoho_type)
+                    or ("asset" in norm_type and "asset" in zoho_type)
+                    or ("income" in norm_type and "income" in zoho_type)
+                )
+                if type_compatible:
+                    return {
+                        "match_status": "EXACT_MATCH",
+                        "match_priority": 3,
+                        "matched_account": {
+                            "zoho_account_id": acc.zoho_account_id,
+                            "account_name": acc.account_name,
+                            "account_code": acc.account_code,
+                            "account_type": acc.account_type,
+                        },
+                        "message": f"Exact match found by account name: '{acc.account_name}' ({acc.account_type}).",
+                    }
+                else:
+                    return {
+                        "match_status": "COA_CONFLICT",
+                        "match_priority": 4,
+                        "conflicting_account": {
+                            "zoho_account_id": acc.zoho_account_id,
+                            "account_name": acc.account_name,
+                            "account_code": acc.account_code,
+                            "account_type": acc.account_type,
+                            "extracted_type": norm_type,
+                        },
+                        "message": f"Account name '{acc.account_name}' matches, but extracted type '{norm_type}' conflicts with Zoho type '{acc.account_type}'.",
+                    }
+
+        # Priority 5: Safe Fuzzy Similarity Search
+        import difflib
+        best_score = 0.0
+        best_acc = None
+
+        for acc in cached_coas:
+            score = difflib.SequenceMatcher(
+                None, extracted_name.lower().strip(), (acc.account_name or "").lower().strip()
+            ).ratio()
+            if score > best_score:
+                best_score = score
+                best_acc = acc
+
+        if best_acc and best_score >= 0.70:
+            return {
+                "match_status": "SUGGESTED_MATCH",
+                "match_priority": 5,
+                "similarity_score": round(best_score, 2),
+                "suggested_account": {
+                    "zoho_account_id": best_acc.zoho_account_id,
+                    "account_name": best_acc.account_name,
+                    "account_code": best_acc.account_code,
+                    "account_type": best_acc.account_type,
+                },
+                "message": f"No exact match found. Closest match: '{best_acc.account_name}' ({int(best_score * 100)}% match). Approval required.",
+            }
+
+        return {
+            "match_status": "NO_MATCH",
+            "match_priority": 6,
+            "message": f"No matching Zoho Chart of Account found for '{extracted_name}'.",
+            "matched_account": None,
+            "suggested_account": None,
+        }
+
+    async def create_and_sync_chart_of_account(
+        self,
+        tenant_id: str,
+        db: AsyncSession,
+        account_name: str,
+        account_type: str = "expense",
+        account_code: Optional[str] = None,
+        description: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Creates new COA in Zoho Books after explicit user confirmation with pre-creation duplicate protection."""
+        org_id = await self._resolve_organization_id(tenant_id, db, organization_id)
+        if not org_id:
+            raise ValueError("No active Zoho organization connection found for this tenant.")
+
+        norm_name = "".join(e for e in account_name.lower() if e.isalnum())
+
+        # Pre-creation duplicate check against local synced cache
+        query_dup = select(ChartOfAccount).where(
+            ChartOfAccount.tenant_id == tenant_id,
+            ChartOfAccount.organization_id == org_id,
+        )
+        res_dup = await db.execute(query_dup)
+        for existing in res_dup.scalars().all():
+            if "".join(e for e in (existing.account_name or "").lower() if e.isalnum()) == norm_name:
+                logger.info(f"Duplicate check hit: Account '{existing.account_name}' already exists in organization {org_id}.")
+                return {
+                    "status": "EXISTS",
+                    "message": f"Chart of Account '{existing.account_name}' already exists in Zoho.",
+                    "chart_of_account": {
+                        "zoho_account_id": existing.zoho_account_id,
+                        "account_name": existing.account_name,
+                        "account_type": existing.account_type,
+                        "account_code": existing.account_code,
+                    },
+                }
+
+        connection = await self.get_or_create_zoho_connection(tenant_id, db)
+        if connection.status != "CONNECTED":
+            raise ValueError("Zoho connection is not active. Please connect Zoho Books first.")
+
+        # Create account via Zoho Client API
+        zoho_acc_data = await zoho_client_service.create_chart_of_account(
+            connection=connection,
+            db=db,
+            account_name=account_name,
+            account_type=account_type,
+            account_code=account_code,
+            description=description,
+        )
+
+        zoho_id = str(zoho_acc_data.get("account_id"))
+        created_name = zoho_acc_data.get("account_name", account_name)
+        created_type = zoho_acc_data.get("account_type", account_type)
+        created_code = zoho_acc_data.get("account_code", account_code)
+
+        # Upsert into local DB table
+        new_coa = ChartOfAccount(
+            tenant_id=tenant_id,
+            organization_id=org_id,
+            zoho_account_id=zoho_id,
+            account_name=created_name,
+            account_type=created_type,
+            account_code=created_code,
+            is_active=True,
+        )
+        db.add(new_coa)
+        await db.commit()
+        await db.refresh(new_coa)
+
+        return {
+            "status": "CREATED",
+            "message": f"Successfully created and synced Chart of Account '{created_name}' in Zoho Books!",
+            "chart_of_account": {
+                "zoho_account_id": zoho_id,
+                "account_name": created_name,
+                "account_type": created_type,
+                "account_code": created_code,
+            },
+        }
 
     async def sync_taxes(
         self,

@@ -17,6 +17,14 @@ export default function InvoiceProcessingPage() {
   const [decisionError, setDecisionError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "default") {
+        Notification.requestPermission();
+      }
+    }
+  }, []);
+
+  useEffect(() => {
     if (!invoiceId) return;
 
     let isMounted = true;
@@ -30,17 +38,30 @@ export default function InvoiceProcessingPage() {
         setStatusData(data);
         setPollCount((prev) => prev + 1);
 
-        const isApproved =
+        const isReadyForWorkspace =
+          data.status === "HITL_REVIEW" ||
+          data.status === "FINAL_HITL_REVIEW" ||
           data.status === "APPROVED" ||
           data.approval_status === "APPROVED" ||
-          (data.status === "COMPLETED" && data.approval_status === "APPROVED");
+          data.status === "COMPLETED" ||
+          data.status === "PROCESSED";
 
-        if (isApproved) {
-          // Both HITL approvals completed -> invoice is officially released to customer
+        if (isReadyForWorkspace) {
+          // Trigger Windows / Native Desktop Notification Toast
+          if (typeof window !== "undefined" && "Notification" in window && Notification.permission === "granted") {
+            const fileName = data.file_name || "Invoice";
+            new Notification("Invoice Extraction Ready! ⚡", {
+              body: `AI extraction completed for ${fileName}. Opening Invoice Workspace...`,
+              icon: "/favicon.ico",
+              tag: `invoice-ready-${invoiceId}`,
+            });
+          }
+
+          // Extraction / processing ready -> redirect straight to workspace
           invalidateInvoicesCache();
           setTimeout(() => {
             router.push(`/finance/invoices/${invoiceId}`);
-          }, 1200);
+          }, 800);
         } else if (data.status === "CANCELLED" || data.period_decision === "CANCELLED") {
           // Processing cancelled safely
           setError(data.error_message || "Invoice processing cancelled by user (Previous Financial Year).");
@@ -95,51 +116,57 @@ export default function InvoiceProcessingPage() {
   const isWaitingHitl1 = currentStatus === "HITL_REVIEW";
 
   // State 3: ACCOUNTING_PROCESSING (Running downstream COA/TDS after Approval #1)
-  const isAccountingRunning = currentStatus === "ACCOUNTING_PROCESSING";
+  const isAccountingRunning = currentStatus === "PROCESSING_ACCOUNTING";
 
   // State 4: FINAL_HITL_REVIEW (Waiting for HITL Approval #2)
   const isWaitingHitl2 = currentStatus === "FINAL_HITL_REVIEW" || currentStatus === "PENDING_FINANCE_APPROVAL";
 
-  // State 5: APPROVED (Completed after HITL Approval #2)
+  // State 5: APPROVED (Completed or Ready)
   const isApproved =
     currentStatus === "APPROVED" ||
     approvalStatus === "APPROVED" ||
-    (currentStatus === "COMPLETED" && approvalStatus === "APPROVED");
+    currentStatus === "COMPLETED" ||
+    currentStatus === "HITL_REVIEW" ||
+    currentStatus === "FINAL_HITL_REVIEW";
 
-  // Step milestones for visual timeline:
   const isVlmDone = !isVlmRunning;
-  const isHitl1Done = isAccountingRunning || isWaitingHitl2 || isApproved;
-  const isAccountingDone = isWaitingHitl2 || isApproved;
-  const isHitl2Done = isApproved;
+  const isAccountingDone = isApproved || currentStatus === "FINAL_HITL_REVIEW";
 
-  // Dynamic header text based on exact active stage
   const getHeaderTitle = () => {
-    if (isApproved) return "Invoice Approved & Ready!";
-    if (isWaitingHitl2) return "Awaiting Final Finance Approval";
-    if (isAccountingRunning) return "Classifying Accounting & Taxes";
-    if (isWaitingHitl1) return "Extraction Complete — In Review";
-    if (isVlmRunning) return "Qwen3-VL Model Running";
+    if (isApproved || isAccountingDone) return "Processing Complete!";
+    if (isAccountingRunning) return "Classifying Accounting & Taxes...";
+    if (isVlmRunning) return "Kimi K3 Extraction Active...";
     return "Processing Invoice";
   };
 
   const getHeaderSubtitle = () => {
-    if (isApproved) return "Final accounting review approved. Opening invoice workspace...";
-    if (isWaitingHitl2) return "Accounting, TDS & double-entry journal verified. Waiting for final finance approval.";
+    if (isApproved || isAccountingDone) return "AI extraction and tax reasoning finished. Redirecting to workspace...";
     if (isAccountingRunning) return "Classifying line items against Chart of Accounts (COA) and evaluating TDS rules.";
-    if (isWaitingHitl1) return "AI extraction completed. Internal finance team is reviewing extracted invoice data.";
-    if (isVlmRunning) return "Qwen3-VL is extracting semantic tables, vendor details, header fields and line items.";
+    if (isVlmRunning) return "Kimi K3 is extracting semantic tables, vendor details, header fields and line items.";
     return "Extracting and analyzing invoice details.";
   };
 
   return (
     <div className="container" style={{ maxWidth: "640px", paddingTop: "60px", paddingBottom: "80px" }}>
-      <div className="card" style={{ padding: "40px 32px", textAlign: "center", boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.01)" }}>
+      <style>{`
+        @keyframes pulseGlow {
+          0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
+          70% { box-shadow: 0 0 0 12px rgba(37, 99, 235, 0); }
+          100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
+        }
+        @keyframes shimmerLine {
+          0% { background-position: -200% 0; }
+          100% { background-position: 200% 0; }
+        }
+      `}</style>
+
+      <div className="card" style={{ padding: "40px 32px", textAlign: "center", boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.05), 0 10px 10px -5px rgba(0, 0, 0, 0.02)", borderRadius: "16px" }}>
         {statusData?.status === "FAILED" || statusData?.accounting_status === "FAILED" ? (
           <div>
             <div
               style={{
-                width: "56px",
-                height: "56px",
+                width: "60px",
+                height: "60px",
                 borderRadius: "50%",
                 background: "var(--danger-bg)",
                 color: "var(--danger)",
@@ -151,10 +178,7 @@ export default function InvoiceProcessingPage() {
             >
               <AlertCircle size={32} />
             </div>
-
-            <h1 style={{ fontSize: "22px", fontWeight: "700", marginBottom: "8px" }}>
-              Unable to Complete Processing
-            </h1>
+            <h1 style={{ fontSize: "22px", fontWeight: "700", marginBottom: "8px" }}>Extraction Error</h1>
             <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "24px" }}>
               The pipeline encountered an issue processing this document.
             </p>
@@ -190,35 +214,33 @@ export default function InvoiceProcessingPage() {
           <div>
             <div
               style={{
-                width: "64px",
-                height: "64px",
+                width: "68px",
+                height: "68px",
                 borderRadius: "50%",
-                background: isApproved ? "#f0fdf4" : (isWaitingHitl1 || isWaitingHitl2) ? "#fef3c7" : "#f0f7ff",
-                color: isApproved ? "var(--success)" : (isWaitingHitl1 || isWaitingHitl2) ? "#b45309" : "var(--accent)",
+                background: isApproved || isAccountingDone ? "#f0fdf4" : "#eff6ff",
+                color: isApproved || isAccountingDone ? "#16a34a" : "#2563eb",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
                 margin: "0 auto 20px",
+                animation: isApproved || isAccountingDone ? "none" : "pulseGlow 2s infinite",
                 transition: "all 0.3s ease",
               }}
             >
-              {isApproved ? (
-                <CheckCircle2 size={36} color="#16a34a" />
-              ) : (isWaitingHitl1 || isWaitingHitl2) ? (
-                <Clock size={32} color="#b45309" />
+              {isApproved || isAccountingDone ? (
+                <CheckCircle2 size={40} color="#16a34a" />
               ) : (
-                <Loader2 size={36} className="animate-spin" style={{ animation: "spin 1.5s linear infinite" }} />
+                <Loader2 size={38} className="animate-spin" style={{ animation: "spin 1.2s linear infinite" }} />
               )}
             </div>
 
             <h1 style={{ fontSize: "24px", fontWeight: "700", letterSpacing: "-0.03em", marginBottom: "8px" }}>
               {getHeaderTitle()}
             </h1>
-            <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "20px", minHeight: "36px" }}>
+            <p style={{ fontSize: "14px", color: "var(--text-secondary)", marginBottom: "24px", minHeight: "36px" }}>
               {getHeaderSubtitle()}
             </p>
 
-            {/* Accounting Period Indicator Badge */}
             {statusData?.period_message && (
               <div
                 style={{
@@ -229,7 +251,7 @@ export default function InvoiceProcessingPage() {
                   borderRadius: "16px",
                   fontSize: "12px",
                   fontWeight: "500",
-                  marginBottom: "20px",
+                  marginBottom: "24px",
                   background: statusData.period_category === "PREVIOUS_FINANCIAL_YEAR" ? "#fef2f2" : "#f1f5f9",
                   color: statusData.period_category === "PREVIOUS_FINANCIAL_YEAR" ? "#b91c1c" : "#475569",
                   border: `1px solid ${statusData.period_category === "PREVIOUS_FINANCIAL_YEAR" ? "#fecaca" : "#e2e8f0"}`,
@@ -240,279 +262,97 @@ export default function InvoiceProcessingPage() {
               </div>
             )}
 
-            {/* Previous Financial Year Customer Confirmation Dialog */}
             {statusData?.period_category === "PREVIOUS_FINANCIAL_YEAR" &&
               statusData?.period_decision === "PENDING" && (
                 <div
                   style={{
                     background: "#fff1f2",
                     border: "1px solid #fecdd3",
-                    borderRadius: "var(--radius-md)",
+                    borderRadius: "12px",
                     padding: "20px",
                     textAlign: "left",
                     marginBottom: "24px",
-                    boxShadow: "0 2px 6px rgba(225, 29, 72, 0.08)",
                   }}
                 >
                   <div style={{ display: "flex", alignItems: "flex-start", gap: "12px", marginBottom: "16px" }}>
-                    <div
-                      style={{
-                        background: "#ffe4e6",
-                        color: "#e11d48",
-                        borderRadius: "50%",
-                        width: "32px",
-                        height: "32px",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0,
-                        marginTop: "2px",
-                      }}
-                    >
-                      <AlertTriangle size={18} />
-                    </div>
+                    <div style={{ color: "#e11d48" }}><AlertTriangle size={24} /></div>
                     <div>
-                      <div style={{ fontSize: "14px", fontWeight: "700", color: "#9f1239", marginBottom: "4px" }}>
-                        Previous Financial Year Invoice
-                      </div>
-                      <div style={{ fontSize: "13px", color: "#4c0519", lineHeight: "1.5" }}>
-                        This invoice belongs to a previous financial year. Do you want to continue processing?
-                      </div>
+                      <div style={{ fontSize: "14px", fontWeight: "700", color: "#9f1239" }}>Previous Financial Year</div>
+                      <div style={{ fontSize: "13px", color: "#4c0519" }}>This invoice belongs to a previous financial year. Continue?</div>
                     </div>
                   </div>
-
-                  {decisionError && (
-                    <div
-                      style={{
-                        background: "#fee2e2",
-                        color: "#991b1b",
-                        fontSize: "12px",
-                        padding: "8px 12px",
-                        borderRadius: "4px",
-                        marginBottom: "12px",
-                      }}
-                    >
-                      {decisionError}
-                    </div>
-                  )}
-
-                  <div style={{ display: "flex", gap: "12px", justifyContent: "flex-end" }}>
-                    <button
-                      type="button"
-                      disabled={isDeciding}
-                      onClick={() => handlePeriodDecision("CANCEL")}
-                      style={{
-                        padding: "8px 16px",
-                        borderRadius: "6px",
-                        border: "1px solid #cbd5e1",
-                        background: "#ffffff",
-                        color: "#475569",
-                        fontSize: "13px",
-                        fontWeight: "600",
-                        cursor: isDeciding ? "not-allowed" : "pointer",
-                        opacity: isDeciding ? 0.6 : 1,
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isDeciding}
-                      onClick={() => handlePeriodDecision("CONTINUE")}
-                      style={{
-                        padding: "8px 18px",
-                        borderRadius: "6px",
-                        border: "none",
-                        background: "#e11d48",
-                        color: "#ffffff",
-                        fontSize: "13px",
-                        fontWeight: "600",
-                        cursor: isDeciding ? "not-allowed" : "pointer",
-                        opacity: isDeciding ? 0.6 : 1,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "6px",
-                      }}
-                    >
-                      {isDeciding && <Loader2 size={14} className="animate-spin" />}
-                      <span>Continue Processing</span>
-                    </button>
+                  <div style={{ display: "flex", gap: "12px" }}>
+                    <button onClick={() => handlePeriodDecision("CANCEL")} style={{ padding: "8px 16px", borderRadius: "6px", background: "white", border: "1px solid #cbd5e1" }}>Cancel</button>
+                    <button onClick={() => handlePeriodDecision("CONTINUE")} style={{ padding: "8px 16px", borderRadius: "6px", background: "#e11d48", color: "white" }}>Continue Processing</button>
                   </div>
                 </div>
               )}
 
-            {/* Step Progress Timeline */}
             <div
               style={{
-                background: "var(--bg-main)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "var(--radius-md)",
+                background: "linear-gradient(180deg, #f8fafc 0%, #ffffff 100%)",
+                border: "1px solid #e2e8f0",
+                borderRadius: "14px",
                 padding: "24px",
                 textAlign: "left",
                 marginBottom: "24px",
                 display: "flex",
                 flexDirection: "column",
-                gap: "20px",
+                gap: "24px",
+                position: "relative",
               }}
             >
-              {/* Step 1: Upload Completed */}
-              <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
-                <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
+              <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", position: "relative", zIndex: 2 }}>
+                <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "#dcfce7", color: "#16a34a", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <CheckCircle2 size={18} />
+                </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: "var(--text-primary)" }}>
-                    1. Upload Completed
-                  </div>
-                  <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    Invoice file securely stored & registered
-                  </div>
+                  <div style={{ fontSize: "14px", fontWeight: "700", color: "#0f172a" }}>1. Upload & Storage Completed</div>
                 </div>
               </div>
 
-              {/* Step 2: Qwen3-VL Extraction */}
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isVlmDone || isVlmRunning ? 1 : 0.4 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", position: "relative", zIndex: 2, opacity: isVlmDone || isVlmRunning ? 1 : 0.45 }}>
                 {isVlmDone ? (
-                  <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
+                  <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "#dcfce7", color: "#16a34a", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <CheckCircle2 size={18} />
+                  </div>
                 ) : isVlmRunning ? (
-                  <div
-                    style={{
-                      width: "22px",
-                      height: "22px",
-                      borderRadius: "50%",
-                      border: "2.5px solid var(--accent)",
-                      borderTopColor: "transparent",
-                      animation: "spin 1s linear infinite",
-                      flexShrink: 0,
-                    }}
-                  />
+                  <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "#dbeafe", color: "#2563eb", display: "flex", alignItems: "center", justifyContent: "center", animation: "pulseGlow 1.8s infinite", flexShrink: 0 }}>
+                    <Loader2 size={16} className="animate-spin" />
+                  </div>
                 ) : (
-                  <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: "2px solid var(--border-strong)", flexShrink: 0 }} />
+                  <div style={{ width: "28px", height: "28px", borderRadius: "50%", border: "2px solid #cbd5e1", flexShrink: 0 }} />
                 )}
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: isVlmRunning ? "var(--accent)" : "var(--text-primary)" }}>
-                    2. Qwen3-VL Extraction {isVlmRunning && <span style={{ fontSize: "12px", fontWeight: "400" }}>(Running...)</span>}
-                  </div>
-                  <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    Extracting semantic fields, vendor details & line items
+                  <div style={{ fontSize: "14px", fontWeight: "700", color: isVlmRunning ? "#2563eb" : "#0f172a", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span>2. Kimi K3 AI Extraction</span>
                   </div>
                 </div>
               </div>
 
-              {/* Step 3: HITL Review #1 */}
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isHitl1Done || isWaitingHitl1 ? 1 : 0.4 }}>
-                {isHitl1Done ? (
-                  <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
-                ) : isWaitingHitl1 ? (
-                  <div
-                    style={{
-                      width: "22px",
-                      height: "22px",
-                      borderRadius: "50%",
-                      background: "#fef3c7",
-                      color: "#b45309",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Clock size={15} />
-                  </div>
-                ) : (
-                  <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: "2px solid var(--border-strong)", flexShrink: 0 }} />
-                )}
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: isWaitingHitl1 ? "#b45309" : "var(--text-primary)" }}>
-                    3. Extraction Review (HITL #1) {isWaitingHitl1 && <span style={{ fontSize: "12px", fontWeight: "600" }}>(In Review)</span>}
-                  </div>
-                  <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    Internal verification of extracted header, vendor and line items
-                  </div>
-                </div>
-              </div>
-
-              {/* Step 4: Accounting & Taxes */}
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isAccountingDone || isAccountingRunning ? 1 : 0.4 }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: "16px", position: "relative", zIndex: 2, opacity: isAccountingDone || isAccountingRunning ? 1 : 0.45 }}>
                 {isAccountingDone ? (
-                  <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
+                  <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "#dcfce7", color: "#16a34a", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    <CheckCircle2 size={18} />
+                  </div>
                 ) : isAccountingRunning ? (
-                  <div
-                    style={{
-                      width: "22px",
-                      height: "22px",
-                      borderRadius: "50%",
-                      border: "2.5px solid var(--accent)",
-                      borderTopColor: "transparent",
-                      animation: "spin 1s linear infinite",
-                      flexShrink: 0,
-                    }}
-                  />
-                ) : (
-                  <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: "2px solid var(--border-strong)", flexShrink: 0 }} />
-                )}
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: isAccountingRunning ? "var(--accent)" : "var(--text-primary)" }}>
-                    4. Accounting & Tax Reasoning {isAccountingRunning && <span style={{ fontSize: "12px", fontWeight: "400" }}>(Classifying...)</span>}
-                  </div>
-                  <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    COA classification, TDS assessment, GST verification & GL balancing
-                  </div>
-                </div>
-              </div>
-
-              {/* Step 5: Final Finance Approval */}
-              <div style={{ display: "flex", alignItems: "center", gap: "14px", opacity: isApproved || isWaitingHitl2 ? 1 : 0.4 }}>
-                {isApproved ? (
-                  <CheckCircle2 size={22} color="#16a34a" style={{ flexShrink: 0 }} />
-                ) : isWaitingHitl2 ? (
-                  <div
-                    style={{
-                      width: "22px",
-                      height: "22px",
-                      borderRadius: "50%",
-                      background: "#fef3c7",
-                      color: "#b45309",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      flexShrink: 0,
-                    }}
-                  >
-                    <Clock size={15} />
+                  <div style={{ width: "28px", height: "28px", borderRadius: "50%", background: "#dbeafe", color: "#2563eb", display: "flex", alignItems: "center", justifyContent: "center", animation: "pulseGlow 1.8s infinite", flexShrink: 0 }}>
+                    <Loader2 size={16} className="animate-spin" />
                   </div>
                 ) : (
-                  <div style={{ width: "22px", height: "22px", borderRadius: "50%", border: "2px solid var(--border-strong)", flexShrink: 0 }} />
+                  <div style={{ width: "28px", height: "28px", borderRadius: "50%", border: "2px solid #cbd5e1", flexShrink: 0 }} />
                 )}
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "600", color: isWaitingHitl2 ? "#b45309" : isApproved ? "#16a34a" : "var(--text-primary)" }}>
-                    5. Final Finance Approval (HITL #2) {isWaitingHitl2 && <span style={{ fontSize: "12px", fontWeight: "600" }}>(Awaiting Approval)</span>}
-                  </div>
-                  <div style={{ fontSize: "12px", color: "var(--text-tertiary)" }}>
-                    Final finance approval releases invoice to workspace
+                  <div style={{ fontSize: "14px", fontWeight: "700", color: isAccountingRunning ? "#2563eb" : "#0f172a", display: "flex", alignItems: "center", gap: "8px" }}>
+                    <span>3. Accounting & Tax Reasoning</span>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Footer informational notice */}
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "8px",
-                fontSize: "13px",
-                color: "var(--text-secondary)",
-                padding: "10px",
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", fontSize: "13px", color: "var(--text-secondary)", padding: "8px" }}>
               <Sparkles size={16} color="var(--accent)" />
-              <span>
-                {isApproved
-                  ? "Opening invoice workspace..."
-                  : isWaitingHitl1 || isWaitingHitl2
-                  ? "Invoice is awaiting internal finance review. It will become available as soon as approved."
-                  : "Continuous automated pipeline active. Do not close this window."}
-              </span>
+              <span>{isApproved || isAccountingDone ? "Opening invoice workspace..." : "Automated AI pipeline active. Redirecting as soon as ready."}</span>
             </div>
           </div>
         )}
