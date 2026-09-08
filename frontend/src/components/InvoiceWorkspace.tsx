@@ -392,6 +392,7 @@ export default function InvoiceWorkspace({
   const [showReviewCoaModal, setShowReviewCoaModal] = useState<boolean>(false);
   const [reviewCoaModalLineIdx, setReviewCoaModalLineIdx] = useState<number | null>(null);
   const [modalSelectedAccountId, setModalSelectedAccountId] = useState<string>("");
+  const [selectedCoaLineIdx, setSelectedCoaLineIdx] = useState<number>(0);
   const [createCoaFormData, setCreateCoaFormData] = useState<{ account_name: string; account_type: string; account_code: string; description: string }>({
     account_name: "",
     account_type: "expense",
@@ -2775,35 +2776,56 @@ export default function InvoiceWorkspace({
 
             {/* 2. ZOHO CHART OF ACCOUNTS (COA) VERIFICATION BANNER */}
             {(() => {
-              const firstLineAcc = accountingLines[0];
-              const primaryAccName =
-                firstLineAcc?.approved_account_name ||
-                firstLineAcc?.account_name ||
-                firstLineAcc?.ai_account_name ||
-                formData?.line_items?.[0]?.account_name ||
-                "Unassigned COA";
-              const matchStatus = coaMatchResult?.match_status || (zohoAccounts.some((za: any) => za.account_name?.toLowerCase().trim() === primaryAccName.toLowerCase().trim()) ? "EXACT_MATCH" : "NO_MATCH");
+              const items = accountingLines.length > 0 ? accountingLines : (formData?.line_items || []);
+              if (!items || items.length === 0) return null;
 
-              // If COA is 100% exact match, hide popup banner box (kept in line items dropdown to edit if needed)
-              if (matchStatus === "EXACT_MATCH") return null;
+              // Compute status for all line items
+              const lineStatuses = items.map((line: any, idx: number) => {
+                const accName =
+                  line?.approved_account_name ||
+                  line?.account_name ||
+                  line?.ai_account_name ||
+                  formData?.line_items?.[idx]?.account_name ||
+                  "Unassigned COA";
+                const isExact = zohoAccounts.some(
+                  (za: any) => za.account_name?.toLowerCase().trim() === accName.toLowerCase().trim()
+                );
+                return {
+                  index: idx,
+                  description: line?.description || formData?.line_items?.[idx]?.description || `Line Item #${idx + 1}`,
+                  accountName: accName,
+                  aiAccountName: line?.ai_account_name || accName,
+                  isExact,
+                  line,
+                };
+              });
 
-              const matchedAcc = coaMatchResult?.matched_account || zohoAccounts.find((za: any) => za.account_name?.toLowerCase().trim() === primaryAccName.toLowerCase().trim());
+              // Check if all lines are exact matches
+              const allExact = lineStatuses.every((ls) => ls.isExact);
+              if (allExact && coaMatchResult?.match_status === "EXACT_MATCH") return null;
+
+              const activeLineIdx = Math.min(selectedCoaLineIdx, lineStatuses.length - 1);
+              const currentLine = lineStatuses[activeLineIdx] || lineStatuses[0];
+              const primaryAccName = currentLine.accountName;
+
+              const matchStatus = currentLine.isExact
+                ? "EXACT_MATCH"
+                : coaMatchResult?.match_status || "NO_MATCH";
+
+              const matchedAcc = zohoAccounts.find(
+                (za: any) => za.account_name?.toLowerCase().trim() === primaryAccName.toLowerCase().trim()
+              ) || coaMatchResult?.matched_account;
               const suggestedAcc = coaMatchResult?.suggested_account;
               const conflictingAcc = coaMatchResult?.conflicting_account;
 
+              const unmatchedCount = lineStatuses.filter((ls) => !ls.isExact).length;
+
               let bannerBg = "rgba(2, 132, 199, 0.05)";
               let bannerBorder = "rgba(2, 132, 199, 0.2)";
-              let statusText = "Zoho Chart of Accounts Status";
 
-              if (matchStatus === "EXACT_MATCH") {
-                bannerBg = "rgba(16, 185, 129, 0.05)";
-                bannerBorder = "rgba(16, 185, 129, 0.2)";
-              } else if (matchStatus === "SUGGESTED_MATCH") {
+              if (unmatchedCount > 0) {
                 bannerBg = "rgba(245, 158, 11, 0.05)";
                 bannerBorder = "rgba(245, 158, 11, 0.2)";
-              } else if (matchStatus === "COA_CONFLICT") {
-                bannerBg = "rgba(239, 68, 68, 0.05)";
-                bannerBorder = "rgba(239, 68, 68, 0.2)";
               }
 
               return (
@@ -2815,95 +2837,124 @@ export default function InvoiceWorkspace({
                     borderColor: bannerBorder,
                     borderRadius: "10px",
                     display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
+                    flexDirection: "column",
+                    gap: "10px",
                   }}
                 >
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <BookOpen size={18} style={{ color: matchStatus === "EXACT_MATCH" ? "#10b981" : matchStatus === "SUGGESTED_MATCH" ? "#f59e0b" : matchStatus === "COA_CONFLICT" ? "#ef4444" : "#0284c7" }} />
-                    <div>
-                      <div style={{ fontWeight: "700", fontSize: "13px", color: "var(--text-primary)" }}>
-                        {matchStatus === "EXACT_MATCH" && "✓ Extracted COA Exactly Matches Zoho COA"}
-                        {matchStatus === "SUGGESTED_MATCH" && "⚠ No Exact Zoho COA Match Found"}
-                        {matchStatus === "COA_CONFLICT" && "⛔ Account Type Conflict Detected"}
-                        {matchStatus === "NO_MATCH" && "ℹ No Matching Zoho COA Found"}
-                      </div>
-                      <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
-                        {matchStatus === "EXACT_MATCH" && (
-                          <span>
-                            Extracted: <strong>'{primaryAccName}'</strong> → Matched Zoho: <strong>'{matchedAcc?.account_name}'</strong> {matchedAcc?.account_code ? `(${matchedAcc.account_code})` : ""}
-                          </span>
-                        )}
-                        {matchStatus === "SUGGESTED_MATCH" && (
-                          <span>
-                            Extracted: <strong>'{primaryAccName}'</strong> | Suggested Closest Zoho: <strong>'{suggestedAcc?.account_name}'</strong> ({suggestedAcc?.account_type || "expense"}) {coaMatchResult?.similarity_score ? `[${Math.round(coaMatchResult.similarity_score * 100)}% Match]` : ""}
-                          </span>
-                        )}
-                        {matchStatus === "COA_CONFLICT" && (
-                          <span>
-                            Account name matches <strong>'{conflictingAcc?.account_name}'</strong>, but extracted type conflicts with Zoho type <strong>'{conflictingAcc?.account_type}'</strong>.
-                          </span>
-                        )}
-                        {matchStatus === "NO_MATCH" && (
-                          <span>
-                            No active Zoho account matches extracted COA <strong>'{primaryAccName}'</strong>.
-                          </span>
-                        )}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <BookOpen size={18} style={{ color: unmatchedCount > 0 ? "#f59e0b" : "#0284c7" }} />
+                      <div>
+                        <div style={{ fontWeight: "700", fontSize: "13px", color: "var(--text-primary)", display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span>Zoho Chart of Accounts Audit (Line Item {activeLineIdx + 1} of {lineStatuses.length})</span>
+                          {unmatchedCount > 0 && (
+                            <span style={{ fontSize: "11px", padding: "2px 8px", borderRadius: "12px", backgroundColor: "rgba(245, 158, 11, 0.15)", color: "#b45309", fontWeight: "600" }}>
+                              ⚠️ {unmatchedCount} line{unmatchedCount > 1 ? "s" : ""} require COA verification
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                          {matchStatus === "EXACT_MATCH" && (
+                            <span>
+                              Extracted: <strong>'{primaryAccName}'</strong> → Matched Zoho: <strong>'{matchedAcc?.account_name}'</strong> {matchedAcc?.account_code ? `(${matchedAcc.account_code})` : ""}
+                            </span>
+                          )}
+                          {matchStatus === "SUGGESTED_MATCH" && (
+                            <span>
+                              Extracted: <strong>'{primaryAccName}'</strong> | AI Model Prediction: <strong>'{currentLine.aiAccountName}'</strong> | Suggested Closest Zoho: <strong>'{suggestedAcc?.account_name}'</strong> ({suggestedAcc?.account_type || "expense"})
+                            </span>
+                          )}
+                          {matchStatus === "COA_CONFLICT" && (
+                            <span>
+                              Account name matches <strong>'{conflictingAcc?.account_name}'</strong>, but extracted type conflicts with Zoho type <strong>'{conflictingAcc?.account_type}'</strong>.
+                            </span>
+                          )}
+                          {matchStatus === "NO_MATCH" && (
+                            <span>
+                              No active Zoho account matches extracted COA <strong>'{primaryAccName}'</strong> (AI Model Predicted: <strong>'{currentLine.aiAccountName}'</strong>).
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div style={{ display: "flex", gap: "8px" }}>
-                    {/* Approve Suggested COA Button (only when SUGGESTED_MATCH exists) */}
-                    {matchStatus === "SUGGESTED_MATCH" && suggestedAcc?.zoho_account_id && (
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                      {/* Line Item Selector Dropdown */}
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)" }}>Select Line:</label>
+                        <select
+                          value={activeLineIdx}
+                          onChange={(e) => setSelectedCoaLineIdx(Number(e.target.value))}
+                          style={{
+                            padding: "4px 8px",
+                            fontSize: "11px",
+                            borderRadius: "6px",
+                            border: "1px solid var(--border-color)",
+                            backgroundColor: "var(--bg-card)",
+                            color: "var(--text-primary)",
+                            cursor: "pointer",
+                            fontWeight: "500",
+                          }}
+                        >
+                          {lineStatuses.map((ls, idx) => (
+                            <option key={idx} value={idx}>
+                              Line {idx + 1}: {ls.description.slice(0, 22)}{ls.description.length > 22 ? "..." : ""} {ls.isExact ? "✓" : "⚠️ [Unmatched]"}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* Approve Suggested COA Button */}
+                      {matchStatus === "SUGGESTED_MATCH" && suggestedAcc?.zoho_account_id && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              setIsSaving(true);
+                              const { assignInvoiceCOA } = await import("@/lib/api");
+                              const res = await assignInvoiceCOA(invoiceId, {
+                                zoho_account_id: suggestedAcc.zoho_account_id,
+                                account_name: suggestedAcc.account_name,
+                                account_type: suggestedAcc.account_type || "expense",
+                                account_code: suggestedAcc.account_code,
+                              });
+                              setInvoice(res);
+                              if (res.current_accounting_output) setAccountingData(res.current_accounting_output);
+                              setActionNotice(`✓ Approved & persisted suggested COA '${suggestedAcc.account_name}'!`);
+                              setTimeout(() => setActionNotice(null), 4000);
+                            } catch (err: any) {
+                              setError(err.message || "Failed to approve COA mapping.");
+                            } finally {
+                              setIsSaving(false);
+                            }
+                          }}
+                          className="btn btn-secondary"
+                          style={{ padding: "5px 10px", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px", borderColor: "#10b981", color: "#10b981" }}
+                        >
+                          <Check size={12} />
+                          <span>Approve Suggested COA</span>
+                        </button>
+                      )}
+
+                      {/* Create New COA Modal Trigger */}
                       <button
                         type="button"
-                        onClick={async () => {
-                          try {
-                            setIsSaving(true);
-                            const { assignInvoiceCOA } = await import("@/lib/api");
-                            const res = await assignInvoiceCOA(invoiceId, {
-                              zoho_account_id: suggestedAcc.zoho_account_id,
-                              account_name: suggestedAcc.account_name,
-                              account_type: suggestedAcc.account_type || "expense",
-                              account_code: suggestedAcc.account_code,
-                            });
-                            setInvoice(res);
-                            if (res.current_accounting_output) setAccountingData(res.current_accounting_output);
-                            setActionNotice(`✓ Approved & persisted suggested COA '${suggestedAcc.account_name}'!`);
-                            setTimeout(() => setActionNotice(null), 4000);
-                          } catch (err: any) {
-                            setError(err.message || "Failed to approve COA mapping.");
-                          } finally {
-                            setIsSaving(false);
-                          }
+                        onClick={() => {
+                          setCreateCoaFormData({
+                            account_name: primaryAccName,
+                            account_type: "expense",
+                            account_code: "",
+                            description: `Created from invoice ${formData?.invoice_number || invoiceId} line ${activeLineIdx + 1}`,
+                          });
+                          setShowCreateCoaModal(true);
                         }}
                         className="btn btn-secondary"
-                        style={{ padding: "5px 10px", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px", borderColor: "#10b981", color: "#10b981" }}
+                        style={{ padding: "5px 10px", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px" }}
                       >
-                        <Check size={12} />
-                        <span>Approve Suggested COA</span>
+                        <Plus size={12} />
+                        <span>Create New COA in Zoho</span>
                       </button>
-                    )}
-
-                    {/* Create New COA Modal Trigger */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCreateCoaFormData({
-                          account_name: primaryAccName,
-                          account_type: "expense",
-                          account_code: "",
-                          description: `Created from invoice ${formData?.invoice_number || invoiceId}`,
-                        });
-                        setShowCreateCoaModal(true);
-                      }}
-                      className="btn btn-secondary"
-                      style={{ padding: "5px 10px", fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px" }}
-                    >
-                      <Plus size={12} />
-                      <span>Create New COA in Zoho</span>
-                    </button>
+                    </div>
                   </div>
                 </div>
               );
