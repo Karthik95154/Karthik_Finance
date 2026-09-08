@@ -127,14 +127,15 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "qwen/qwen3.8-27b"
 
+    # OpenAI Vision Intelligence Configuration
+    OPENAI_API_KEY: str = ""
+    OPENAI_MODEL: str = "gpt-5.6-terra"
+    OPENAI_TIMEOUT: float = 120.0
+    OPENAI_MAX_RETRIES: int = 1
+
     @property
     def kimi_k3_url(self) -> str:
-        if not self.KIMI_K3_SERVICE_URL or not self.KIMI_K3_SERVICE_URL.strip():
-            raise ValueError(
-                "CRITICAL CONFIGURATION ERROR: 'KIMI_K3_SERVICE_URL' environment variable is required and cannot be empty. "
-                "Please configure KIMI_K3_SERVICE_URL in backend/.env with your live Kimi K3 Colab ngrok URL."
-            )
-        return self.KIMI_K3_SERVICE_URL.strip().rstrip("/")
+        return (self.KIMI_K3_SERVICE_URL or "").strip().rstrip("/")
 
     # File Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB

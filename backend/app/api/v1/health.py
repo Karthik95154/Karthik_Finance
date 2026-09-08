@@ -69,7 +69,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         endpoint=settings.SUPABASE_URL,
     )
 
-    # 3. Kimi K3 Unified Single Colab Engine Check
+    # 3. AI Vision Intelligence API Check (OpenAI)
     async def _safe_check(coro, default_name, endpoint_url):
         try:
             res = await asyncio.wait_for(coro, timeout=6.0)
@@ -84,19 +84,19 @@ async def health_check(db: AsyncSession = Depends(get_db)):
                 "endpoint": endpoint_url,
             }
 
-    kimi_detailed = await _safe_check(
-        ai_service.check_colab_health_detailed(),
-        "Kimi K3 Single Colab Engine",
-        settings.kimi_k3_url,
+    ai_detailed = await _safe_check(
+        ai_service.check_health_detailed(),
+        "OpenAI Vision Intelligence API",
+        "https://api.openai.com/v1",
     )
 
     services_map["colab_vlm"] = ServiceHealthDetail(
-        name=kimi_detailed.get("name", "Kimi K3 Single Colab Engine"),
-        status=kimi_detailed.get("status", "offline"),
-        status_code=kimi_detailed.get("status_code"),
-        message=kimi_detailed.get("message", "Unknown"),
-        latency_ms=kimi_detailed.get("latency_ms"),
-        endpoint=kimi_detailed.get("endpoint"),
+        name=ai_detailed.get("name", "OpenAI Vision Intelligence API"),
+        status=ai_detailed.get("status", "offline"),
+        status_code=ai_detailed.get("status_code"),
+        message=ai_detailed.get("message", "Unknown"),
+        latency_ms=ai_detailed.get("latency_ms"),
+        endpoint=ai_detailed.get("endpoint", "https://api.openai.com/v1"),
     )
 
     # 4. FastAPI Backend Engine
@@ -111,9 +111,9 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 
     # Summary overall status
     is_core_ok = (db_status == "connected" and storage_status == "connected")
-    is_kimi_ok = (kimi_detailed.get("status") == "online")
+    is_ai_ok = (ai_detailed.get("status") == "online")
 
-    if is_core_ok and is_kimi_ok:
+    if is_core_ok and is_ai_ok:
         overall_status = "ok"
     elif is_core_ok:
         overall_status = "degraded"
@@ -125,9 +125,9 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         project=settings.PROJECT_NAME,
         database=db_status,
         storage=storage_status,
-        colab_vlm=kimi_detailed.get("message"),
-        colab_accounting="Consolidated into Kimi K3 Unified Engine",
-        colab_tds="Consolidated into Kimi K3 Unified Engine",
+        colab_vlm=ai_detailed.get("message"),
+        colab_accounting="Consolidated into OpenAI Direct Intelligence Layer",
+        colab_tds="Consolidated into OpenAI Direct Intelligence Layer",
         services=services_map,
         timestamp=datetime.now(timezone.utc),
     )

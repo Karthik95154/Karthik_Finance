@@ -42,6 +42,30 @@ class TDSService:
             logger.info("[TDS-SERVICE] Returning normalized TDS suggestions from Kimi K3 Adapter.")
             return {"tds_assessment": invoice_json["tds_assessment"]}
 
+        # Check if tds_support exists in invoice_json or in raw extraction
+        tds_sup = invoice_json.get("tds_support")
+        if not tds_sup and isinstance(invoice_json.get("raw_vlm_output"), dict):
+            tds_sup = invoice_json["raw_vlm_output"].get("tds_support")
+
+        if isinstance(tds_sup, dict) and tds_sup:
+            from app.services.kimi_adapter import KimiK3ResponseAdapter
+            pseudo_kimi = {
+                "tds_support": tds_sup,
+                "vendor_details": invoice_json.get("vendor_details") or {
+                    "vendor_pan": invoice_json.get("vendor_pan"),
+                    "vendor_gstin": invoice_json.get("vendor_gstin"),
+                },
+                "financial_details": invoice_json.get("financial_details") or {
+                    "subtotal": invoice_json.get("subtotal"),
+                    "total_amount": invoice_json.get("total_amount"),
+                },
+            }
+            norm = KimiK3ResponseAdapter.normalize_kimi_response(pseudo_kimi)
+            norm_tds = norm.get("normalized_accounting", {}).get("tds_assessment")
+            if norm_tds:
+                logger.info("[TDS-SERVICE] Successfully evaluated statutory TDS from tds_support.")
+                return {"tds_assessment": norm_tds}
+
         logger.info("[TDS-SERVICE] Bypassing legacy TDS Colab call. Returning default assessment for local engine.")
         return self._build_unavailable_response("Unified Kimi K3 assessment applied")
 

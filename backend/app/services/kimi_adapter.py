@@ -443,26 +443,75 @@ class KimiK3ResponseAdapter:
             elif sgst_rate is not None and sgst_rate > 0 and taxable_amount is not None and sgst_amount is None:
                 sgst_amount = round((taxable_amount * sgst_rate) / 100.0, 2)
 
-            # Master gst_rate reconciliation
+            # Determine supply/tax classification context (Intra-State vs Inter-State)
+            hdr_cgst = cls._get_numeric(financial_details, "cgst_amount") or cls._get_numeric(financial_details, "cgst_total")
+            hdr_sgst = cls._get_numeric(financial_details, "sgst_amount") or cls._get_numeric(financial_details, "sgst_total")
+            hdr_igst = cls._get_numeric(financial_details, "igst_amount") or cls._get_numeric(financial_details, "igst_total")
+            
+            tax_components = gst_support.get("tax_components_candidate") or []
+            if isinstance(tax_components, str):
+                tax_components = [tax_components]
+            tax_components_str = " ".join(tax_components).upper()
+            
+            supply_candidate = (gst_support.get("supply_type_candidate") or "").upper()
+            is_intra = (
+                supply_candidate == "INTRA_STATE" or 
+                "CGST" in tax_components_str or 
+                "SGST" in tax_components_str or 
+                (hdr_cgst is not None and hdr_cgst > 0) or 
+                (hdr_sgst is not None and hdr_sgst > 0)
+            )
+            is_inter = (
+                supply_candidate == "INTER_STATE" or 
+                "IGST" in tax_components_str or 
+                (hdr_igst is not None and hdr_igst > 0)
+            )
+
+            # Master gst_rate reconciliation and automatic component split
             if gst_rate is None:
                 if igst_rate is not None and igst_rate > 0:
                     gst_rate = igst_rate
                 elif (cgst_rate or 0.0) + (sgst_rate or 0.0) > 0:
                     gst_rate = round((cgst_rate or 0.0) + (sgst_rate or 0.0), 2)
-            else:
-                # Master gst_rate exists but individual rates are missing
-                if igst_amount is not None and igst_amount > 0 and igst_rate is None:
-                    igst_rate = gst_rate
-                elif (cgst_amount is not None and cgst_amount > 0 or sgst_amount is not None and sgst_amount > 0):
+                elif taxable_amount and taxable_amount > 0:
+                    # Fallback: check if header has a single tax rate (e.g. 5%)
+                    hdr_taxable = cls._get_numeric(financial_details, "taxable_amount") or cls._get_numeric(financial_details, "subtotal")
+                    if hdr_taxable and hdr_taxable > 0:
+                        if is_intra and hdr_cgst and hdr_cgst > 0:
+                            gst_rate = round(((hdr_cgst * 2.0) / hdr_taxable) * 100.0, 2)
+                        elif is_inter and hdr_igst and hdr_igst > 0:
+                            gst_rate = round((hdr_igst / hdr_taxable) * 100.0, 2)
+
+            if gst_rate is not None and gst_rate > 0:
+                # Master gst_rate exists: split according to tax context
+                if is_intra or (not is_inter and not (igst_amount and igst_amount > 0)):
+                    # Intra-state: split into CGST and SGST
                     if cgst_rate is None:
                         cgst_rate = round(gst_rate / 2.0, 2)
                     if sgst_rate is None:
                         sgst_rate = round(gst_rate / 2.0, 2)
+                    if taxable_amount is not None and taxable_amount > 0:
+                        if cgst_amount is None:
+                            cgst_amount = round((taxable_amount * cgst_rate) / 100.0, 2)
+                        if sgst_amount is None:
+                            sgst_amount = round((taxable_amount * sgst_rate) / 100.0, 2)
+                elif is_inter or (igst_amount and igst_amount > 0):
+                    # Inter-state: IGST
+                    if igst_rate is None:
+                        igst_rate = gst_rate
+                    if taxable_amount is not None and taxable_amount > 0 and igst_amount is None:
+                        igst_amount = round((taxable_amount * igst_rate) / 100.0, 2)
 
-            # Total line total derivation
-            if total is None and taxable_amount is not None:
-                comp_taxes = (cgst_amount or 0.0) + (sgst_amount or 0.0) + (igst_amount or 0.0) + (cess_amount or 0.0)
-                total = round(taxable_amount + comp_taxes, 2)
+            # Total line total derivation: reconcile taxable amount + all applicable taxes
+            comp_taxes = (cgst_amount or 0.0) + (sgst_amount or 0.0) + (igst_amount or 0.0) + (cess_amount or 0.0)
+            if taxable_amount is not None:
+                calc_total = round(taxable_amount + comp_taxes, 2)
+                # If total is missing, or if total was equal to pretax taxable_amount despite taxes being present,
+                # or if total is significantly lower than taxable + taxes, update to full inclusive total.
+                if total is None:
+                    total = calc_total
+                elif comp_taxes > 0 and (abs(total - taxable_amount) < 0.05 or abs(total - calc_total) > 0.05):
+                    total = calc_total
 
             normalized_item = {
                 "line_index": display_idx,
@@ -574,6 +623,19 @@ class KimiK3ResponseAdapter:
         grand_total = cls._get_numeric(financial_details, "total_amount")
         notes_val = cls._clean_optional_string(financial_details.get("notes"))
 
+        # Fallback: If subtotal is null, derive it from taxable_total or sum of line items taxable amounts
+        if subtotal_val is None:
+            if taxable_total is not None:
+                subtotal_val = taxable_total
+            else:
+                line_taxable_sum = sum(
+                    float(it.get("taxable_amount") or it.get("line_amount") or 0.0)
+                    for it in normalized_line_items
+                )
+                if line_taxable_sum > 0:
+                    subtotal_val = round(line_taxable_sum, 2)
+
+        # ---------------------------------------------------------
         # ---------------------------------------------------------
         # 5. TDS support
         # ---------------------------------------------------------
@@ -586,7 +648,6 @@ class KimiK3ResponseAdapter:
                 else tds_support.get("applicable")
             )
         )
-        tds_applicable = bool(tds_applicable_raw) if tds_applicable_raw is not None else False
 
         tds_nature = cls._clean_optional_string(
             tds_support.get("payment_nature") or tds_support.get("nature_of_payment")
@@ -605,8 +666,78 @@ class KimiK3ResponseAdapter:
         tds_requires_backend_validation = cls._get_bool(tds_support, "requires_backend_validation", default=True)
         tds_reason = (
             cls._clean_optional_string(tds_support.get("reason") or tds_support.get("reasoning"))
-            or "Kimi K3 TDS proposal"
+            or "TDS proposal"
         )
+
+        # Statutory evaluation when VLM returns None (unresolved pending backend validation)
+        if tds_applicable_raw is None:
+            # Check statutory service categories and single-invoice thresholds
+            candidate_base = tds_base or subtotal_val or 0.0
+            nature_check = (f"{tds_nature or ''} {tds_provision or ''}").upper()
+
+            is_contractor = any(k in nature_check for k in ("CONTRACTOR", "MANPOWER", "SECURITY", "FACILITY", "SUBCONTRACT", "WORK_CONTRACT", "194C"))
+            is_prof_tech = any(k in nature_check for k in ("TECHNICAL", "PROFESSIONAL", "CONSULTING", "LEGAL", "SOFTWARE", "IT_SERVICE", "194J", "393"))
+            is_rent = any(k in nature_check for k in ("RENT", "LEASE", "194I"))
+            is_commission = any(k in nature_check for k in ("COMMISSION", "BROKERAGE", "194H"))
+
+            if is_contractor:
+                # Single invoice >= 30,000 or cumulative required
+                if candidate_base >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
+                    tds_applicable = True
+                    if not tds_provision:
+                        tds_provision = "194C"
+                    if not tds_nature:
+                        tds_nature = "CONTRACTOR_WORK"
+                    if tds_rate is None or tds_rate <= 0:
+                        # 4th char of PAN: 'P' or 'H' -> 1.0%, else 2.0%
+                        is_indiv = (v_pan and len(v_pan) >= 4 and v_pan[3].upper() in ("P", "H"))
+                        tds_rate = 1.0 if is_indiv else 2.0
+                else:
+                    tds_applicable = False
+            elif is_prof_tech:
+                # Single invoice >= 30,000 or cumulative required
+                if candidate_base >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
+                    tds_applicable = True
+                    if not tds_provision:
+                        tds_provision = "194J"
+                    if not tds_nature:
+                        tds_nature = "TECHNICAL_SERVICES" if "TECHNICAL" in nature_check else "PROFESSIONAL_SERVICES"
+                    if tds_rate is None or tds_rate <= 0:
+                        tds_rate = 2.0 if "TECHNICAL" in nature_check else 10.0
+                else:
+                    tds_applicable = False
+            elif is_rent:
+                if candidate_base >= 240000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
+                    tds_applicable = True
+                    if not tds_provision:
+                        tds_provision = "194I"
+                    if not tds_nature:
+                        tds_nature = "RENT_OF_IMMOVABLE_PROPERTY"
+                    if tds_rate is None or tds_rate <= 0:
+                        tds_rate = 10.0
+                else:
+                    tds_applicable = False
+            elif is_commission:
+                if candidate_base >= 15000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
+                    tds_applicable = True
+                    if not tds_provision:
+                        tds_provision = "194H"
+                    if not tds_nature:
+                        tds_nature = "COMMISSION_OR_BROKERAGE"
+                    if tds_rate is None or tds_rate <= 0:
+                        tds_rate = 2.0
+                else:
+                    tds_applicable = False
+            else:
+                tds_applicable = False
+        else:
+            tds_applicable = bool(tds_applicable_raw)
+
+        if tds_applicable and (tds_base is None or tds_base <= 0) and subtotal_val:
+            tds_base = subtotal_val
+
+        if tds_applicable and (proposed_tds is None or proposed_tds <= 0) and tds_base and tds_rate:
+            proposed_tds = round((tds_base * tds_rate) / 100.0, 2)
 
         normalized_tds = {
             "applicable": tds_applicable,
@@ -724,3 +855,7 @@ class KimiK3ResponseAdapter:
             "normalized_data": normalized_data,
             "normalized_accounting": normalized_accounting,
         }
+
+
+# Provider-independent alias for backend consistency
+ModelResponseAdapter = KimiK3ResponseAdapter

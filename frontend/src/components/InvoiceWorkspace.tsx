@@ -711,6 +711,16 @@ export default function InvoiceWorkspace({
             ? rawData.line_items
             : [];
 
+        const isIntraState = Boolean(
+          (extracted.cgst_amount && extracted.cgst_amount > 0) ||
+          (extracted.sgst_amount && extracted.sgst_amount > 0) ||
+          (extracted.vendor_gstin && extracted.customer_gstin && extracted.vendor_gstin.substring(0, 2) === extracted.customer_gstin.substring(0, 2))
+        );
+        const isInterState = Boolean(
+          (extracted.igst_amount && extracted.igst_amount > 0) ||
+          (extracted.vendor_gstin && extracted.customer_gstin && extracted.vendor_gstin.substring(0, 2) !== extracted.customer_gstin.substring(0, 2))
+        );
+
         extracted.line_items = rawItems.map((item: any, pos: number) => {
           const it = { ...item };
           const itRf = it.raw_fields || {};
@@ -737,8 +747,48 @@ export default function InvoiceWorkspace({
           if (it.taxable_amount === undefined || it.taxable_amount === null) {
             if (it.quantity && it.unit_price) it.taxable_amount = it.quantity * it.unit_price;
           }
+
+          // Auto-derive line item CGST & SGST or IGST if not set or zero
+          const gRate = typeof it.gst_rate === "number" ? it.gst_rate : parseFloat(String(it.gst_rate || "0")) || 0;
+          const taxable = Number(it.taxable_amount) || 0;
+          const hasCgst = Number(it.cgst_amount) > 0 || Number(it.cgst_rate) > 0;
+          const hasSgst = Number(it.sgst_amount) > 0 || Number(it.sgst_rate) > 0;
+          const hasIgst = Number(it.igst_amount) > 0 || Number(it.igst_rate) > 0;
+
+          if (!hasCgst && !hasSgst && !hasIgst && gRate > 0) {
+            if (isIntraState || !isInterState) {
+              it.cgst_rate = Math.round((gRate / 2) * 100) / 100;
+              it.sgst_rate = Math.round((gRate / 2) * 100) / 100;
+              if (taxable > 0) {
+                it.cgst_amount = Math.round(((taxable * it.cgst_rate) / 100) * 100) / 100;
+                it.sgst_amount = Math.round(((taxable * it.sgst_rate) / 100) * 100) / 100;
+              }
+            } else {
+              it.igst_rate = gRate;
+              if (taxable > 0) {
+                it.igst_amount = Math.round(((taxable * it.igst_rate) / 100) * 100) / 100;
+              }
+            }
+          } else if (!hasCgst && !hasSgst && !hasIgst && taxable > 0 && isIntraState && extracted.subtotal && extracted.cgst_amount) {
+            // Header has CGST & SGST but line item has no rates
+            const sub = Number(extracted.subtotal) || 1;
+            const effCgstRate = Math.round(((Number(extracted.cgst_amount) / sub) * 100) * 100) / 100;
+            const effSgstRate = Math.round(((Number(extracted.sgst_amount) / sub) * 100) * 100) / 100;
+            if (effCgstRate > 0) {
+              it.cgst_rate = effCgstRate;
+              it.sgst_rate = effSgstRate || effCgstRate;
+              it.cgst_amount = Math.round(((taxable * it.cgst_rate) / 100) * 100) / 100;
+              it.sgst_amount = Math.round(((taxable * it.sgst_rate) / 100) * 100) / 100;
+              it.gst_rate = Math.round((it.cgst_rate + it.sgst_rate) * 100) / 100;
+            }
+          }
+
+          const lineTaxes = (Number(it.cgst_amount) || 0) + (Number(it.sgst_amount) || 0) + (Number(it.igst_amount) || 0) + (Number((it as any).cess_amount) || 0);
+          const computedTotal = Math.round(((it.taxable_amount || 0) + lineTaxes) * 100) / 100;
           if (it.total === undefined || it.total === null) {
-            it.total = (it.taxable_amount || 0) + (it.cgst_amount || 0) + (it.sgst_amount || 0) + (it.igst_amount || 0);
+            it.total = computedTotal;
+          } else if (lineTaxes > 0 && (Math.abs(Number(it.total) - Number(it.taxable_amount || 0)) < 0.05 || Math.abs(Number(it.total) - computedTotal) > 0.05)) {
+            it.total = computedTotal;
           }
           it.line_index = it.line_index || pos + 1;
           return it;

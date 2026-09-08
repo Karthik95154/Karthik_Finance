@@ -35,7 +35,7 @@ class AccountingService:
     """Service for Chart of Accounts (COA) categorization using unified Kimi K3 AI response and local matcher."""
 
     def __init__(self, base_url: Optional[str] = None, timeout: Optional[float] = None):
-        self.base_url = (base_url or getattr(settings, "kimi_k3_url", "")).strip().rstrip("/")
+        self.base_url = (base_url or getattr(settings, "KIMI_K3_SERVICE_URL", "") or "").strip().rstrip("/")
         self.timeout = float(timeout or settings.INFERENCE_TIMEOUT)
 
     async def check_health(self) -> bool:
@@ -104,16 +104,36 @@ class AccountingService:
                 name_l = (a.get("account_name") or "").lower()
                 if any(w in name_l for w in ["transportation", "shipping", "freight"]):
                     return a
-        if any(k in desc_lower for k in ["consult", "legal", "audit", "professional", "service", "fee"]):
+        if any(k in desc_lower for k in ["consult", "legal", "audit", "professional", "fee"]):
             for a in accounts:
                 name_l = (a.get("account_name") or "").lower()
                 if any(w in name_l for w in ["consultant", "professional", "legal"]):
                     return a
+        if any(k in desc_lower for k in ["guard", "security", "facility", "housekeeping", "manpower", "labor", "labour", "cleaning", "janitor"]):
+            for a in accounts:
+                name_l = (a.get("account_name") or "").lower()
+                if any(w in name_l for w in ["labor", "labour", "subcontractor", "janitorial", "repairs and maintenance", "other expenses"]):
+                    return a
+        if any(k in desc_lower for k in ["repair", "maintenance", "servicing", "amc"]):
+            for a in accounts:
+                name_l = (a.get("account_name") or "").lower()
+                if any(w in name_l for w in ["repairs and maintenance", "maintenance", "other expenses"]):
+                    return a
 
-        # Fallback to first expense account in COA
+        # Safe fallback: Search for "Uncategorized", "Other Expenses", or "General Expenses" first
         for a in accounts:
+            name_l = (a.get("account_name") or "").lower()
+            if any(w in name_l for w in ["uncategorized", "other expenses", "general expenses"]):
+                return a
+
+        # Fallback to first non-depreciation expense account
+        for a in accounts:
+            name_l = (a.get("account_name") or "").lower()
+            if "depreciation" in name_l or "amortisation" in name_l or "amortization" in name_l or "bad debt" in name_l:
+                continue
             if a.get("account_type") in ("expense", "cost_of_goods_sold", "other_expense"):
                 return a
+
         return accounts[0] if accounts else {"account_id": "ACC_EXPENSE", "account_name": "General Expenses"}
 
     def _build_unavailable_response(self, invoice_json: Dict[str, Any], error_reason: str, chart_of_accounts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:

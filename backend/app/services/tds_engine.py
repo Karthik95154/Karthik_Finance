@@ -80,7 +80,10 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
         raw_app = tds_assessment.get("tds_applicable")
         if raw_app is None and "applicable" in tds_assessment:
             raw_app = tds_assessment.get("applicable")
-        is_app = bool(raw_app) if raw_app is not None else False
+
+        section_val = tds_assessment.get("approved_tds_section") or tds_assessment.get("tds_section") or tds_assessment.get("section")
+        provision_val = tds_assessment.get("approved_tds_provision") or tds_assessment.get("tds_provision") or tds_assessment.get("provision")
+        nature_val = tds_assessment.get("approved_nature_of_payment") or tds_assessment.get("nature_of_payment") or tds_assessment.get("nature")
 
         rate_val = (
             tds_assessment.get("approved_tds_rate")
@@ -101,6 +104,14 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
         except (ValueError, TypeError):
             base_float = None
 
+        if raw_app is not None:
+            is_app = bool(raw_app)
+        else:
+            # Deterministic statutory resolution when raw_app is None (unspecified)
+            nature_str = (f"{provision_val or ''} {section_val or ''} {nature_val or ''}").upper()
+            is_statutory = any(k in nature_str for k in ("CONTRACT", "194C", "PROFESSIONAL", "TECHNICAL", "194J", "393", "RENT", "194I", "COMMISSION", "194H", "PURCHASE", "194Q"))
+            is_app = is_statutory and ((base_float is not None and base_float > 0) or rate_float is not None)
+
         tds_amt_val = (
             tds_assessment.get("final_tds_amount")
             or tds_assessment.get("calculated_tds_amount")
@@ -118,10 +129,6 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
             or tds_assessment.get("approved")
             or tds_assessment.get("approval_status") == "APPROVED"
         )
-
-        section_val = tds_assessment.get("approved_tds_section") or tds_assessment.get("tds_section") or tds_assessment.get("section")
-        provision_val = tds_assessment.get("approved_tds_provision") or tds_assessment.get("tds_provision") or tds_assessment.get("provision")
-        nature_val = tds_assessment.get("approved_nature_of_payment") or tds_assessment.get("nature_of_payment") or tds_assessment.get("nature")
 
         if is_app:
             canonical = resolve_tds_tax_details(section_val, provision_val, nature_val)
@@ -147,11 +154,11 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
 
         return {
             "applicable": is_app,
-            "section": section_val,
-            "tds_section": section_val,
-            "provision": provision_val,
-            "tds_provision": provision_val,
-            "nature_of_payment": nature_val,
+            "section": section_val if is_app else None,
+            "tds_section": section_val if is_app else None,
+            "provision": provision_val if is_app else None,
+            "tds_provision": provision_val if is_app else None,
+            "nature_of_payment": nature_val if is_app else None,
             "rate": rate_float if is_app else None,
             "tds_rate": rate_float if is_app else None,
             "approved_tds_rate": rate_float if is_app else None,

@@ -166,18 +166,19 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
                         d_amt = d_val
                 it["taxable_amount"] = round(l_amt - d_amt, 2)
 
-        # If total is missing, derive from taxable_amount + explicit line taxes
-        if it.get("total") is None and it.get("taxable_amount") is not None:
+        # Reconcile line item total = taxable_amount + applicable taxes
+        if it.get("taxable_amount") is not None:
+            taxable_val = float(it["taxable_amount"])
             line_taxes = 0.0
-            has_explicit_tax = False
             for tax_k in ["cgst_amount", "sgst_amount", "igst_amount", "cess_amount"]:
                 if it.get(tax_k) is not None:
                     line_taxes += float(it[tax_k])
-                    has_explicit_tax = True
-            if has_explicit_tax:
-                it["total"] = round(float(it["taxable_amount"]) + line_taxes, 2)
-            else:
-                it["total"] = it["taxable_amount"]
+            calc_line_tot = round(taxable_val + line_taxes, 2)
+            cur_tot = float(it["total"]) if it.get("total") is not None else None
+            if cur_tot is None:
+                it["total"] = calc_line_tot
+            elif line_taxes > 0 and (abs(cur_tot - taxable_val) < 0.05 or abs(cur_tot - calc_line_tot) > 0.05):
+                it["total"] = calc_line_tot
 
         resolved_items.append(it)
     merged["line_items"] = resolved_items
@@ -231,6 +232,7 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             # Prepare complete single effective invoice JSON for COA, TDS, GST/ITC
             invoice_payload = get_effective_invoice_data(invoice)
             tenant_id = invoice.tenant_id or "default-tenant-001"
+            normalized_accounting_state = invoice.current_accounting_output or invoice.accounting_output
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
             cached_taxes = await master_data_service.get_cached_taxes(tenant_id, session)
         except Exception as exc:
@@ -250,24 +252,32 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
 
     # Step 2: External AI Inference & Deterministic Computations (Zero DB connections held)
     try:
-        # 1. Call COA and TDS services concurrently using the EXACT SAME invoice_payload
-        coa_task = accounting_service.categorize_accounting(
-            invoice_json=invoice_payload,
-            chart_of_accounts=cached_coa,
-            available_taxes=cached_taxes,
-        )
-        tds_task = tds_service.assess_tds(
-            invoice_json=invoice_payload,
-        )
+        # Check if we already have authoritative VLM accounting classification from Stage 1/2
+        coa_lines = []
+        if isinstance(normalized_accounting_state, dict) and isinstance(normalized_accounting_state.get("accounting"), list) and normalized_accounting_state["accounting"]:
+            coa_lines = normalized_accounting_state["accounting"]
+            logger.info(f"[STAGE-3] Preserving {len(coa_lines)} authoritative COA classification(s) from VLM adapter.")
+            tds_res = await tds_service.assess_tds(invoice_json=invoice_payload)
+        else:
+            # 1. Call COA and TDS services concurrently using the EXACT SAME invoice_payload
+            coa_task = accounting_service.categorize_accounting(
+                invoice_json=invoice_payload,
+                chart_of_accounts=cached_coa,
+                available_taxes=cached_taxes,
+            )
+            tds_task = tds_service.assess_tds(
+                invoice_json=invoice_payload,
+            )
 
-        coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
+            coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
 
-        accounting_lines = []
-        if isinstance(coa_res, dict):
-            accounting_lines = coa_res.get("accounting") or []
-        elif isinstance(coa_res, Exception):
-            logger.warning(f"COA service exception for invoice {invoice_id}: {coa_res}")
-            accounting_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
+            if isinstance(coa_res, dict):
+                coa_lines = coa_res.get("accounting") or []
+            elif isinstance(coa_res, Exception):
+                logger.warning(f"COA service exception for invoice {invoice_id}: {coa_res}")
+                coa_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
+
+        accounting_lines = coa_lines
 
         tds_assessment = {}
         if isinstance(tds_res, dict):
@@ -455,16 +465,15 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             await session.commit()
             logger.info(f"Invoice {invoice_id} status updated to PROCESSING_VLM")
 
-            # Retrieve authenticated user's active Zoho Chart of Accounts strictly scoped to user_id & organization_id
-            if user_id:
-                try:
-                    cached_coa = await master_data_service.get_cached_chart_of_accounts(
-                        tenant_id=tenant_id,
-                        db=session,
-                    )
-                except Exception as coa_exc:
-                    logger.warning(f"Could not fetch Zoho COA for user {user_id}: {coa_exc}")
-                    cached_coa = []
+            # Retrieve active Zoho Chart of Accounts strictly scoped to tenant_id & organization
+            try:
+                cached_coa = await master_data_service.get_cached_chart_of_accounts(
+                    tenant_id=tenant_id,
+                    db=session,
+                )
+            except Exception as coa_exc:
+                logger.warning(f"Could not fetch Zoho COA for tenant {tenant_id}: {coa_exc}")
+                cached_coa = []
         except Exception as exc:
             logger.exception(f"Error marking invoice {invoice_id} as PROCESSING_VLM: {exc}")
             return
@@ -593,6 +602,7 @@ async def process_accounting_downstream_background(invoice_id) -> None:
 
             tenant_id = invoice.tenant_id or "default-tenant-001"
             extraction_result = invoice.current_vlm_output
+            normalized_accounting_state = invoice.current_accounting_output or invoice.accounting_output
 
             # Fetch live tenant Chart of Accounts & Taxes
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
@@ -613,26 +623,28 @@ async def process_accounting_downstream_background(invoice_id) -> None:
 
     # Step 2: External AI Inference & Deterministic Computations (Zero DB connections held)
     try:
-        # Call COA & TDS concurrently with the EXACT SAME normalized invoice JSON
         invoice_payload = extraction_result.get("data") if isinstance(extraction_result, dict) and "data" in extraction_result else extraction_result
 
-        coa_task = accounting_service.categorize_accounting(
-            invoice_json=invoice_payload,
-            chart_of_accounts=cached_coa,
-            available_taxes=cached_taxes,
-        )
+        coa_lines = []
+        if isinstance(normalized_accounting_state, dict) and isinstance(normalized_accounting_state.get("accounting"), list) and normalized_accounting_state["accounting"]:
+            coa_lines = normalized_accounting_state["accounting"]
+            logger.info(f"[DOWNSTREAM] Preserving {len(coa_lines)} authoritative COA classification(s) from VLM intelligence adapter.")
+        else:
+            coa_res = await accounting_service.categorize_accounting(
+                invoice_json=invoice_payload,
+                chart_of_accounts=cached_coa,
+                available_taxes=cached_taxes,
+            )
+            if isinstance(coa_res, dict):
+                coa_lines = coa_res.get("accounting") or []
+
         tds_task = tds_service.assess_tds(
             invoice_json=invoice_payload,
         )
 
-        coa_res, tds_res = await asyncio.gather(coa_task, tds_task, return_exceptions=True)
+        tds_res = await tds_task
 
-        accounting_lines = []
-        if isinstance(coa_res, dict):
-            accounting_lines = coa_res.get("accounting") or []
-        elif isinstance(coa_res, Exception):
-            logger.warning(f"COA service error for invoice {invoice_id}: {coa_res}")
-            accounting_lines = accounting_service._build_unavailable_response(invoice_payload, str(coa_res)).get("accounting", [])
+        accounting_lines = coa_lines
 
         tds_assessment = {}
         if isinstance(tds_res, dict):
