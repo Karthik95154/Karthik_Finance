@@ -1,5 +1,5 @@
 import pytest
-from app.services.kimi_adapter import KimiK3ResponseAdapter
+from app.services.model_response_adapter import ModelResponseAdapter
 from app.schemas.invoice import InvoiceResponse
 
 
@@ -110,7 +110,7 @@ def test_complete_kimi_field_preservation():
         }
     }
 
-    normalized = KimiK3ResponseAdapter.normalize_kimi_response(sample_full_kimi)
+    normalized = ModelResponseAdapter.normalize_model_response(sample_full_kimi)
 
     data = normalized["normalized_data"]
     acct = normalized["normalized_accounting"]

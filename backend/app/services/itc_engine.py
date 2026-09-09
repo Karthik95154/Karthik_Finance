@@ -903,10 +903,14 @@ class ITCEngine:
         # STAGE F: SECTION 16(1) PROVEN BUSINESS INPUTS & ELIGIBILITY
         # ---------------------------------------------------------------------
         eligible_patterns = [
-            r"\b(cloud|hosting|infrastructure|software|saas|subscription|hardware|server|data center|machinery|plant and machinery|factory equipment|furniture|fixtures|desk|desks|chair|chairs|table|tables|workstation|workstations|raw material|manufacturing|office supplies|stationery|consulting|professional|legal|audit|accounting fees|marketing|advertising|logistics|freight|courier|transport|telecom|internet|utilities|electricity|maintenance|repairs and maintenance|cleaning chemical|production chemical|packaging material|raw materials|industrial supplies|it equipment|security service|office lease)\b"
+            r"\b(cloud|hosting|infrastructure|software|saas|subscription|hardware|server|data center|machinery|plant and machinery|factory equipment|furniture|fixtures|desk|desks|chair|chairs|table|tables|workstation|workstations|raw material|manufacturing|office supplies|stationery|consulting|professional|legal|audit|accounting fees|marketing|advertising|logistics|freight|courier|transport|telecom|internet|utilities|electricity|maintenance|repairs and maintenance|cleaning chemical|production chemical|packaging material|raw materials|industrial supplies|it equipment|security service|office lease|cable|cables|fittings|wiring|installation|commissioning|erection|electrical|fabrication|labor|labour|subcontractor|cost of goods|cogs|direct expense|works contract)\b"
         ]
 
-        if any(re.search(p, acc_lower) for p in eligible_patterns) or any(re.search(p, desc_lower) for p in eligible_patterns):
+        # Check line account name, description, and HSN/SAC chapter
+        hsn_sac_str = str(hsn_code or "")
+        hsn_sac_eligible = any(hsn_sac_str.startswith(prefix) for prefix in ("84", "85", "9954", "9983", "9985", "9986", "9987", "9988"))
+
+        if any(re.search(p, acc_lower) for p in eligible_patterns) or any(re.search(p, desc_lower) for p in eligible_patterns) or hsn_sac_eligible:
             rc_note = " (Eligible upon recipient discharging RCM liability in cash under Sec 16(2))" if is_reverse_charge else ""
             return {
                 "itc_status": "ELIGIBLE",

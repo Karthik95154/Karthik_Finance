@@ -32,7 +32,7 @@ DEFAULT_AVAILABLE_TAXES: List[Dict[str, Any]] = [
 
 
 class AccountingService:
-    """Service for Chart of Accounts (COA) categorization using unified Kimi K3 AI response and local matcher."""
+    """Service for Chart of Accounts (COA) categorization using AI model response and local matcher."""
 
     def __init__(self, base_url: Optional[str] = None, timeout: Optional[float] = None):
         self.base_url = (base_url or getattr(settings, "KIMI_K3_SERVICE_URL", "") or "").strip().rstrip("/")
@@ -60,21 +60,21 @@ class AccountingService:
         available_taxes: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
-        Consumes COA predictions from normalized Kimi K3 output or local semantic matcher fallback.
-        Bypasses redundant external HTTP calls to retired legacy COA Colab.
+        Consumes COA predictions from normalized model output or local semantic matcher fallback.
+        Bypasses redundant external HTTP calls to retired legacy COA endpoint.
         """
         if not isinstance(invoice_json, dict) or not invoice_json:
             raise ValueError("invoice_json must be a non-empty dictionary")
 
         coa = chart_of_accounts if chart_of_accounts is not None else []
 
-        # If invoice_json already contains accounting suggestions from KimiK3ResponseAdapter, return them directly
+        # If invoice_json already contains accounting suggestions from ModelResponseAdapter, return them directly
         if isinstance(invoice_json.get("accounting"), list) and invoice_json["accounting"]:
-            logger.info("[COA-SERVICE] Returning normalized COA suggestions from Kimi K3 Adapter.")
+            logger.info("[COA-SERVICE] Returning normalized COA suggestions from Model Adapter.")
             return {"accounting": invoice_json["accounting"]}
 
-        logger.info("[COA-SERVICE] Bypassing legacy COA Colab call. Applying local semantic matcher.")
-        return self._build_unavailable_response(invoice_json, "Unified Kimi K3 COA matcher applied", coa)
+        logger.info("[COA-SERVICE] Bypassing legacy COA endpoint. Applying local semantic matcher.")
+        return self._build_unavailable_response(invoice_json, "Model-based COA matcher applied", coa)
 
     def _match_coa_account(self, description: str, chart_of_accounts: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
         """

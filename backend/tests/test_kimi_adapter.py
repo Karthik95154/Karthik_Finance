@@ -1,8 +1,8 @@
 import pytest
-from app.services.kimi_adapter import KimiK3ResponseAdapter
+from app.services.model_response_adapter import ModelResponseAdapter
 
 
-def test_kimi_adapter_normalization():
+def test_model_adapter_normalization():
     sample_kimi = {
         "schema_version": "2.3.0",
         "invoice_details": {
@@ -76,7 +76,7 @@ def test_kimi_adapter_normalization():
         }
     ]
 
-    normalized = KimiK3ResponseAdapter.normalize_kimi_response(sample_kimi, mock_user_coa)
+    normalized = ModelResponseAdapter.normalize_model_response(sample_kimi, mock_user_coa)
 
     data = normalized["normalized_data"]
     acct = normalized["normalized_accounting"]

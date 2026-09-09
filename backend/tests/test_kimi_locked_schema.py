@@ -1,5 +1,5 @@
 import pytest
-from app.services.kimi_adapter import KimiK3ResponseAdapter
+from app.services.model_response_adapter import ModelResponseAdapter
 
 
 def test_kimi_locked_schema_cases():
@@ -44,7 +44,7 @@ def test_kimi_locked_schema_cases():
     }
 
     mock_coa = [{"account_id": "ACC_ZOHO_1", "account_name": "Office Supplies"}]
-    res = KimiK3ResponseAdapter.normalize_kimi_response(raw_kimi_absent_charges, mock_coa)
+    res = ModelResponseAdapter.normalize_model_response(raw_kimi_absent_charges, mock_coa)
 
     data = res["normalized_data"]
     acct = res["normalized_accounting"]
@@ -79,7 +79,7 @@ def test_kimi_explicit_zero_charges():
             "total_amount": 1000.0
         }
     }
-    res = KimiK3ResponseAdapter.normalize_kimi_response(raw_kimi)
+    res = ModelResponseAdapter.normalize_model_response(raw_kimi)
     data = res["normalized_data"]
 
     # Explicit 0.0 preserved as 0.0

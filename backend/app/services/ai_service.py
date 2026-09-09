@@ -299,15 +299,21 @@ F. TDS STATUTORY INTERPRETATION (HIGHEST PRIORITY)
      * "PURCHASE_OF_GOODS": Tangible goods procurement (evaluated for Section 194Q / 2025 Act equivalents).
      * "DIRECTOR_REMUNERATION": Non-salary director fees or sitting fees.
      * "NON_RESIDENT_PAYMENT": Overseas supplier payments (evaluated for Section 195 / foreign withholding).
+   - COMPOSITE / MULTI-SERVICE INVOICES:
+     * If an invoice contains multiple lines with distinct service categories (e.g., Line 1: Manpower/Security contract -> 194C, Line 2: Equipment/CCTV rental -> 194I, Line 3: IT Audit/Consulting -> 194J):
+     * Evaluate each line individually against its statutory threshold and category.
+     * If ANY line exceeds its single-invoice threshold (e.g., >= ₹30,000 for 194C or 194J) or if prior cumulative turnover is unknown, TDS IS APPLICABLE. Set tds_applicable_candidate = true.
+     * Provide the candidate sections (e.g., "194C, 194J"), the sum of assessable taxable bases, and proposed withholding for the backend engine to finalize.
    - CRITICAL: Do NOT classify all cloud services, SaaS, software subscriptions, IT services, and consulting into one default generic section. Evaluate actual substance (e.g., routine SaaS vs customized software vs technical maintenance vs hardware purchase).
 3. TDS RATE DETERMINATION:
    - Provide rate_candidate only when supported by the applicable current statutory provision, payer/payee category, and available evidence.
-   - Never infer a rate from a generic service label alone.
-   - Do NOT use hard-coded generic rate examples. Statutory rates depend on entity status, notifications, and applicable law.
-   - Backend TDS engine validates the final rate.
+   - For 194C: 1% for Individual/HUF (PAN 4th letter 'P'/'H'), 2% for Corporate entities (Company/LLP).
+   - For 194J: 2% for technical/IT services and FTS, 10% for professional services (e.g., legal/medical).
+   - For 194I: 2% for plant/machinery/equipment rental, 10% for land/building.
+   - Backend TDS engine validates the final rate and calculates withholding.
 4. WITHHOLDING BASE (base_candidate):
    - If GST is separately identifiable, exclude GST from the candidate TDS base.
-   - If GST cannot be reliably separated, do not guess the base; set base_candidate = null and require backend validation.
+   - For composite invoices, base_candidate should represent the sum of taxable amounts of the lines that attract TDS.
 5. THRESHOLD & CUMULATIVE DATA:
    - Never invent or assume annual cumulative billing turnover.
    - If historical vendor payment data for the financial year is not provided in the runtime prompt:
@@ -321,7 +327,7 @@ F. TDS STATUTORY INTERPRETATION (HIGHEST PRIORITY)
    - Set pan_status = "VALID", "INVALID", "MISSING", or "UNKNOWN".
    - If PAN is missing or invalid: flag "TDS_PAN_REQUIRED" or "TDS_PAN_INVALID". Backend applies higher withholding rate (Section 206AA / 2025 Act equivalent).
 7. STRICT CALCULATION BOUNDARY:
-   - NEVER calculate or output final TDS deduction amounts. Only propose candidate provision, base, and rate. The backend TDS engine calculates the final deduction amount.
+   - Propose candidate provision, base, and rate. The deterministic backend TDS engine calculates the final deduction amount.
 
 ================================================================================
 G. TCS (TAX COLLECTED AT SOURCE)

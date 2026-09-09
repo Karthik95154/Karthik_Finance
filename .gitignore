@@ -75,3 +75,5 @@ storage/uploads/
 .DS_Store
 Thumbs.db
 zoho_audit_screenshots/
+backend/scratch/
+backend/last_openai_raw_output.json

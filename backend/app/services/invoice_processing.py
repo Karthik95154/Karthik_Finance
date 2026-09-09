@@ -425,8 +425,8 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
 async def process_invoice_background(invoice_id: uuid.UUID) -> None:
     """
     Asynchronous background pipeline executing:
-    Stage 1: Kimi K3 Single Colab Extraction + Line Item COA + TDS Proposal ->
-    Stage 2: KimiK3ResponseAdapter Normalization & Per-Line Zoho COA Verification ->
+    Stage 1: OpenAI Vision Extraction + Line Item COA + TDS Proposal ->
+    Stage 2: ModelResponseAdapter Normalization & Per-Line Zoho COA Verification ->
     Stage 3: Deterministic Statutory TDS Calculation ->
     Stage 4: Deterministic GST & ITC Engine ->
     Stage 5: Deterministic Financial Validation / Reconciliation ->
@@ -496,10 +496,10 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 pass
         return
 
-    # 3. Call Kimi K3 Single Colab service with Base64 image & user's Zoho COA
-    kimi_raw_response = None
+    # 3. Call OpenAI Vision Intelligence with Base64 image & user's Zoho COA
+    raw_model_response = None
     try:
-        kimi_raw_response = await ai_service.extract_invoice_vlm(
+        raw_model_response = await ai_service.extract_invoice_vlm(
             file_bytes=file_bytes,
             filename=file_name or "invoice.pdf",
             content_type=file_mime_type,
@@ -508,7 +508,7 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
     except Exception as vlm_err:
         err_msg = f"Extraction service unavailable / failed: {str(vlm_err)}"
         logger.warning(
-            f"Invoice {invoice_id} extraction failed (Colab/AI unavailable). Setting status to NOT_PROCESSED. Reason: {err_msg}"
+            f"Invoice {invoice_id} extraction failed (AI service unavailable). Setting status to NOT_PROCESSED. Reason: {err_msg}"
         )
 
         async with AsyncSessionLocal() as session:
@@ -521,15 +521,15 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                     inv.error_message = f"[EXTRACTION_UNAVAILABLE] {err_msg}"
                     inv.updated_at = datetime.now(timezone.utc)
                     await session.commit()
-                    logger.info(f"Invoice {invoice_id} set to NOT_PROCESSED due to AI/Colab service unavailability.")
+                    logger.info(f"Invoice {invoice_id} set to NOT_PROCESSED due to AI service unavailability.")
             except Exception as commit_err:
                 logger.error(f"Failed to update status to NOT_PROCESSED for invoice {invoice_id}: {commit_err}")
         return
 
-    # 4. Normalize Kimi response via KimiK3ResponseAdapter
-    from app.services.kimi_adapter import KimiK3ResponseAdapter
-    normalized = KimiK3ResponseAdapter.normalize_kimi_response(
-        kimi_response=kimi_raw_response,
+    # 4. Normalize model response via ModelResponseAdapter
+    from app.services.model_response_adapter import ModelResponseAdapter
+    normalized = ModelResponseAdapter.normalize_model_response(
+        model_response=raw_model_response,
         user_zoho_coa=cached_coa,
     )
 
@@ -563,7 +563,7 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 invoice.period_decision = period_decision
                 invoice.updated_at = datetime.now(timezone.utc)
                 await session.commit()
-                logger.info(f"Invoice {invoice_id} Kimi K3 extraction complete (period: {period_category}). Executing downstream deterministic engines...")
+                logger.info(f"Invoice {invoice_id} extraction complete (period: {period_category}). Executing downstream deterministic engines...")
         except Exception as exc:
             logger.exception(f"Error persisting extraction result for invoice {invoice_id}: {exc}")
             try:

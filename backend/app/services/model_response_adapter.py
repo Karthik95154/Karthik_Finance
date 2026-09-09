@@ -7,12 +7,12 @@ from app.services.financial_validator import parse_clean_numeric
 logger = logging.getLogger(__name__)
 
 
-class KimiK3ResponseAdapter:
+class ModelResponseAdapter:
     """
-    Normalizes the current NVIDIA NIM / Colab Kimi K3 response into the
+    Normalizes the AI model's fixed JSON response into the
     backend's internal application structure.
 
-    External model contract = fixed JSON structure used by the current Colab.
+    External model contract = fixed JSON structure (provider-independent).
     There is NO JSON-Schema lock here.
 
     The adapter intentionally keeps the external contract isolated from the
@@ -105,18 +105,18 @@ class KimiK3ResponseAdapter:
         return bool(value)
 
     @classmethod
-    def normalize_kimi_response(
+    def normalize_model_response(
         cls,
-        kimi_response: Dict[str, Any],
+        model_response: Dict[str, Any],
         user_zoho_coa: Optional[
             List[Dict[str, Any]]
         ] = None,
     ) -> Dict[str, Any]:
         """
-        Convert the current fixed JSON Colab response into the internal
+        Convert the AI model's fixed JSON response into the internal
         application structures.
 
-        Expected external top-level structure (Kimi_K3_NVIDIA_FixedJSON_Foreground_Live_FINAL.ipynb):
+        Expected external top-level structure (fixed JSON contract):
 
         invoice_details
         vendor_details
@@ -136,14 +136,14 @@ class KimiK3ResponseAdapter:
         """
 
         if not isinstance(
-            kimi_response,
+            model_response,
             dict,
         ):
             raise ValueError(
-                "Kimi K3 response must be a JSON object."
+                "Model response must be a JSON object."
             )
 
-        root = kimi_response
+        root = model_response
         if isinstance(root.get("prediction"), dict):
             root = root["prediction"]
         elif isinstance(root.get("data"), dict) and any(
@@ -152,7 +152,7 @@ class KimiK3ResponseAdapter:
             root = root["data"]
 
         # ---------------------------------------------------------
-        # Current Colab fixed JSON structure with root fallback
+        # Fixed JSON contract structure with root fallback
         # ---------------------------------------------------------
         invoice_details = (
             root.get("invoice_details")
@@ -171,6 +171,7 @@ class KimiK3ResponseAdapter:
 
         line_items = (
             root.get("line_items")
+            or invoice_details.get("line_items")
             or []
         )
 
@@ -259,7 +260,7 @@ class KimiK3ResponseAdapter:
             vendor_details.get("vendor_gstin") or vendor_details.get("gstin")
         )
         v_pan = cls._clean_optional_string(
-            vendor_details.get("vendor_pan") or vendor_details.get("pan")
+            vendor_details.get("vendor_pan") or vendor_details.get("pan") or vendor_details.get("pan_number")
         )
         v_phone = cls._clean_optional_string(
             vendor_details.get("vendor_phone") or vendor_details.get("phone")
@@ -669,9 +670,76 @@ class KimiK3ResponseAdapter:
             or "TDS proposal"
         )
 
-        # Statutory evaluation when VLM returns None (unresolved pending backend validation)
-        if tds_applicable_raw is None:
-            # Check statutory service categories and single-invoice thresholds
+        # Statutory evaluation: evaluate both line-item level composite services and header-level fallbacks
+        is_indiv = bool(v_pan and len(v_pan) >= 4 and v_pan[3].upper() in ("P", "H"))
+        
+        # 1. Inspect line items for specific statutory service classifications
+        line_tds_deductions = []
+        for l_idx, li in enumerate(normalized_line_items, 1):
+            li_desc = str(li.get("description") or "").upper()
+            li_sac = str(li.get("hsn_sac") or li.get("hsn_code") or "").upper()
+            li_taxable = float(li.get("taxable_amount") or li.get("line_amount") or 0.0)
+            combo_text = f"{li_desc} {li_sac}"
+
+            l_app = False
+            l_rate = 0.0
+            l_sec = None
+            l_prov = None
+
+            # Section 194J (IT audit, Technical, Consultancy, Professional, Legal)
+            if any(k in combo_text for k in ("9983", "9982", "AUDIT", "VULNERABILITY", "CONSULT", "TECHNICAL", "PROFESSIONAL", "SOFTWARE", "IT_SERVICE", "DEVELOPMENT", "LEGAL")):
+                l_sec = "194J"
+                l_prov = "Section 194J - Fees for Technical Services"
+                l_rate = 2.0 if any(t in combo_text for t in ("TECHNICAL", "IT", "AUDIT", "SOFTWARE", "SECURITY", "VULNERABILITY", "DEVELOPMENT")) else 10.0
+                # Single invoice line threshold Rs.30,000 or cumulative
+                l_app = (li_taxable >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED")
+            # Section 194I (Rent / Lease of Equipment vs Immovable Property)
+            elif any(k in combo_text for k in ("9972", "9973", "RENT", "RENTAL", "LEASE", "HIRING")):
+                l_sec = "194I"
+                l_prov = "Section 194I - Rent of Plant, Machinery or Equipment"
+                l_rate = 2.0 if any(m in combo_text for m in ("EQUIPMENT", "CCTV", "PLANT", "MACHINERY", "VEHICLE", "HARDWARE")) else 10.0
+                # Statutory annual threshold Rs.2,40,000 (monthly invoice line under threshold unless cumulative required)
+                l_app = (li_taxable >= 240000.0 or (cumulative_required and li_taxable >= 20000.0))
+            # Section 194C (Manpower, Security Guards, Contractor, Facilities, Transportation)
+            elif any(k in combo_text for k in ("9985", "MANPOWER", "GUARD", "FACILITY", "CONTRACTOR", "WORK_CONTRACT", "SUBCONTRACT", "TRANSPORT", "HOUSEKEEPING", "CLEANING")) or ("SECURITY" in combo_text and any(w in combo_text for w in ("GUARD", "PERSONNEL", "MANPOWER", "DEPLOYMENT", "FACILITY", "PATROL", "SURVEILLANCE"))):
+                l_sec = "194C"
+                l_prov = "Section 194C - Payments to Contractors / Manpower"
+                l_rate = 1.0 if is_indiv else 2.0
+                # Single invoice line threshold Rs.30,000 or cumulative
+                l_app = (li_taxable >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED")
+            # Section 194H (Commission / Brokerage)
+            elif any(k in combo_text for k in ("COMMISSION", "BROKERAGE")):
+                l_sec = "194H"
+                l_prov = "Section 194H - Commission or Brokerage"
+                l_rate = 2.0
+                l_app = (li_taxable >= 15000.0)
+
+            if l_app and li_taxable > 0:
+                l_tds_amt = round((li_taxable * l_rate) / 100.0, 2)
+                line_tds_deductions.append({
+                    "line_index": l_idx,
+                    "section": l_sec,
+                    "provision": l_prov,
+                    "rate": l_rate,
+                    "base_amount": li_taxable,
+                    "tds_amount": l_tds_amt,
+                })
+
+        # 2. Check if composite line-level statutory deduction exists
+        if line_tds_deductions:
+            tds_applicable = True
+            comp_base = round(sum(d["base_amount"] for d in line_tds_deductions), 2)
+            comp_tds_total = round(sum(d["tds_amount"] for d in line_tds_deductions), 2)
+            unique_sections = sorted(list(set(d["section"] for d in line_tds_deductions if d["section"])))
+            tds_provision = ", ".join(unique_sections)
+            tds_nature = "Composite Services (" + ", ".join(f"{d['section']}: Rs.{d['tds_amount']}" for d in line_tds_deductions) + ")"
+            tds_base = comp_base
+            proposed_tds = comp_tds_total
+            tds_rate = round((comp_tds_total / comp_base) * 100.0, 2) if comp_base > 0 else 2.0
+            tds_reason_parts = [f"{d['section']} on Rs.{d['base_amount']:,.2f}" for d in line_tds_deductions]
+            tds_reason = f"Composite statutory withholding: {', '.join(tds_reason_parts)}"
+        elif tds_applicable_raw is None:
+            # Fallback to header-level evaluation if no specific service lines triggered
             candidate_base = tds_base or subtotal_val or 0.0
             nature_check = (f"{tds_nature or ''} {tds_provision or ''}").upper()
 
@@ -681,7 +749,6 @@ class KimiK3ResponseAdapter:
             is_commission = any(k in nature_check for k in ("COMMISSION", "BROKERAGE", "194H"))
 
             if is_contractor:
-                # Single invoice >= 30,000 or cumulative required
                 if candidate_base >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
                     tds_applicable = True
                     if not tds_provision:
@@ -689,13 +756,10 @@ class KimiK3ResponseAdapter:
                     if not tds_nature:
                         tds_nature = "CONTRACTOR_WORK"
                     if tds_rate is None or tds_rate <= 0:
-                        # 4th char of PAN: 'P' or 'H' -> 1.0%, else 2.0%
-                        is_indiv = (v_pan and len(v_pan) >= 4 and v_pan[3].upper() in ("P", "H"))
                         tds_rate = 1.0 if is_indiv else 2.0
                 else:
                     tds_applicable = False
             elif is_prof_tech:
-                # Single invoice >= 30,000 or cumulative required
                 if candidate_base >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
                     tds_applicable = True
                     if not tds_provision:
@@ -851,11 +915,15 @@ class KimiK3ResponseAdapter:
         }
 
         return {
-            "raw_vlm_output": kimi_response,
+            "raw_vlm_output": model_response,
             "normalized_data": normalized_data,
             "normalized_accounting": normalized_accounting,
         }
 
 
-# Provider-independent alias for backend consistency
-ModelResponseAdapter = KimiK3ResponseAdapter
+    # Backward-compatibility alias for the renamed method
+    normalize_kimi_response = normalize_model_response
+
+
+# Backward-compatibility alias for legacy imports
+KimiK3ResponseAdapter = ModelResponseAdapter

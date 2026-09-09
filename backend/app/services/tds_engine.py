@@ -18,7 +18,12 @@ def resolve_tds_tax_details(
     """
     combined = f"{provision_raw or ''} {section_raw or ''} {nature_raw or ''}".upper()
 
-    if "393" in combined or "194J" in combined or "TECHNICAL" in combined or "PROFESSIONAL" in combined:
+    # Handle composite multi-section withholding (e.g., '194C, 194J')
+    if "COMPOSITE" in combined or ("," in (section_raw or "") and ("194C" in combined or "194J" in combined or "194I" in combined)):
+        sec = section_raw or "Composite"
+        prov = provision_raw if (provision_raw and "_" not in provision_raw) else f"Sections {sec} - Composite Statutory Withholding"
+        nat = nature_raw if (nature_raw and "_" not in nature_raw) else f"Composite Services ({sec})"
+    elif "393" in combined or "194J" in combined or "TECHNICAL" in combined or "PROFESSIONAL" in combined:
         sec = "194J / 393"
         prov = "Section 194J / 393 - Fees for Technical or Professional Services"
         nat = nature_raw if (nature_raw and "CLOUI" not in nature_raw and "_" not in nature_raw) else "Fees for Technical Services (FTS) & Cloud Infrastructure"

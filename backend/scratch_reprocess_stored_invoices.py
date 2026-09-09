@@ -6,7 +6,7 @@ import json
 from sqlalchemy import select
 from app.db.database import AsyncSessionLocal
 from app.db.models import Invoice
-from app.services.kimi_adapter import KimiK3ResponseAdapter
+from app.services.model_response_adapter import ModelResponseAdapter
 
 async def reprocess_invoices():
     async with AsyncSessionLocal() as session:
@@ -15,8 +15,8 @@ async def reprocess_invoices():
         updated_count = 0
         for inv in invoices:
             if inv.raw_vlm_output:
-                normalized = KimiK3ResponseAdapter.normalize_kimi_response(
-                    kimi_response=inv.raw_vlm_output,
+                normalized = ModelResponseAdapter.normalize_model_response(
+                    model_response=inv.raw_vlm_output,
                     user_zoho_coa=[],
                 )
                 inv.current_vlm_output = {"data": normalized["normalized_data"]}
