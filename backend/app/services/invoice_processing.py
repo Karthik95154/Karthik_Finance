@@ -638,8 +638,17 @@ async def process_accounting_downstream_background(invoice_id) -> None:
             if isinstance(coa_res, dict):
                 coa_lines = coa_res.get("accounting") or []
 
+        raw_vlm_output = invoice.raw_vlm_output or {}
+        tds_payload = {
+            **invoice_payload,
+            "raw_vlm_output": raw_vlm_output,
+            "tds_support": raw_vlm_output.get("tds_support"),
+        }
+        if isinstance(normalized_accounting_state, dict) and isinstance(normalized_accounting_state.get("tds_assessment"), dict):
+            tds_payload["tds_assessment"] = normalized_accounting_state["tds_assessment"]
+
         tds_task = tds_service.assess_tds(
-            invoice_json=invoice_payload,
+            invoice_json=tds_payload,
         )
 
         tds_res = await tds_task

@@ -691,28 +691,25 @@ class ModelResponseAdapter:
                 l_sec = "194J"
                 l_prov = "Section 194J - Fees for Technical Services"
                 l_rate = 2.0 if any(t in combo_text for t in ("TECHNICAL", "IT", "AUDIT", "SOFTWARE", "SECURITY", "VULNERABILITY", "DEVELOPMENT")) else 10.0
-                # Single invoice line threshold Rs.30,000 or cumulative
-                l_app = (li_taxable >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED")
+                l_app = (li_taxable > 0)
             # Section 194I (Rent / Lease of Equipment vs Immovable Property)
             elif any(k in combo_text for k in ("9972", "9973", "RENT", "RENTAL", "LEASE", "HIRING")):
                 l_sec = "194I"
                 l_prov = "Section 194I - Rent of Plant, Machinery or Equipment"
                 l_rate = 2.0 if any(m in combo_text for m in ("EQUIPMENT", "CCTV", "PLANT", "MACHINERY", "VEHICLE", "HARDWARE")) else 10.0
-                # Statutory annual threshold Rs.2,40,000 (monthly invoice line under threshold unless cumulative required)
-                l_app = (li_taxable >= 240000.0 or (cumulative_required and li_taxable >= 20000.0))
+                l_app = (li_taxable > 0)
             # Section 194C (Manpower, Security Guards, Contractor, Facilities, Transportation)
             elif any(k in combo_text for k in ("9985", "MANPOWER", "GUARD", "FACILITY", "CONTRACTOR", "WORK_CONTRACT", "SUBCONTRACT", "TRANSPORT", "HOUSEKEEPING", "CLEANING")) or ("SECURITY" in combo_text and any(w in combo_text for w in ("GUARD", "PERSONNEL", "MANPOWER", "DEPLOYMENT", "FACILITY", "PATROL", "SURVEILLANCE"))):
                 l_sec = "194C"
                 l_prov = "Section 194C - Payments to Contractors / Manpower"
                 l_rate = 1.0 if is_indiv else 2.0
-                # Single invoice line threshold Rs.30,000 or cumulative
-                l_app = (li_taxable >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED")
+                l_app = (li_taxable > 0)
             # Section 194H (Commission / Brokerage)
             elif any(k in combo_text for k in ("COMMISSION", "BROKERAGE")):
                 l_sec = "194H"
                 l_prov = "Section 194H - Commission or Brokerage"
                 l_rate = 2.0
-                l_app = (li_taxable >= 15000.0)
+                l_app = (li_taxable > 0)
 
             if l_app and li_taxable > 0:
                 l_tds_amt = round((li_taxable * l_rate) / 100.0, 2)
@@ -731,13 +728,22 @@ class ModelResponseAdapter:
             comp_base = round(sum(d["base_amount"] for d in line_tds_deductions), 2)
             comp_tds_total = round(sum(d["tds_amount"] for d in line_tds_deductions), 2)
             unique_sections = sorted(list(set(d["section"] for d in line_tds_deductions if d["section"])))
-            tds_provision = ", ".join(unique_sections)
-            tds_nature = "Composite Services (" + ", ".join(f"{d['section']}: Rs.{d['tds_amount']}" for d in line_tds_deductions) + ")"
+            
+            # If model already provided an explicit provision/section (e.g. 194C) and deductions are single-section, preserve it
+            if len(unique_sections) > 1:
+                tds_provision = ", ".join(unique_sections)
+                tds_nature = "Composite Services (" + ", ".join(f"{d['section']}: Rs.{d['tds_amount']}" for d in line_tds_deductions) + ")"
+                tds_rate = round((comp_tds_total / comp_base) * 100.0, 2) if comp_base > 0 else 2.0
+                tds_reason_parts = [f"{d['section']} on Rs.{d['base_amount']:,.2f}" for d in line_tds_deductions]
+                tds_reason = f"Composite statutory withholding: {', '.join(tds_reason_parts)}"
+            else:
+                tds_provision = tds_provision or (unique_sections[0] if unique_sections else "194J")
+                tds_nature = tds_nature or (line_tds_deductions[0].get("provision") if line_tds_deductions else "Statutory deduction")
+                tds_rate = tds_rate or (line_tds_deductions[0].get("rate") if line_tds_deductions else 2.0)
+                tds_reason = f"Statutory withholding under Section {tds_provision} on assessable value Rs.{comp_base:,.2f}"
+
             tds_base = comp_base
             proposed_tds = comp_tds_total
-            tds_rate = round((comp_tds_total / comp_base) * 100.0, 2) if comp_base > 0 else 2.0
-            tds_reason_parts = [f"{d['section']} on Rs.{d['base_amount']:,.2f}" for d in line_tds_deductions]
-            tds_reason = f"Composite statutory withholding: {', '.join(tds_reason_parts)}"
         elif tds_applicable_raw is None:
             # Fallback to header-level evaluation if no specific service lines triggered
             candidate_base = tds_base or subtotal_val or 0.0
@@ -749,7 +755,7 @@ class ModelResponseAdapter:
             is_commission = any(k in nature_check for k in ("COMMISSION", "BROKERAGE", "194H"))
 
             if is_contractor:
-                if candidate_base >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
+                if candidate_base > 0:
                     tds_applicable = True
                     if not tds_provision:
                         tds_provision = "194C"
@@ -760,7 +766,7 @@ class ModelResponseAdapter:
                 else:
                     tds_applicable = False
             elif is_prof_tech:
-                if candidate_base >= 30000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
+                if candidate_base > 0:
                     tds_applicable = True
                     if not tds_provision:
                         tds_provision = "194J"
@@ -771,7 +777,7 @@ class ModelResponseAdapter:
                 else:
                     tds_applicable = False
             elif is_rent:
-                if candidate_base >= 240000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
+                if candidate_base > 0:
                     tds_applicable = True
                     if not tds_provision:
                         tds_provision = "194I"
@@ -782,7 +788,7 @@ class ModelResponseAdapter:
                 else:
                     tds_applicable = False
             elif is_commission:
-                if candidate_base >= 15000.0 or cumulative_required or threshold_status == "CUMULATIVE_DATA_REQUIRED":
+                if candidate_base > 0:
                     tds_applicable = True
                     if not tds_provision:
                         tds_provision = "194H"

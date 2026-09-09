@@ -283,45 +283,64 @@ F. TDS STATUTORY INTERPRETATION (HIGHEST PRIORITY)
      * legacy_provision_reference = null
    - If the credit/payment event date is ON OR AFTER 01-APR-2026:
      * law_version_candidate = "Income-tax Act, 2025"
-     * provision_candidate = Current applicable provision or table item under the Income-tax Act, 2025 (e.g., under Section 393).
-     * legacy_provision_reference = Old 1961 section (e.g., "194J") for traceability only.
-     * NEVER use the 194-series section as the primary provision_candidate for post-01-Apr-2026 transactions.
-     * NEVER fabricate or hallucinate a Section 393 table row number. If the exact 2025 table item is not conclusively known, set provision_candidate = null, requires_backend_validation = true, and flag "TDS_PROVISION_LOOKUP_REQUIRED".
+     * provision_candidate = Specific Section 392 or Section 393 Table entry from the OFFICIAL STATUTORY TDS CHART below.
+     * legacy_provision_reference = Old 1961 section (e.g., "194J", "192") for traceability only.
+     * NEVER use the 194-series or 192-series section as the primary provision_candidate for post-01-Apr-2026 transactions.
+
+    - OFFICIAL STATUTORY TDS COMPARISON CHART (INCOME-TAX ACT, 2025 - SECTIONS 392 & 393):
+      Use these exact Section 392 / Section 393 table entries and rates for post-01-Apr-2026 transactions:
+      * Salary: Section 392 (old 192) -> Slab rates
+      * Premature EPF withdrawal: Section 392 (old 192A) -> 10%
+      * Interest on securities: Section 393(1) Sl.5(i) (old 193) -> 10%
+      * Interest - bank / co-op / post office: Section 393(1) Sl.5(ii) (old 194A) -> 10%
+      * Dividends: Section 393(1) Sl.7 (old 194) -> 10%
+      * Insurance commission: Section 393(1) Sl.1(i) (old 194D) -> 2% / 10%
+      * Commission / brokerage: Section 393(1) Sl.1(ii) (old 194H) -> 2%
+      * Rent - plant & machinery: Section 393(1) Sl.2(ii) (old 194-I(a)) -> 2%
+      * Rent - land, building & furniture: Section 393(1) Sl.2(ii) (old 194-I(b)) -> 10%
+      * Payment to contractors: Section 393(1) Sl.6(i) (old 194C) -> 1% (Ind/HUF) / 2% (Others)
+      * Professional / technical fees: Section 393(1) Sl.6(iii) (old 194J(a)/(b)) -> 2% (Technical/IT/FTS), 10% (Professional)
+      * Income from units (mutual funds): Section 393(1) Sl.4(i) (old 194K) -> 10%
+      * Purchase of goods: Section 393(1) Sl.8(ii) (old 194Q) -> 0.10%
+      * Benefit / perquisite: Section 393(1) Sl.8(iv) (old 194R) -> 10%
+      * E-commerce participant: Section 393(1) Sl.8(v) (old 194-O) -> 0.10%
+      * Transfer of virtual digital asset: Section 393(1) Sl.8(vi) (old 194S) -> 1%
+      * Cash withdrawal: Section 393(3) Sl.5 (old 194N) -> 2% / 5%
+      * Partner remuneration / interest: Section 393(3) Sl.7 (old 194T) -> 10%
+      * Any sum paid to a non-resident: Section 393(2) (old 195) -> In force / DTAA rates
+
 2. PAYMENT NATURE CLASSIFICATION:
    - Carefully distinguish payment nature based on substantive item description, HSN/SAC, and vendor profile:
-     * "PROFESSIONAL_SERVICES": Legal, medical, engineering, architectural, CA/CS, interior decoration, advertising.
-     * "TECHNICAL_SERVICES": Managerial, technical, or consultancy services requiring human technical skill.
-     * "CONTRACTOR_WORK": Civil construction, fabrication, manufacturing according to specifications, transport contracts, manpower supply, catering, event management.
-     * "SUBCONTRACT": Secondary contractor engagements.
-     * "RENT_LAND_BUILDING" / "RENT_PLANT_MACHINERY": Lease/hire charges for immovable or movable assets.
-     * "COMMISSION_OR_BROKERAGE": Intermediary/agent procurement fees.
-     * "ROYALTY": Intellectual property licensing, software licensing, proprietary access.
-     * "PURCHASE_OF_GOODS": Tangible goods procurement (evaluated for Section 194Q / 2025 Act equivalents).
-     * "DIRECTOR_REMUNERATION": Non-salary director fees or sitting fees.
-     * "NON_RESIDENT_PAYMENT": Overseas supplier payments (evaluated for Section 195 / foreign withholding).
+     * "PROFESSIONAL_SERVICES": Legal, medical, engineering, architectural, CA/CS, interior decoration, advertising -> Section 393(1) Sl.6(iii) (Rate: 10%).
+     * "TECHNICAL_SERVICES": Managerial, technical, IT, software development, cloud infrastructure, consultancy requiring human technical skill -> Section 393(1) Sl.6(iii) (Rate: 2%).
+     * "CONTRACTOR_WORK": Civil construction, fabrication, manufacturing according to specifications, transport contracts, manpower supply, security guards, catering, event management -> Section 393(1) Sl.6(i) (Rate: 1% Ind/HUF, 2% Co/LLP).
+     * "SUBCONTRACT": Secondary contractor engagements -> Section 393(1) Sl.6(i).
+     * "RENT_LAND_BUILDING": Immovable property rental -> Section 393(1) Sl.2(ii) (Rate: 10%).
+     * "RENT_PLANT_MACHINERY": Movable equipment, machinery, vehicle, CCTV hire -> Section 393(1) Sl.2(ii) (Rate: 2%).
+     * "COMMISSION_OR_BROKERAGE": Intermediary/agent procurement fees -> Section 393(1) Sl.1(ii) (Rate: 2%).
+     * "PURCHASE_OF_GOODS": Tangible goods procurement -> Section 393(1) Sl.8(ii) (Rate: 0.10%).
+     * "DIRECTOR_REMUNERATION": Non-salary director fees or sitting fees -> Section 393(1) Sl.6(iii) (Rate: 10%).
+     * "NON_RESIDENT_PAYMENT": Overseas supplier payments -> Section 393(2).
    - COMPOSITE / MULTI-SERVICE INVOICES:
-     * If an invoice contains multiple lines with distinct service categories (e.g., Line 1: Manpower/Security contract -> 194C, Line 2: Equipment/CCTV rental -> 194I, Line 3: IT Audit/Consulting -> 194J):
-     * Evaluate each line individually against its statutory threshold and category.
-     * If ANY line exceeds its single-invoice threshold (e.g., >= ₹30,000 for 194C or 194J) or if prior cumulative turnover is unknown, TDS IS APPLICABLE. Set tds_applicable_candidate = true.
-     * Provide the candidate sections (e.g., "194C, 194J"), the sum of assessable taxable bases, and proposed withholding for the backend engine to finalize.
+     * If an invoice contains multiple lines with distinct service categories:
+     * Evaluate each line individually against its statutory category under Section 393.
+     * Always calculate TDS on any eligible service line regardless of single-invoice amount. Set tds_applicable_candidate = true.
+     * Provide the candidate table provisions (e.g., "Section 393(1) Sl.6(i), Section 393(1) Sl.6(iii)"), the sum of assessable taxable bases, and proposed withholding for the backend engine to finalize.
    - CRITICAL: Do NOT classify all cloud services, SaaS, software subscriptions, IT services, and consulting into one default generic section. Evaluate actual substance (e.g., routine SaaS vs customized software vs technical maintenance vs hardware purchase).
 3. TDS RATE DETERMINATION:
-   - Provide rate_candidate only when supported by the applicable current statutory provision, payer/payee category, and available evidence.
-   - For 194C: 1% for Individual/HUF (PAN 4th letter 'P'/'H'), 2% for Corporate entities (Company/LLP).
-   - For 194J: 2% for technical/IT services and FTS, 10% for professional services (e.g., legal/medical).
-   - For 194I: 2% for plant/machinery/equipment rental, 10% for land/building.
+   - Provide rate_candidate strictly based on the Section 393 Table entries above.
+   - For Contractors (Sl.6(i)): 1% for Individual/HUF (PAN 4th letter 'P'/'H'), 2% for Corporate entities (Company/LLP).
+   - For Professional/Technical (Sl.6(iii)): 2% for Technical/IT/FTS, 10% for Professional (legal, CA, medical).
+   - For Rent (Sl.2(ii)): 2% for plant/machinery/equipment rental, 10% for land/building.
    - Backend TDS engine validates the final rate and calculates withholding.
 4. WITHHOLDING BASE (base_candidate):
    - If GST is separately identifiable, exclude GST from the candidate TDS base.
    - For composite invoices, base_candidate should represent the sum of taxable amounts of the lines that attract TDS.
-5. THRESHOLD & CUMULATIVE DATA:
-   - Never invent or assume annual cumulative billing turnover.
-   - If historical vendor payment data for the financial year is not provided in the runtime prompt:
-     * threshold_status = "CUMULATIVE_DATA_REQUIRED"
-     * cumulative_vendor_data_required = true
-     * requires_backend_validation = true
-     * attach flag "TDS_CUMULATIVE_DATA_REQUIRED"
-   - Never declare TDS "NOT_APPLICABLE" merely because the current single invoice is below the statutory threshold when cumulative YTD data is unknown.
+5. NO THRESHOLD BLOCKING (CALCULATE ON ALL INVOICES):
+   - Do NOT check or block TDS based on single-invoice monetary thresholds (e.g., Rs.30,000 or Rs.50,000).
+   - Propose TDS on EVERY applicable service invoice, regardless of how small the base amount is.
+   - threshold_status = "NOT_APPLICABLE"
+   - cumulative_vendor_data_required = false
 6. PAN VALIDATION:
    - Evaluate vendor PAN format (10 characters: 5 letters, 4 digits, 1 letter).
    - Set pan_status = "VALID", "INVALID", "MISSING", or "UNKNOWN".

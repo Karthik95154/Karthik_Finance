@@ -7,6 +7,147 @@ logger = logging.getLogger(__name__)
 PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$")
 
 
+# Complete Statutory TDS Comparison Table (Income-tax Act, 2025 - FY 2026-27)
+# Source: Official Income-tax Act, 2025 Sections 392, 393 & Comparison Chart
+STATUTORY_TDS_TABLE_2025 = {
+    "SALARY": {
+        "section": "Section 392",
+        "provision": "Section 392 - Salary",
+        "nature_of_payment": "Salary / Remuneration",
+        "default_rate": None,
+        "legacy_section": "192",
+    },
+    "EPF_PREMATURE": {
+        "section": "Section 392",
+        "provision": "Section 392 - Premature EPF Withdrawal",
+        "nature_of_payment": "Premature EPF Withdrawal",
+        "default_rate": 10.0,
+        "legacy_section": "192A",
+    },
+    "INTEREST_SECURITIES": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 5(i)] - Interest on Securities",
+        "nature_of_payment": "Interest on Securities",
+        "default_rate": 10.0,
+        "legacy_section": "193",
+    },
+    "INTEREST_OTHER": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 5(ii)] - Interest (Bank / Co-op / Post Office / Others)",
+        "nature_of_payment": "Interest Payments",
+        "default_rate": 10.0,
+        "legacy_section": "194A",
+    },
+    "DIVIDENDS": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 7] - Dividends",
+        "nature_of_payment": "Dividend Distribution",
+        "default_rate": 10.0,
+        "legacy_section": "194",
+    },
+    "INSURANCE_COMMISSION": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 1(i)] - Insurance Commission",
+        "nature_of_payment": "Insurance Commission",
+        "default_rate": 2.0,
+        "legacy_section": "194D",
+    },
+    "COMMISSION_BROKERAGE": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 1(ii)] - Commission or Brokerage",
+        "nature_of_payment": "Commission & Brokerage Payments",
+        "default_rate": 2.0,
+        "legacy_section": "194H",
+    },
+    "RENT_PLANT_MACHINERY": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 2(ii)] - Rent for Plant, Machinery or Equipment",
+        "nature_of_payment": "Rent of Plant, Machinery or Equipment",
+        "default_rate": 2.0,
+        "legacy_section": "194-I(a)",
+    },
+    "RENT_LAND_BUILDING": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 2(ii)] - Rent for Land, Building or Furniture",
+        "nature_of_payment": "Rent of Land, Building or Furniture",
+        "default_rate": 10.0,
+        "legacy_section": "194-I(b)",
+    },
+    "CONTRACTORS": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 6(i)] - Payments to Contractors and Sub-contractors",
+        "nature_of_payment": "Work Contracts & Sub-contractor Services",
+        "default_rate": 2.0,
+        "individual_rate": 1.0,
+        "legacy_section": "194C",
+    },
+    "PROFESSIONAL_TECHNICAL": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 6(iii)] - Professional and Technical Services",
+        "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+        "default_rate": 2.0,
+        "professional_rate": 10.0,
+        "legacy_section": "194J",
+    },
+    "MUTUAL_FUND_UNITS": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 4(i)] - Income from Units (Mutual Funds)",
+        "nature_of_payment": "Income from Units",
+        "default_rate": 10.0,
+        "legacy_section": "194K",
+    },
+    "PURCHASE_OF_GOODS": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+        "nature_of_payment": "Purchase of Goods",
+        "default_rate": 0.10,
+        "legacy_section": "194Q",
+    },
+    "BENEFIT_PERQUISITE": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 8(iv)] - Benefit or Perquisite",
+        "nature_of_payment": "Benefit or Perquisite in respect of Business",
+        "default_rate": 10.0,
+        "legacy_section": "194R",
+    },
+    "ECOMMERCE": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 8(v)] - E-commerce Participant",
+        "nature_of_payment": "E-commerce Participant Supply",
+        "default_rate": 0.10,
+        "legacy_section": "194-O",
+    },
+    "VIRTUAL_DIGITAL_ASSET": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 8(vi)] - Transfer of Virtual Digital Asset",
+        "nature_of_payment": "Transfer of Virtual Digital Asset",
+        "default_rate": 1.0,
+        "legacy_section": "194S",
+    },
+    "CASH_WITHDRAWAL": {
+        "section": "Section 393",
+        "provision": "Section 393(3) [Table Sl. No. 5] - Cash Withdrawal",
+        "nature_of_payment": "Cash Withdrawal",
+        "default_rate": 2.0,
+        "legacy_section": "194N",
+    },
+    "PARTNER_REMUNERATION": {
+        "section": "Section 393",
+        "provision": "Section 393(3) [Table Sl. No. 7] - Partner Remuneration or Interest",
+        "nature_of_payment": "Partner Remuneration or Interest",
+        "default_rate": 10.0,
+        "legacy_section": "194T",
+    },
+    "NON_RESIDENT": {
+        "section": "Section 393",
+        "provision": "Section 393(2) - Sum Paid to Non-Resident",
+        "nature_of_payment": "Non-Resident Payment / Foreign Remittance",
+        "default_rate": 20.0,
+        "legacy_section": "195",
+    },
+}
+
+
 def resolve_tds_tax_details(
     section_raw: Optional[str] = None,
     provision_raw: Optional[str] = None,
@@ -14,48 +155,70 @@ def resolve_tds_tax_details(
 ) -> Dict[str, str]:
     """
     Cleans raw/unformatted TDS section, provision, and nature of payment strings into
-    canonical Indian Income Tax statutory descriptions.
+    canonical Indian Income Tax statutory descriptions using STATUTORY_TDS_TABLE_2025.
     """
     combined = f"{provision_raw or ''} {section_raw or ''} {nature_raw or ''}".upper()
 
-    # Handle composite multi-section withholding (e.g., '194C, 194J')
-    if "COMPOSITE" in combined or ("," in (section_raw or "") and ("194C" in combined or "194J" in combined or "194I" in combined)):
+    # Handle Section 392 (Salaries / EPF)
+    if "392" in combined or "SALARY" in combined or "192" in combined or "EPF" in combined:
+        entry = STATUTORY_TDS_TABLE_2025["EPF_PREMATURE"] if "EPF" in combined else STATUTORY_TDS_TABLE_2025["SALARY"]
+        return {
+            "section": entry["section"],
+            "provision": entry["provision"],
+            "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else entry["nature_of_payment"],
+        }
+    # Handle composite multi-section withholding (e.g., 'Sl. 6(i), Sl. 6(iii)')
+    elif "COMPOSITE" in combined or ("," in (section_raw or "") and any(k in combined for k in ("194C", "194J", "194I", "SL. 6", "SL.6", "SL. 2"))):
         sec = section_raw or "Composite"
         prov = provision_raw if (provision_raw and "_" not in provision_raw) else f"Sections {sec} - Composite Statutory Withholding"
         nat = nature_raw if (nature_raw and "_" not in nature_raw) else f"Composite Services ({sec})"
-    elif "393" in combined or "194J" in combined or "TECHNICAL" in combined or "PROFESSIONAL" in combined:
-        sec = "194J / 393"
-        prov = "Section 194J / 393 - Fees for Technical or Professional Services"
-        nat = nature_raw if (nature_raw and "CLOUI" not in nature_raw and "_" not in nature_raw) else "Fees for Technical Services (FTS) & Cloud Infrastructure"
-    elif "194C" in combined or "CONTRACT" in combined or "SUB_CONTRACT" in combined:
-        sec = "194C"
-        prov = "Section 194C - Payments to Contractors and Sub-contractors"
-        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Work Contracts & Sub-contractor Services"
-    elif "194I" in combined or "RENT" in combined:
-        sec = "194I"
-        prov = "Section 194I - Rent for Land, Building, Plant or Machinery"
-        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Rent of Immovable Property / Equipment"
-    elif "194H" in combined or "COMMISSION" in combined or "BROKER" in combined:
-        sec = "194H"
-        prov = "Section 194H - Commission or Brokerage"
-        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Commission & Brokerage Payments"
-    elif "194Q" in combined or "PURCHASE" in combined or "GOODS" in combined:
-        sec = "194Q"
-        prov = "Section 194Q - Purchase of Goods"
-        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Purchase of Goods exceeding statutory threshold"
-    elif "194A" in combined or "INTEREST" in combined:
-        sec = "194A"
-        prov = "Section 194A - Interest other than Interest on Securities"
-        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Interest Payments"
+        return {"section": sec, "provision": prov, "nature_of_payment": nat}
+
+    # Match against STATUTORY_TDS_TABLE_2025
+    if any(k in combined for k in ("SL.6(III)", "SL. 6(III)", "393", "194J", "TECHNICAL", "PROFESSIONAL")):
+        entry = STATUTORY_TDS_TABLE_2025["PROFESSIONAL_TECHNICAL"]
+    elif any(k in combined for k in ("SL.6(I)", "SL. 6(I)", "194C", "CONTRACT", "SUB_CONTRACT", "MANPOWER", "GUARD")):
+        entry = STATUTORY_TDS_TABLE_2025["CONTRACTORS"]
+    elif any(k in combined for k in ("SL.2", "SL. 2", "RENT", "194I", "194-I")):
+        is_land = any(w in combined for w in ("LAND", "BUILDING", "FURNITURE", "IMMOVABLE"))
+        entry = STATUTORY_TDS_TABLE_2025["RENT_LAND_BUILDING"] if is_land else STATUTORY_TDS_TABLE_2025["RENT_PLANT_MACHINERY"]
+    elif any(k in combined for k in ("SL.1(II)", "SL. 1(II)", "COMMISSION", "BROKER", "194H")):
+        entry = STATUTORY_TDS_TABLE_2025["COMMISSION_BROKERAGE"]
+    elif any(k in combined for k in ("SL.1(I)", "SL. 1(I)", "INSURANCE", "194D")):
+        entry = STATUTORY_TDS_TABLE_2025["INSURANCE_COMMISSION"]
+    elif any(k in combined for k in ("SL.8(II)", "SL. 8(II)", "GOODS", "PURCHASE", "194Q")):
+        entry = STATUTORY_TDS_TABLE_2025["PURCHASE_OF_GOODS"]
+    elif any(k in combined for k in ("SL.8(IV)", "SL. 8(IV)", "PERQUISITE", "BENEFIT", "194R")):
+        entry = STATUTORY_TDS_TABLE_2025["BENEFIT_PERQUISITE"]
+    elif any(k in combined for k in ("SL.8(V)", "SL. 8(V)", "ECOMMERCE", "E-COMMERCE", "194-O", "194O")):
+        entry = STATUTORY_TDS_TABLE_2025["ECOMMERCE"]
+    elif any(k in combined for k in ("SL.8(VI)", "SL. 8(VI)", "VIRTUAL", "CRYPTO", "VDA", "194S")):
+        entry = STATUTORY_TDS_TABLE_2025["VIRTUAL_DIGITAL_ASSET"]
+    elif any(k in combined for k in ("SL.5(I)", "SL. 5(I)", "193")):
+        entry = STATUTORY_TDS_TABLE_2025["INTEREST_SECURITIES"]
+    elif any(k in combined for k in ("SL.5(II)", "SL. 5(II)", "INTEREST", "194A")):
+        entry = STATUTORY_TDS_TABLE_2025["INTEREST_OTHER"]
+    elif any(k in combined for k in ("SL.7", "DIVIDEND", "194")):
+        entry = STATUTORY_TDS_TABLE_2025["DIVIDENDS"]
+    elif any(k in combined for k in ("SL.4(I)", "SL. 4(I)", "MUTUAL", "194K")):
+        entry = STATUTORY_TDS_TABLE_2025["MUTUAL_FUND_UNITS"]
+    elif any(k in combined for k in ("194N", "CASH")):
+        entry = STATUTORY_TDS_TABLE_2025["CASH_WITHDRAWAL"]
+    elif any(k in combined for k in ("194T", "PARTNER")):
+        entry = STATUTORY_TDS_TABLE_2025["PARTNER_REMUNERATION"]
+    elif any(k in combined for k in ("195", "NON_RESIDENT", "FOREIGN")):
+        entry = STATUTORY_TDS_TABLE_2025["NON_RESIDENT"]
     else:
-        sec = section_raw if (section_raw and "_" not in section_raw) else "194J / 194C"
-        prov = provision_raw if (provision_raw and "_" not in provision_raw) else f"Section {sec} - Statutory Deduction"
-        nat = nature_raw if (nature_raw and "_" not in nature_raw) else "Technical / Professional Services"
+        return {
+            "section": "Section 393",
+            "provision": f"Section 393 - Statutory Deduction ({section_raw or 'Services'})",
+            "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else "Technical / Professional Services",
+        }
 
     return {
-        "section": sec,
-        "provision": prov,
-        "nature_of_payment": nat,
+        "section": entry["section"],
+        "provision": entry["provision"],
+        "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else entry["nature_of_payment"],
     }
 
 
@@ -422,6 +585,9 @@ class TDSEngine:
             if vendor_pan and not pan_valid:
                 computed_rate = 20.0
                 reason = "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+            elif "392" in sec_str or "EPF" in sec_str:
+                computed_rate = 10.0
+                reason = "Premature EPF Withdrawal TDS (10%) under Section 392"
             elif "CONTRACT" in sec_str or "194C" in sec_str:
                 computed_rate = 1.0 if individual else 2.0
                 reason = f"Contractor TDS ({computed_rate}%) for {'Individual/HUF' if individual else 'Company/Firm'}"

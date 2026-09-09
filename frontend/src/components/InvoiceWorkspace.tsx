@@ -4577,18 +4577,13 @@ export default function InvoiceWorkspace({
                           const natRaw = tdsResult.nature_of_payment;
                           const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
                           let displaySec = secRaw || "";
-                          if (isApp && (!displaySec || displaySec.includes("_"))) {
-                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displaySec = "194J / 393";
-                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displaySec = "194C";
-                            else if (combined.includes("194I") || combined.includes("RENT")) displaySec = "194I";
-                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displaySec = "194H";
-                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displaySec = "194Q";
-                            else displaySec = "194J";
+                          if (isApp && (!displaySec || displaySec.includes("_") || displaySec.includes("194"))) {
+                            displaySec = "Section 393";
                           }
                           return (
                             <input
                               type="text"
-                              placeholder="e.g. 194C, 194J, 194Q, 194I"
+                              placeholder="e.g. Section 393"
                               value={displaySec}
                               onChange={(e) => {
                                 const val = e.target.value;
@@ -4629,18 +4624,18 @@ export default function InvoiceWorkspace({
                           const natRaw = tdsResult.nature_of_payment;
                           const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
                           let displayProv = provRaw || "";
-                          if (isApp && (!displayProv || displayProv.includes("_"))) {
-                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displayProv = "Section 194J / 393 - Fees for Technical Services";
-                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displayProv = "Section 194C - Payments to Contractors and Sub-contractors";
-                            else if (combined.includes("194I") || combined.includes("RENT")) displayProv = "Section 194I - Rent for Property / Equipment";
-                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displayProv = "Section 194H - Commission or Brokerage";
-                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displayProv = "Section 194Q - Purchase of Goods";
-                            else displayProv = `Section ${secRaw || "194J"} - Statutory Deduction`;
+                          if (isApp && (!displayProv || displayProv.includes("_") || displayProv.includes("194"))) {
+                            if (combined.includes("393") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL") || combined.includes("194J")) displayProv = "Section 393(1) [Table Sl. No. 6(iii)] - Professional and Technical Services";
+                            else if (combined.includes("CONTRACT") || combined.includes("194C")) displayProv = "Section 393(1) [Table Sl. No. 6] - Payments to Contractors";
+                            else if (combined.includes("RENT") || combined.includes("194I")) displayProv = "Section 393(1) [Table Sl. No. 2] - Rent for Land, Building, Plant or Machinery";
+                            else if (combined.includes("COMMISSION") || combined.includes("194H")) displayProv = "Section 393(1) [Table Sl. No. 1] - Commission or Brokerage";
+                            else if (combined.includes("PURCHASE") || combined.includes("GOODS") || combined.includes("194Q")) displayProv = "Section 393(1) [Table Sl. No. 7] - Purchase of Goods";
+                            else displayProv = "Section 393 - Statutory Deduction";
                           }
                           return (
                             <input
                               type="text"
-                              placeholder="e.g. Section 194J - Fees for Technical Services"
+                              placeholder="e.g. Section 393(1) [Table Sl. No. 6(iii)] - Professional and Technical Services"
                               value={displayProv}
                               onChange={(e) => {
                                 const val = e.target.value;
