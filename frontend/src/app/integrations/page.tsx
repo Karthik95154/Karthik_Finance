@@ -337,7 +337,7 @@ function IntegrationsContent() {
         type: "info",
         message: "Zoho Books integration has been disconnected.",
       });
-      loadAllData();
+      loadAllData(true);
     } catch (err: any) {
       setNotification({
         type: "error",

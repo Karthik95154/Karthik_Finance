@@ -424,14 +424,25 @@ async def disconnect_zoho(
 ):
     """Disconnects Zoho integration and removes stored tokens for the tenant."""
     tenant_id = current_user.tenant_id
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
-    connection.status = "DISCONNECTED"
-    connection.encrypted_access_token = None
-    connection.encrypted_refresh_token = None
-    connection.token_expires_at = None
-    connection.organization_id = None
-    connection.organization_name = None
-    connection.updated_at = datetime.now(timezone.utc)
+    
+    # Query all active or existing ZohoConnection records for this tenant
+    result = await db.execute(select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id))
+    connections = result.scalars().all()
+    
+    if not connections:
+        connection = ZohoConnection(tenant_id=tenant_id, status="DISCONNECTED")
+        db.add(connection)
+        connections = [connection]
+
+    for conn in connections:
+        conn.status = "DISCONNECTED"
+        conn.encrypted_access_token = None
+        conn.encrypted_refresh_token = None
+        conn.token_expires_at = None
+        conn.organization_id = None
+        conn.organization_name = None
+        conn.updated_at = datetime.now(timezone.utc)
+    
     await db.commit()
 
     return {"status": "success", "message": "Zoho connection disconnected successfully."}
