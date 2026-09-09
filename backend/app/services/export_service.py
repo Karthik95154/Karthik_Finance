@@ -12,6 +12,7 @@ from app.storage.supabase_storage import storage_service
 from app.services.audit_service import audit_service
 from app.services.financial_validator import financial_validator
 from app.services.journal_generator import journal_generator
+from app.services.itc_engine import get_effective_itc_data, ITCStatus
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +217,111 @@ class InvoiceExportService:
                         )
                 acct_map[idx] = str(approved_acc_id)
 
-            # 8. Resolve Supply Type & TDS Configuration (Single Authoritative Source of Truth)
+            # 8. Dynamic Recipient Branch & Destination Resolution
+            branch_info = await master_data_service.resolve_zoho_destination_and_branch(
+                tenant_id=tenant_id,
+                db=db,
+                invoice_recipient_state=vlm_data.get("place_of_supply") or vlm_data.get("customer_state") or vlm_data.get("buyer_state"),
+                invoice_recipient_gstin=vlm_data.get("customer_gstin") or vlm_data.get("buyer_gstin"),
+                organization_id=current_org_id,
+            )
+            resolved_dest_code = branch_info.get("destination_state_code")
+            resolved_branch_id = branch_info.get("branch_id")
+
+            # 9. Generic Authoritative ITC Single Source of Truth
+            effective_itc = get_effective_itc_data(
+                invoice_or_data=invoice,
+                accounting_output=accounting,
+                recipient_state_code=resolved_dest_code,
+            )
+            itc_overall_status = effective_itc.get("status")
+            eligible_itc_total = float(effective_itc.get("eligible_itc") or 0.0)
+
+            # Strict Gating: Unreviewed GSTR-2B pending/mismatch or review-required cannot export
+            # If Finance explicitly approved the invoice (approval_status == 'APPROVED'), that constitutes authorized human review
+            is_finance_approved = (invoice.approval_status == "APPROVED")
+            if itc_overall_status in (
+                ITCStatus.REVIEW_REQUIRED.value,
+                ITCStatus.GSTR2B_PENDING.value,
+                ITCStatus.GSTR2B_MISMATCH.value,
+            ) and not effective_itc.get("is_hitl_overridden") and not is_finance_approved:
+                raise ValueError(
+                    f"Cannot export to Zoho: Invoice ITC status is '{itc_overall_status}' and requires Finance review. "
+                    f"Statutory ITC cannot be claimed or exported until resolved or approved by Finance."
+                )
+
+            # 10. Journal Auto-Refresh & Strict Reconciliation Guard
+            # Reconcile journal input tax debits against authoritative eligible ITC
+            journal_input_tax_debit = 0.0
+            from app.db.models import JournalLineModel
+            jl_query = select(JournalLineModel).where(
+                JournalLineModel.journal_entry_id == journal_entry.id,
+                JournalLineModel.line_type == "INPUT_TAX",
+            )
+            jl_res = await db.execute(jl_query)
+            jl_rows = jl_res.scalars().all() if jl_res else []
+            for jl in jl_rows:
+                journal_input_tax_debit += float(jl.debit or 0.0)
+            journal_input_tax_debit = round(journal_input_tax_debit, 2)
+
+            if abs(journal_input_tax_debit - eligible_itc_total) > 0.05:
+                logger.info(
+                    f"Journal input tax (₹{journal_input_tax_debit:.2f}) does not match authoritative ITC "
+                    f"(₹{eligible_itc_total:.2f}). Automatically refreshing journal to align with SSOT..."
+                )
+                from app.services.gst_engine import gst_engine
+                from app.services.tds_engine import get_effective_tds_data, tds_engine
+                gst_eval_tmp = gst_engine.evaluate_gst(vlm_data)
+                eff_tds_tmp = get_effective_tds_data(accounting)
+                tds_base_tmp = tds_engine.determine_tds_base_amount(vlm_data, eff_tds_tmp)
+                tds_calc_tmp = tds_engine.calculate_tds(
+                    applicable=bool(eff_tds_tmp.get("applicable")),
+                    section=eff_tds_tmp.get("section"),
+                    provision=eff_tds_tmp.get("provision"),
+                    nature_of_payment=eff_tds_tmp.get("nature_of_payment"),
+                    base_amount=tds_base_tmp,
+                    rate=eff_tds_tmp.get("rate"),
+                )
+                fin_val_tmp = financial_validator.validate_invoice(vlm_data, gst_eval_tmp)
+                refreshed_journal_dict = journal_generator.generate_journal(
+                    invoice_data=vlm_data,
+                    accounting_classification=accounting,
+                    gst_result=gst_eval_tmp,
+                    itc_result=effective_itc,
+                    tds_result=tds_calc_tmp,
+                    financial_validation_result=fin_val_tmp,
+                )
+                from app.services.journal_generator import sync_relational_journal
+                await sync_relational_journal(
+                    session=db,
+                    invoice_id=invoice.id,
+                    journal_dict=refreshed_journal_dict,
+                    tenant_id=tenant_id,
+                )
+                invoice.journal_entry = refreshed_journal_dict
+                invoice.itc_result = effective_itc
+                await db.flush()
+
+                # Re-verify journal balance & input tax after refresh
+                j_refreshed_total = float(refreshed_journal_dict.get("total_debit") or 0.0)
+                recheck_itc_tax = sum(
+                    float(l.get("debit") or 0.0)
+                    for l in refreshed_journal_dict.get("lines", [])
+                    if l.get("line_type") == "INPUT_TAX"
+                )
+                if abs(recheck_itc_tax - eligible_itc_total) > 0.05:
+                    raise ValueError(
+                        f"Cannot export to Zoho: Refreshed journal input tax (₹{recheck_itc_tax:.2f}) "
+                        f"still does not reconcile with authoritative eligible ITC (₹{eligible_itc_total:.2f})."
+                    )
+
+            # Map line-level ITC eligibility decisions for Zoho bill serialization
+            itc_lines_map = {
+                l.get("line_index"): l.get("zoho_itc_eligibility", "ineligible_others")
+                for l in effective_itc.get("line_item_breakdown", [])
+            }
+
+            # 11. Resolve Supply Type & TDS Configuration (Single Authoritative Source of Truth)
             from app.services.gst_engine import gst_engine
             gst_eval = gst_engine.evaluate_gst(vlm_data)
             supply_type = gst_eval.get("supply_type") or "INTRA_STATE"
@@ -450,6 +555,11 @@ class InvoiceExportService:
                     if project_id:
                         line_dict["project_id"] = project_id
 
+                    # Explicit Authoritative ITC SSOT Line Serialization for Zoho Books
+                    line_itc_decision = itc_lines_map.get(idx) or "ineligible_others"
+                    if line_tax_rate > 0:
+                        line_dict["itc_eligibility"] = line_itc_decision
+
                     bill_line_items.append(line_dict)
             else:
                 total_amt = float(vlm_data.get("total_amount") or 0.0)
@@ -496,6 +606,13 @@ class InvoiceExportService:
 
                 if zoho_tds_tax_id:
                     line_dict["tds_tax_id"] = zoho_tds_tax_id
+
+                # Explicit Authoritative ITC SSOT Line Serialization for fallback single line
+                line_itc_decision = itc_lines_map.get(1) or ("eligible" if eligible_itc_total > 0 else "ineligible_others")
+                if inv_default_tax_rate > 0:
+                    line_dict["itc_eligibility"] = line_itc_decision
+                bill_line_items.append(line_dict)
+
             # Zoho Payload TDS Safety Verification:
             # If TDS is not applicable, strictly strip tds_tax_id from all bill lines
             for line in bill_line_items:
@@ -512,13 +629,24 @@ class InvoiceExportService:
                 "line_items": bill_line_items,
             }
 
-            supplier_state_code = to_zoho_state_code(gst_eval.get("supplier_state_code") or gst_eval.get("supplier_state_name"))
-            pos_state_code = to_zoho_state_code(gst_eval.get("place_of_supply_state_code") or gst_eval.get("place_of_supply_state_name") or gst_eval.get("buyer_state_code"))
+            # Resolve Dynamic Source and Destination of Supply
+            from app.services.gst_engine import normalize_indian_state
+            sup_st_zoho, _, _ = normalize_indian_state(state_input=gst_eval.get("supplier_state_code") or gst_eval.get("supplier_state_name"))
+            if sup_st_zoho:
+                bill_payload["source_of_supply"] = sup_st_zoho
 
-            if supplier_state_code:
-                bill_payload["source_of_supply"] = supplier_state_code
-            if pos_state_code:
-                bill_payload["destination_of_supply"] = pos_state_code
+            # Dynamic Destination of Supply resolved from branch/organization matching
+            if resolved_dest_code:
+                bill_payload["destination_of_supply"] = resolved_dest_code
+            else:
+                pos_st_zoho, _, _ = normalize_indian_state(
+                    state_input=gst_eval.get("place_of_supply_state_code") or gst_eval.get("place_of_supply_state_name") or gst_eval.get("buyer_state_code")
+                )
+                if pos_st_zoho:
+                    bill_payload["destination_of_supply"] = pos_st_zoho
+
+            if resolved_branch_id:
+                bill_payload["branch_id"] = resolved_branch_id
 
             if vendor_gstin:
                 from app.services.gst_engine import validate_gstin

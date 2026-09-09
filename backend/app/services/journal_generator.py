@@ -434,23 +434,25 @@ class JournalGenerator:
                 )
             )
 
-        # Authoritative ITC Evaluation Consumption
-        itc_status = "ELIGIBLE"
-        eligible_tax = total_extracted_gst
-        blocked_tax = 0.0
+        # Authoritative ITC Evaluation Consumption via SSOT
+        from app.services.itc_engine import get_effective_itc_data, ITCStatus
+
+        # Resolve authoritative ITC data
+        effective_itc = get_effective_itc_data(
+            invoice_or_data={
+                **(invoice_data or {}),
+                "itc_result": itc_result,
+            },
+            accounting_output=accounting_classification,
+        )
+
+        itc_status = effective_itc.get("status") or "ELIGIBLE"
+        eligible_tax = self._clean_num(effective_itc.get("eligible_itc")) or 0.0
+        blocked_tax = self._clean_num(effective_itc.get("blocked_itc")) or 0.0
+        review_tax = self._clean_num(effective_itc.get("review_amount")) or 0.0
         reversal_tax = 0.0
-        review_tax = 0.0
 
-        if itc_result:
-            itc_status = itc_result.get("status") or "ELIGIBLE"
-            eligible_tax = self._clean_num(itc_result.get("eligible_itc") if itc_result.get("eligible_itc") is not None else itc_result.get("eligible_amount"))
-            if eligible_tax is None:
-                eligible_tax = total_extracted_gst if itc_status == "ELIGIBLE" else 0.0
-            blocked_tax = self._clean_num(itc_result.get("blocked_itc") if itc_result.get("blocked_itc") is not None else itc_result.get("ineligible_amount")) or 0.0
-            reversal_tax = self._clean_num(itc_result.get("reversal_itc")) or 0.0
-            review_tax = self._clean_num(itc_result.get("review_amount")) or 0.0
-
-        if itc_status == "INELIGIBLE":
+        if itc_status in (ITCStatus.INELIGIBLE_SECTION_17_5.value, ITCStatus.INELIGIBLE_OTHERS.value, "INELIGIBLE"):
             if total_extracted_gst > 0:
                 lines.append(
                     JournalLine(
@@ -461,11 +463,11 @@ class JournalGenerator:
                         credit=0.0,
                         amount=total_extracted_gst,
                         provenance="DETERMINISTIC",
-                        description=f"Ineligible/Blocked Input Tax under Sec 17(5) ({itc_result.get('rule_reference') if itc_result else 'Sec 17(5)'})",
+                        description=f"Ineligible Input Tax under {effective_itc.get('rule_reference') or 'Sec 17(5)'}",
                         cost_center=cost_center,
                         project=project,
                         department=department,
-                        rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 17(5)",
+                        rule_reference=effective_itc.get("rule_reference") or "CGST Act Sec 17(5)",
                     )
                 )
         elif itc_status == "ELIGIBLE":
@@ -537,9 +539,12 @@ class JournalGenerator:
                     )
                 )
         else:
-            # PARTIALLY_ELIGIBLE or REVIEW_REQUIRED
-            requires_review = True
-            warnings.append(f"ITC status is {itc_status}. Input tax requires verification.")
+            # PARTIALLY_ELIGIBLE, GSTR2B_PENDING, or REVIEW_REQUIRED
+            if itc_status in ("REVIEW_REQUIRED", ITCStatus.REVIEW_REQUIRED.value) or review_tax > 0:
+                requires_review = True
+                warnings.append(f"ITC status is {itc_status}. Input tax requires verification.")
+            else:
+                warnings.append(f"ITC status is {itc_status}. Booked with standard split.")
             
             # 1. Eligible Portion -> Input GST Asset
             if eligible_tax > 0:
@@ -616,7 +621,7 @@ class JournalGenerator:
                 )
 
             # 3. Review Required or Reversal Portion -> Preserved in Ineligible Tax Expense pending review
-            pending_review_amt = round(review_tax + reversal_tax, 2)
+            pending_review_amt = round(max(0.0, total_extracted_gst - eligible_tax - blocked_tax), 2)
             if pending_review_amt > 0:
                 lines.append(
                     JournalLine(

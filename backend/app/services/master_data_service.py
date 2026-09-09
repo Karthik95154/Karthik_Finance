@@ -456,6 +456,8 @@ class MasterDataService:
                     "tax_name": t.get("tax_name") or t.get("section") or "TDS Tax",
                     "tax_percentage": float(t.get("tax_percentage", 0.0)),
                     "tax_type": "TDS",
+                    "tax_section": t.get("section") or t.get("tax_specific_type"),
+                    "tax_description": t.get("tax_specific_type_desc") or t.get("description"),
                 })
             # Also capture any taxes or tax_groups returned in bill editpage
             for t in editpage.get("taxes", []):
@@ -464,6 +466,8 @@ class MasterDataService:
                     "tax_name": t.get("tax_name") or "GST Tax",
                     "tax_percentage": float(t.get("tax_percentage", 0.0)),
                     "tax_type": "GST",
+                    "tax_section": t.get("section"),
+                    "tax_description": t.get("description"),
                 })
             for tg in editpage.get("tax_groups", []):
                 tg_id = str(tg.get("tax_group_id") or tg.get("tax_id"))
@@ -478,6 +482,8 @@ class MasterDataService:
                     "tax_name": tg_name,
                     "tax_percentage": tg_pct,
                     "tax_type": "tax_group",
+                    "tax_section": None,
+                    "tax_description": None,
                 })
         except Exception as e:
             logger.warning(f"Failed to fetch bills/editpage tds_taxes: {e}")
@@ -498,12 +504,18 @@ class MasterDataService:
             name = tax_data.get("tax_name")
             percentage = float(tax_data.get("tax_percentage", 0.0))
             tax_type = tax_data.get("tax_type", "GST")
+            tax_section = tax_data.get("tax_section")
+            tax_description = tax_data.get("tax_description")
 
             if z_id in existing_map:
                 existing = existing_map[z_id]
                 existing.tax_name = name
                 existing.tax_percentage = percentage
                 existing.tax_type = tax_type
+                if tax_section:
+                    existing.tax_section = tax_section
+                if tax_description:
+                    existing.tax_description = tax_description
                 existing.organization_id = current_org_id
                 existing.updated_at = datetime.now(timezone.utc)
             else:
@@ -514,6 +526,8 @@ class MasterDataService:
                     tax_name=name,
                     tax_percentage=percentage,
                     tax_type=tax_type,
+                    tax_section=tax_section,
+                    tax_description=tax_description,
                 )
                 db.add(new_tax)
 
@@ -660,10 +674,20 @@ class MasterDataService:
     ) -> Optional[str]:
         """
         Dynamically resolves the Zoho Tax ID for TDS strictly scoped to the active Zoho organization_id.
+        Follows statutory priority matching:
+        1. Exact rate + Zoho Section Slug / ID Match
+        2. Exact rate + Normalized Clause / Provision Match (e.g. Sl 6(iii)(D)(b) vs D(a))
+        3. Exact rate + Operational Category Match (strictly excludes passive taxes like Dividend/Interest on service bills)
+        4. Safe single rate match
+        5. Ambiguity safety guard: Returns None if unresolved rather than guessing wrong tax
         """
         if not db:
             return None
 
+        if rate is None or float(rate) <= 0:
+            return None
+
+        clean_rate = float(rate)
         org_id = await self._resolve_organization_id(tenant_id, db, organization_id)
 
         try:
@@ -691,51 +715,140 @@ class MasterDataService:
         if not tds_taxes:
             return None
 
-        # Build search tokens from all AI/Finance approved inputs
-        combined_text = f"{provision or ''} {section or ''} {nature_of_payment or ''}".upper()
+        # Filter strictly active taxes matching the exact required rate (within 0.05% tolerance)
+        candidate_taxes = [
+            t for t in tds_taxes
+            if t.is_active and abs(float(t.tax_percentage or 0.0) - clean_rate) < 0.05
+        ]
 
-        # Keywords for statutory categories
-        category_keywords = {
-            "PROFESSIONAL": ["PROFESSIONAL", "TECHNICAL", "FEES", "393", "TABLE 6", "6(II)", "194J", "TECH", "LEGAL", "CONSULT"],
-            "CONTRACTOR": ["CONTRACTOR", "CONTRACT", "194C", "HUF", "SUB-CONTRACT"],
-            "RENT": ["RENT", "194I", "PLANT", "LAND", "BUILDING"],
-            "COMMISSION": ["COMMISSION", "BROKERAGE", "194H"],
-            "DIVIDEND": ["DIVIDEND", "DISTRIBUTION"],
-            "INTEREST": ["INTEREST", "SECURITIES"],
-            "PURCHASE": ["PURCHASE", "GOODS", "194Q"],
-        }
-
-        matched_category_keywords = []
-        for cat, kws in category_keywords.items():
-            if any(kw in combined_text for kw in kws):
-                matched_category_keywords.extend(kws)
-
-        if rate is None or float(rate) <= 0:
+        if not candidate_taxes:
             return None
 
-        clean_rate = float(rate)
+        # Normalize incoming inputs
+        from app.services.tds_engine import resolve_tds_tax_details, normalize_statutory_text
+        resolved_details = resolve_tds_tax_details(
+            section_raw=section,
+            provision_raw=provision,
+            nature_raw=nature_of_payment,
+            rate_hint=clean_rate,
+        )
+        target_slug = resolved_details.get("zoho_section_slug")
+        combined_text = f"{provision or ''} {section or ''} {nature_of_payment or ''}".upper()
+        norm_combined = normalize_statutory_text(combined_text)
 
-        # 1. Best match: Category keyword match AND exact rate match
-        if matched_category_keywords:
-            for t in tds_taxes:
-                t_name_upper = (t.tax_name or "").upper()
-                if any(kw in t_name_upper for kw in matched_category_keywords):
-                    if abs(float(t.tax_percentage) - clean_rate) < 0.05:
-                        return t.zoho_tax_id
+        # -----------------------------------------------------------------
+        # TIER 1: Exact Rate + Zoho Section Slug Match (Most authoritative)
+        # -----------------------------------------------------------------
+        if target_slug:
+            slug_matches = [
+                t for t in candidate_taxes
+                if (t.tax_section or "").lower() == target_slug.lower()
+            ]
+            if len(slug_matches) == 1:
+                return slug_matches[0].zoho_tax_id
+            elif len(slug_matches) > 1:
+                candidate_taxes = slug_matches
 
-        # 2. Strict exact rate match if unique or matching category
-        exact_rate_matches = [
-            t for t in tds_taxes
-            if abs(float(t.tax_percentage) - clean_rate) < 0.05
-        ]
-        if len(exact_rate_matches) == 1:
-            return exact_rate_matches[0].zoho_tax_id
-        elif len(exact_rate_matches) > 1 and matched_category_keywords:
-            for t in exact_rate_matches:
-                t_name_upper = (t.tax_name or "").upper()
-                if any(kw in t_name_upper for kw in matched_category_keywords):
-                    return t.zoho_tax_id
+        # -----------------------------------------------------------------
+        # TIER 2: Specific Clause / Token Disambiguation
+        # E.g. Subclauses: D(a) -> Technical Services vs D(b) -> Professional Fees
+        # -----------------------------------------------------------------
+        # Only run subclause disambiguation if invoice actually relates to professional/technical services
+        is_tech_prof_bill = any(k in norm_combined for k in ("TECHNICAL", "FTS", "CLOUD", "SOFTWARE", "IT SERVICE", "PROFESSIONAL", "LEGAL", "CONSULT", "FEES", "WITHHELD", "ROYALTY", "ARCHITECT", "SL 6 III", "194J"))
+        is_subclause_a = is_tech_prof_bill and any(k in norm_combined for k in ("D A", "TECHNICAL", "TECH SERVICES", "FTS", "CLOUD", "SOFTWARE", "IT SERVICE"))
+        is_subclause_b = is_tech_prof_bill and any(k in norm_combined for k in ("D B", "PROFESSIONAL", "LEGAL", "CONSULT", "FEES", "WITHHELD", "ROYALTY", "ARCHITECT"))
 
+        if is_subclause_a and not is_subclause_b:
+            sub_matches = [
+                t for t in candidate_taxes
+                if any(k in normalize_statutory_text(f"{t.tax_name} {t.tax_section} {t.tax_description}")
+                       for k in ("TECHNICAL", "TECH", "D A"))
+            ]
+            if len(sub_matches) == 1:
+                return sub_matches[0].zoho_tax_id
+            elif len(sub_matches) > 1:
+                candidate_taxes = sub_matches
+
+        elif is_subclause_b and not is_subclause_a:
+            sub_matches = [
+                t for t in candidate_taxes
+                if any(k in normalize_statutory_text(f"{t.tax_name} {t.tax_section} {t.tax_description}")
+                       for k in ("PROFESSIONAL", "FEES", "WITHHELD", "D B"))
+            ]
+            if len(sub_matches) == 1:
+                return sub_matches[0].zoho_tax_id
+            elif len(sub_matches) > 1:
+                candidate_taxes = sub_matches
+
+        # -----------------------------------------------------------------
+        # TIER 3: Operational Category Keyword Match
+        # (Strictly distinguishes Vendor operational taxes from passive taxes)
+        # -----------------------------------------------------------------
+        category_keywords = {
+            "PROFESSIONAL": ["PROFESSIONAL", "WITHHELD", "LEGAL", "CONSULT", "ARCHITECT", "MEDICAL", "ROYALTY"],
+            "TECHNICAL": ["TECHNICAL", "FTS", "CLOUD", "TECH", "SOFTWARE", "IT SERVICE"],
+            "CONTRACTOR": ["CONTRACTOR", "CONTRACT", "194C", "HUF", "SUB CONTRACT", "MANPOWER", "GUARD"],
+            "RENT": ["RENT", "194I", "PLANT", "LAND", "BUILDING", "FURNITURE", "MACHINERY"],
+            "COMMISSION": ["COMMISSION", "BROKERAGE", "194H", "BROKER"],
+            "PURCHASE": ["PURCHASE", "GOODS", "194Q"],
+            "DIVIDEND": ["DIVIDEND", "DISTRIBUTION"],
+            "INTEREST": ["INTEREST", "SECURITIES"],
+        }
+
+        # Identify which category the invoice belongs to
+        matched_categories = set()
+        for cat, kws in category_keywords.items():
+            if any(kw in norm_combined for kw in kws):
+                matched_categories.add(cat)
+
+        # If it's a vendor operational service/goods bill, strictly eliminate Dividend and Interest
+        is_vendor_bill = bool(matched_categories.intersection({"PROFESSIONAL", "TECHNICAL", "CONTRACTOR", "RENT", "COMMISSION", "PURCHASE"})) or any(
+            k in norm_combined for k in ("393", "194", "FEE", "SERVICE", "SUPPLY", "BILL")
+        )
+
+        if is_vendor_bill and not matched_categories.intersection({"DIVIDEND", "INTEREST"}):
+            non_passive = [
+                t for t in candidate_taxes
+                if not any(p in normalize_statutory_text(f"{t.tax_name} {t.tax_section} {t.tax_description}")
+                           for p in ("DIVIDEND", "INTEREST", "SECURITIES"))
+            ]
+            if len(non_passive) == 1:
+                return non_passive[0].zoho_tax_id
+            elif len(non_passive) > 1:
+                candidate_taxes = non_passive
+
+        # Attempt category keyword matching on remaining candidates
+        if matched_categories:
+            cat_tokens = []
+            for cat in matched_categories:
+                cat_tokens.extend(category_keywords[cat])
+            cat_matches = [
+                t for t in candidate_taxes
+                if any(kw in normalize_statutory_text(f"{t.tax_name} {t.tax_section} {t.tax_description}") for kw in cat_tokens)
+            ]
+            if len(cat_matches) == 1:
+                return cat_matches[0].zoho_tax_id
+
+        # -----------------------------------------------------------------
+        # TIER 4: Safe Unique Rate Match
+        # -----------------------------------------------------------------
+        if len(candidate_taxes) == 1:
+            # Final sanity guard: Don't pick passive Dividend/Interest for a vendor service invoice
+            t_cand = candidate_taxes[0]
+            cand_text = normalize_statutory_text(f"{t_cand.tax_name} {t_cand.tax_section} {t_cand.tax_description}")
+            if is_vendor_bill and any(p in cand_text for p in ("DIVIDEND", "INTEREST")):
+                return None
+            return t_cand.zoho_tax_id
+
+        # -----------------------------------------------------------------
+        # TIER 5: Ambiguity Guard
+        # Multiple active taxes exist at this rate and cannot be safely
+        # disambiguated. Fail safely rather than guessing an arbitrary tax.
+        # -----------------------------------------------------------------
+        logger.warning(
+            f"Ambiguous Zoho TDS tax resolution for tenant {tenant_id}: {len(candidate_taxes)} taxes match rate {clean_rate}% "
+            f"({[t.tax_name for t in candidate_taxes]}), but none uniquely matched statutory classification '{combined_text}'."
+        )
         return None
 
     async def sync_vendors(
@@ -831,6 +944,111 @@ class MasterDataService:
             }
             for v in vendors
         ]
+
+    async def resolve_zoho_destination_and_branch(
+        self,
+        tenant_id: str,
+        db: AsyncSession,
+        invoice_recipient_state: Optional[str] = None,
+        invoice_recipient_gstin: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Dynamically resolves the Zoho destination of supply (2-letter state code, e.g. 'TS', 'MH')
+        and matching Zoho branch_id without any hardcoded state codes.
+
+        Algorithm:
+        1. Query connected Zoho organization to inspect primary address and GSTIN.
+        2. Query Zoho branches API (GET /branches) to inspect all active branch registrations.
+        3. If a branch matches the invoice recipient GSTIN or recipient state, select that branch.
+        4. Otherwise fallback to the primary organization state and registration.
+        """
+        from app.services.gst_engine import normalize_indian_state
+
+        try:
+            conn = await self.get_or_create_zoho_connection(tenant_id, db)
+        except Exception as e:
+            logger.debug(f"DB/connection lookup skipped in branch resolution: {e}")
+            conn = None
+
+        if not conn or conn.status != "CONNECTED" or not conn.organization_id:
+            zoho_st, _, _ = normalize_indian_state(state_input=invoice_recipient_state, gstin=invoice_recipient_gstin)
+            return {
+                "destination_state_code": zoho_st,
+                "branch_id": None,
+                "source": "fallback_invoice",
+            }
+
+        target_zoho_st, target_num_st, _ = normalize_indian_state(
+            state_input=invoice_recipient_state, gstin=invoice_recipient_gstin
+        )
+
+        # 1. Fetch live branches from Zoho
+        branches = []
+        try:
+            res = await zoho_client_service._make_authorized_request(
+                connection=conn,
+                db=db,
+                method="GET",
+                endpoint_path="branches",
+            )
+            branches = res.get("branches") or []
+        except Exception as e:
+            logger.warning(f"Could not fetch Zoho branches: {e}")
+
+        matched_branch = None
+        # Match branch by GSTIN first
+        if invoice_recipient_gstin and branches:
+            clean_recip_gst = str(invoice_recipient_gstin).strip().upper()
+            for b in branches:
+                b_gst = str(b.get("tax_reg_no") or "").strip().upper()
+                if b_gst and b_gst == clean_recip_gst:
+                    matched_branch = b
+                    break
+
+        # Match branch by state if not matched by GSTIN
+        if not matched_branch and target_zoho_st and branches:
+            for b in branches:
+                b_st = str(b.get("address", {}).get("state_code") or b.get("address", {}).get("state") or "").strip().upper()
+                norm_b_st, _, _ = normalize_indian_state(state_input=b_st)
+                if norm_b_st and norm_b_st == target_zoho_st:
+                    matched_branch = b
+                    break
+
+        if matched_branch:
+            b_state = matched_branch.get("address", {}).get("state_code") or matched_branch.get("address", {}).get("state")
+            zoho_b_st, _, _ = normalize_indian_state(state_input=b_state)
+            return {
+                "destination_state_code": zoho_b_st or target_zoho_st,
+                "branch_id": matched_branch.get("branch_id"),
+                "branch_name": matched_branch.get("branch_name"),
+                "source": "zoho_branch_match",
+            }
+
+        # 2. Match against primary organization registration
+        try:
+            org_res = await zoho_client_service._make_authorized_request(
+                connection=conn,
+                db=db,
+                method="GET",
+                endpoint_path=f"organizations/{conn.organization_id}",
+            )
+            org = org_res.get("organization") or {}
+            org_st_raw = org.get("address", {}).get("state_code") or org.get("address", {}).get("state")
+            zoho_org_st, _, _ = normalize_indian_state(state_input=org_st_raw)
+            return {
+                "destination_state_code": zoho_org_st or target_zoho_st,
+                "branch_id": None,
+                "source": "zoho_org_primary",
+            }
+        except Exception as e:
+            logger.warning(f"Could not fetch Zoho organization details: {e}")
+
+        return {
+            "destination_state_code": target_zoho_st,
+            "branch_id": None,
+            "source": "invoice_recipient_fallback",
+        }
 
 
 master_data_service = MasterDataService()

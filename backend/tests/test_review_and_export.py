@@ -227,6 +227,8 @@ async def test_update_extraction_revalidates_and_preserves_raw_vlm(auth_headers)
                     "data": {
                         "vendor_name": "ABC Ltd Edited",
                         "vendor_gstin": "27ABCDE1234F1Z5",
+                        "customer_gstin": "27AABCS1429B1ZB",
+                        "place_of_supply": "27",
                         "subtotal": 10500.0,
                         "cgst_amount": 945.0,
                         "sgst_amount": 945.0,

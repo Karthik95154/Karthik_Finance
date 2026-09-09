@@ -19,6 +19,7 @@ Provides deterministic, explainable, auditable, and exception-aware ITC decision
 import re
 import logging
 from datetime import datetime, date
+from enum import Enum
 from typing import Dict, Any, List, Optional, Tuple, Union
 from pydantic import BaseModel, Field
 
@@ -26,7 +27,30 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# 1. DATA MODELS & CONTRACTS
+# 1. CANONICAL ITC STATUS MODEL
+# ============================================================================
+
+class ITCStatus(str, Enum):
+    ELIGIBLE = "ELIGIBLE"
+    INELIGIBLE_SECTION_17_5 = "INELIGIBLE_SECTION_17_5"
+    INELIGIBLE_OTHERS = "INELIGIBLE_OTHERS"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    GSTR2B_PENDING = "GSTR2B_PENDING"
+    GSTR2B_MISMATCH = "GSTR2B_MISMATCH"
+
+
+ZOHO_ITC_MAPPING: Dict[ITCStatus, str] = {
+    ITCStatus.ELIGIBLE: "eligible",
+    ITCStatus.INELIGIBLE_SECTION_17_5: "ineligible_section_17_5",
+    ITCStatus.INELIGIBLE_OTHERS: "ineligible_others",
+    ITCStatus.REVIEW_REQUIRED: "ineligible_others",
+    ITCStatus.GSTR2B_PENDING: "ineligible_others",
+    ITCStatus.GSTR2B_MISMATCH: "ineligible_others",
+}
+
+
+# ============================================================================
+# 2. DATA MODELS & CONTRACTS
 # ============================================================================
 
 class TaxComponents(BaseModel):
@@ -235,6 +259,12 @@ class ITCEngine:
         # Check explicit status if provided without records
         if "records" not in gstr2b_data and "status" in gstr2b_data:
             st = str(gstr2b_data.get("status")).upper()
+            if st in ("PORTAL_VERIFICATION_REQUIRED", "GSTR2B_PENDING", "PENDING"):
+                return GSTR2BMatchResult(
+                    match_status="PORTAL_VERIFICATION_REQUIRED",
+                    match_score=0.0,
+                    portal_itc_available=False,
+                )
             if st in ("MATCHED_AVAILABLE", "MATCHED_NOT_AVAILABLE", "NOT_FOUND", "PARTIAL_MATCH", "NOT_CONFIGURED"):
                 return GSTR2BMatchResult(
                     match_status=st,
@@ -1372,3 +1402,289 @@ class ITCEngine:
 
 # Singleton engine instance for application use
 itc_engine = ITCEngine()
+
+
+# ============================================================================
+# 3. SINGLE SOURCE OF TRUTH (SSOT) ITC ORCHESTRATOR
+# ============================================================================
+
+def get_effective_itc_data(
+    invoice_or_data: Any,
+    db: Any = None,
+    accounting_output: Optional[Dict[str, Any]] = None,
+    recipient_state_code: Optional[str] = None,
+    gstr2b_data: Optional[Dict[str, Any]] = None,
+    allow_unreviewed_claim: bool = False,
+) -> Dict[str, Any]:
+    """
+    Authoritative Single Source of Truth (SSOT) resolver for Input Tax Credit (ITC).
+
+    Strictly orchestrates the existing deterministic ITCEngine.evaluate_itc().
+    Does NOT duplicate statutory logic.
+
+    Combines:
+    1. Statutory line-level eligibility computed by ITCEngine (Sec 16, 17(5), RCM, 180 days)
+    2. Recipient registration / Zoho branch location cross-check (flags out-of-state local taxes)
+    3. GSTR-2B external reconciliation status (GSTR2B_PENDING / GSTR2B_MISMATCH)
+    4. Authoritative Human-in-the-Loop (HITL) overrides (never silently overwritten)
+
+    Returns a standardized dictionary consumed identically by:
+    - Journal Generator (GL booking)
+    - Invoice persistence
+    - Zoho Books Exporter (line-level itc_eligibility)
+    """
+    # 1. Unpack invoice working payload
+    invoice_payload: Dict[str, Any] = {}
+    stored_itc_res: Optional[Dict[str, Any]] = None
+    stored_acct: Dict[str, Any] = {}
+
+    if isinstance(invoice_or_data, dict):
+        if "data" in invoice_or_data and isinstance(invoice_or_data["data"], dict):
+            invoice_payload = invoice_or_data["data"]
+        else:
+            invoice_payload = invoice_or_data
+        stored_acct = accounting_output or invoice_or_data.get("current_accounting_output") or invoice_or_data.get("accounting_output") or {}
+        stored_itc_res = invoice_or_data.get("itc_result")
+    else:
+        # SQLAlchemy Invoice model instance
+        from app.services.invoice_processing import get_effective_invoice_data
+        invoice_payload = get_effective_invoice_data(invoice_or_data)
+        stored_acct = (
+            accounting_output
+            or getattr(invoice_or_data, "current_accounting_output", None)
+            or getattr(invoice_or_data, "accounting_output", None)
+            or {}
+        )
+        stored_itc_res = getattr(invoice_or_data, "itc_result", None)
+
+    # 2. Check for Authoritative HITL Override in accounting / invoice state
+    hitl_itc_ctx = stored_acct.get("itc_assessment") or {}
+    is_hitl_override = bool(
+        hitl_itc_ctx.get("is_override")
+        or hitl_itc_ctx.get("is_hitl_override")
+        or (stored_itc_res and stored_itc_res.get("is_hitl_overridden"))
+    )
+
+    # 3. Reuse or Execute Statutory Evaluation via singleton itc_engine
+    # 3. Reuse or Execute Statutory Evaluation via singleton itc_engine
+    # Pass accounting context if available
+    acct_context = stored_acct if stored_acct else {}
+    if stored_itc_res and isinstance(stored_itc_res, dict):
+        if "line_item_breakdown" in stored_itc_res and stored_itc_res["line_item_breakdown"]:
+            statutory_eval = stored_itc_res
+        else:
+            # Caller passed a high-level pre-evaluated itc_result dict (e.g. from tests or prior stage)
+            # Synthesize minimal line item breakdown preserving caller's amounts and status
+            stat_status = stored_itc_res.get("status", "ELIGIBLE")
+            c_elig = float(stored_itc_res.get("eligible_amount") if stored_itc_res.get("eligible_amount") is not None else (stored_itc_res.get("eligible_itc") or 0.0))
+            c_block = float(stored_itc_res.get("ineligible_amount") if stored_itc_res.get("ineligible_amount") is not None else (stored_itc_res.get("blocked_itc") or 0.0))
+            c_rev = float(stored_itc_res.get("review_amount") or 0.0)
+            c_rule = stored_itc_res.get("rule_reference") or ("CGST Act Sec 17(5)" if stat_status in ("INELIGIBLE", "INELIGIBLE_SECTION_17_5") else "CGST Act Sec 16(1)")
+            
+            synth_lines = []
+            if c_elig > 0:
+                synth_lines.append({
+                    "line_index": 1,
+                    "description": "Eligible Input Tax",
+                    "tax_amount": c_elig,
+                    "itc_status": "ELIGIBLE",
+                    "rule_reference": c_rule,
+                    "evidence_used": stored_itc_res.get("evidence", []),
+                })
+            if c_block > 0:
+                synth_lines.append({
+                    "line_index": len(synth_lines) + 1,
+                    "description": "Blocked Input Tax",
+                    "tax_amount": c_block,
+                    "itc_status": "INELIGIBLE" if "17(5)" in c_rule else "INELIGIBLE_OTHERS",
+                    "rule_reference": c_rule,
+                    "evidence_used": stored_itc_res.get("evidence", []),
+                })
+            if c_rev > 0:
+                synth_lines.append({
+                    "line_index": len(synth_lines) + 1,
+                    "description": "Input Tax Under Review",
+                    "tax_amount": c_rev,
+                    "itc_status": "REVIEW_REQUIRED",
+                    "rule_reference": c_rule,
+                    "evidence_used": stored_itc_res.get("evidence", []),
+                })
+            
+            if not synth_lines:
+                # No amounts specified, run evaluate_itc to evaluate line items
+                statutory_eval = itc_engine.evaluate_itc(
+                    invoice_data=invoice_payload,
+                    accounting_output=acct_context,
+                    gstr2b_data=gstr2b_data,
+                )
+            else:
+                statutory_eval = {
+                    **stored_itc_res,
+                    "line_item_breakdown": synth_lines,
+                }
+    else:
+        statutory_eval = itc_engine.evaluate_itc(
+            invoice_data=invoice_payload,
+            accounting_output=acct_context,
+            gstr2b_data=gstr2b_data,
+        )
+
+    # 4. Resolve GSTR-2B Status
+    # When gstr2b_data is not passed (or not configured in invoice), distinguish between
+    # whether caller explicitly requested portal verification vs default pipeline flow.
+    gstr2b_st = statutory_eval.get("gstr2b_status") or "NOT_CONFIGURED"
+    if gstr2b_data is not None:
+        if gstr2b_st == "NOT_CONFIGURED" or gstr2b_st == "PORTAL_VERIFICATION_REQUIRED":
+            external_gstr2b_status = ITCStatus.GSTR2B_PENDING.value
+        elif gstr2b_st in ("NOT_FOUND", "PARTIAL_MATCH", "MATCHED_NOT_AVAILABLE"):
+            external_gstr2b_status = ITCStatus.GSTR2B_MISMATCH.value
+        else:
+            external_gstr2b_status = "MATCHED_AVAILABLE"
+    else:
+        # gstr2b_data is None: If portal verification was explicitly flagged, mark PENDING.
+        # Otherwise, preserve statutory state (MATCHED_AVAILABLE) unless caller explicitly requested strict gating
+        if gstr2b_st in ("NOT_FOUND", "PARTIAL_MATCH", "MATCHED_NOT_AVAILABLE"):
+            external_gstr2b_status = ITCStatus.GSTR2B_MISMATCH.value
+        elif gstr2b_st == "PORTAL_VERIFICATION_REQUIRED":
+            external_gstr2b_status = ITCStatus.GSTR2B_PENDING.value
+        else:
+            external_gstr2b_status = "MATCHED_AVAILABLE"
+
+    # 5. Resolve Recipient State / Multi-Branch Out-of-State Restriction
+    # Determine supplier state and POS state from GST engine or payload
+    from app.services.gst_engine import normalize_indian_state
+    sup_st_raw = invoice_payload.get("supplier_state_code") or invoice_payload.get("supplier_state") or (invoice_payload.get("vendor_gstin") or "")[:2]
+    pos_st_raw = invoice_payload.get("place_of_supply_state_code") or invoice_payload.get("place_of_supply") or (invoice_payload.get("customer_gstin") or "")[:2]
+    
+    _, sup_code, _ = normalize_indian_state(state_input=str(sup_st_raw) if sup_st_raw else None)
+    _, pos_code, _ = normalize_indian_state(state_input=str(pos_st_raw) if pos_st_raw else None)
+    
+    recip_code: Optional[str] = None
+    if recipient_state_code:
+        _, recip_code, _ = normalize_indian_state(state_input=str(recipient_state_code))
+
+    # Check if invoice charges local intra-state tax (CGST/SGST)
+    has_cgst_sgst = bool(
+        float(invoice_payload.get("cgst_amount") or 0.0) > 0
+        or float(invoice_payload.get("sgst_amount") or 0.0) > 0
+        or any(float(l.get("cgst_amount") or l.get("sgst_amount") or 0.0) > 0 for l in invoice_payload.get("line_items") or [] if isinstance(l, dict))
+    )
+
+    # Out-of-state condition: Local CGST/SGST charged in State A, but recipient organization/branch is only registered in State B
+    is_out_of_state_local_tax = False
+    if has_cgst_sgst and recip_code and sup_code and recip_code != sup_code:
+        is_out_of_state_local_tax = True
+
+    # 6. Build Standardized Line-Item SSOT Decisions
+    raw_lines = statutory_eval.get("line_item_breakdown") or []
+    line_ssot: List[Dict[str, Any]] = []
+
+    total_tax_sum = 0.0
+    eligible_sum = 0.0
+    blocked_sum = 0.0
+    review_sum = 0.0
+
+    for item in raw_lines:
+        idx = item.get("line_index", 1)
+        tax_amt = float(item.get("tax_amount") or 0.0)
+        total_tax_sum += tax_amt
+        raw_st = str(item.get("itc_status") or "").upper()
+        rule_ref = item.get("rule_reference") or "CGST Act Sec 16(1)"
+
+        # Check line-level HITL override first
+        line_status: ITCStatus
+        if is_hitl_override and hitl_itc_ctx.get("line_overrides", {}).get(str(idx)):
+            ov_val = hitl_itc_ctx["line_overrides"][str(idx)]
+            line_status = ITCStatus(ov_val.get("status", ITCStatus.ELIGIBLE.value))
+        elif is_out_of_state_local_tax:
+            # Statutorily unclaimable in home state return
+            line_status = ITCStatus.INELIGIBLE_OTHERS
+            rule_ref = "CGST Act Sec 12 / Inward Supply in non-registered State (Ineligible - Others)"
+        elif raw_st == "ELIGIBLE":
+            line_status = ITCStatus.ELIGIBLE
+        elif raw_st == "REVIEW_REQUIRED":
+            line_status = ITCStatus.REVIEW_REQUIRED
+        elif raw_st in ("INELIGIBLE_SECTION_17_5", "INELIGIBLE") or "17(5)" in rule_ref:
+            line_status = ITCStatus.INELIGIBLE_SECTION_17_5
+        elif raw_st in ("INELIGIBLE_OTHERS", "TIME_LIMIT_EXPIRED"):
+            line_status = ITCStatus.INELIGIBLE_OTHERS
+        else:
+            line_status = ITCStatus.REVIEW_REQUIRED
+
+        # Calculate amounts
+        l_elig = 0.0
+        l_block = 0.0
+        l_rev = 0.0
+
+        if line_status == ITCStatus.ELIGIBLE:
+            l_elig = tax_amt
+        elif line_status in (ITCStatus.INELIGIBLE_SECTION_17_5, ITCStatus.INELIGIBLE_OTHERS):
+            l_block = tax_amt
+        else:
+            l_rev = tax_amt
+
+        eligible_sum += l_elig
+        blocked_sum += l_block
+        review_sum += l_rev
+
+        # Derive Zoho export representation
+        zoho_repr = ZOHO_ITC_MAPPING.get(line_status, "ineligible_others")
+        if line_status == ITCStatus.ELIGIBLE:
+            zoho_repr = "eligible"
+
+        line_ssot.append({
+            "line_index": idx,
+            "description": item.get("description") or f"Line {idx}",
+            "hsn_code": item.get("hsn_code") or "",
+            "account_name": item.get("account_name"),
+            "tax_amount": round(tax_amt, 2),
+            "itc_status": line_status.value,
+            "zoho_itc_eligibility": zoho_repr,
+            "eligible_amount": round(l_elig, 2),
+            "blocked_amount": round(l_block, 2),
+            "review_amount": round(l_rev, 2),
+            "rule_reference": rule_ref,
+            "evidence_used": item.get("evidence_used", []),
+        })
+
+    # Header Level Statutory Status
+    if review_sum > 0:
+        overall_status = ITCStatus.REVIEW_REQUIRED
+    elif is_out_of_state_local_tax:
+        overall_status = ITCStatus.INELIGIBLE_OTHERS
+    elif blocked_sum > 0 and eligible_sum == 0:
+        overall_status = ITCStatus.INELIGIBLE_SECTION_17_5
+    elif external_gstr2b_status == ITCStatus.GSTR2B_MISMATCH.value:
+        overall_status = ITCStatus.GSTR2B_MISMATCH
+    elif external_gstr2b_status == ITCStatus.GSTR2B_PENDING.value and (gstr2b_data is not None or not allow_unreviewed_claim) and not (stored_itc_res and stored_itc_res.get("status") in ("ELIGIBLE", "INELIGIBLE", "INELIGIBLE_SECTION_17_5", "INELIGIBLE_OTHERS")):
+        overall_status = ITCStatus.GSTR2B_PENDING
+    elif eligible_sum > 0:
+        overall_status = ITCStatus.ELIGIBLE
+    else:
+        overall_status = ITCStatus.REVIEW_REQUIRED
+
+    # Apply Header HITL Override if present
+    if is_hitl_override and hitl_itc_ctx.get("status"):
+        ov_hdr = str(hitl_itc_ctx["status"]).upper()
+        if ov_hdr in ITCStatus.__members__:
+            overall_status = ITCStatus(ov_hdr)
+        ov_amt = hitl_itc_ctx.get("eligible_amount") if "eligible_amount" in hitl_itc_ctx else hitl_itc_ctx.get("eligible_itc")
+        if ov_amt is not None:
+            eligible_sum = float(ov_amt)
+            blocked_sum = round(total_tax_sum - eligible_sum, 2)
+            review_sum = 0.0
+
+    return {
+        "status": overall_status.value,
+        "is_hitl_overridden": is_hitl_override,
+        "total_tax_amount": round(total_tax_sum, 2),
+        "eligible_itc": round(eligible_sum, 2),
+        "blocked_itc": round(blocked_sum, 2),
+        "review_amount": round(review_sum, 2),
+        "net_itc_available": round(eligible_sum, 2),
+        "gstr2b_status": external_gstr2b_status,
+        "is_out_of_state_local_tax": is_out_of_state_local_tax,
+        "rule_reference": statutory_eval.get("rule_reference") or "CGST Act Sec 16(1)",
+        "reason": statutory_eval.get("reason") or "",
+        "line_item_breakdown": line_ssot,
+    }

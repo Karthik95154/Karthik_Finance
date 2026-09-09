@@ -142,6 +142,8 @@ class TaxRate(Base):
     tax_name = Column(String(255), nullable=False)
     tax_percentage = Column(Float, nullable=False, default=0.0)
     tax_type = Column(String(50), nullable=False, default="GST")  # GST, TDS, TCS
+    tax_section = Column(String(100), nullable=True)  # Statutory/Zoho section slug, e.g. professional_fees, technical_services
+    tax_description = Column(String(255), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(
         DateTime(timezone=True),

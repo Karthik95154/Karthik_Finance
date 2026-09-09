@@ -289,12 +289,16 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
         # 2. Call Deterministic Stage 4 GST Engine
         gst_result = gst_engine.evaluate_gst(invoice_payload)
 
-        # 3. Call Deterministic Stage 4 ITC Engine
+        # 3. Call Deterministic Stage 4 ITC Engine via SSOT
+        from app.services.itc_engine import get_effective_itc_data
         combined_accounting_context = {
             "accounting": accounting_lines,
             "tds_assessment": tds_assessment,
         }
-        itc_result = itc_engine.evaluate_itc(invoice_payload, combined_accounting_context)
+        itc_result = get_effective_itc_data(
+            invoice_or_data=invoice_payload,
+            accounting_output=combined_accounting_context,
+        )
 
         # 4. Call Deterministic Stage 5 Financial Validator
         financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
@@ -344,6 +348,7 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             },
             "tds_final": final_tds_calc,
             "tds": final_tds_calc,
+            "itc_assessment": itc_result,
         }
 
         # 6. Call Deterministic Stage 6 Journal Generator (Double-Entry General Ledger Preview)
@@ -665,12 +670,16 @@ async def process_accounting_downstream_background(invoice_id) -> None:
         # Deterministic Stage 4 GST Engine
         gst_result = gst_engine.evaluate_gst(invoice_payload)
 
-        # Deterministic Stage 4 ITC Engine
+        # Deterministic Stage 4 ITC Engine via SSOT
+        from app.services.itc_engine import get_effective_itc_data
         combined_accounting_context = {
             "accounting": accounting_lines,
             "tds_assessment": tds_assessment,
         }
-        itc_result = itc_engine.evaluate_itc(invoice_payload, combined_accounting_context)
+        itc_result = get_effective_itc_data(
+            invoice_or_data=invoice_payload,
+            accounting_output=combined_accounting_context,
+        )
 
         # Deterministic Stage 5 Financial Validator
         financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
@@ -719,6 +728,7 @@ async def process_accounting_downstream_background(invoice_id) -> None:
             },
             "tds_final": final_tds_calc,
             "tds": final_tds_calc,
+            "itc_assessment": itc_result,
         }
 
         # Deterministic Stage 6 Journal Generator

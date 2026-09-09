@@ -30,6 +30,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Interest on Securities",
         "default_rate": 10.0,
         "legacy_section": "193",
+        "zoho_section_slug": "income_interest_on_securities",
     },
     "INTEREST_OTHER": {
         "section": "Section 393",
@@ -37,6 +38,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Interest Payments",
         "default_rate": 10.0,
         "legacy_section": "194A",
+        "zoho_section_slug": "income_other_interest_on_securities_specified_person",
     },
     "DIVIDENDS": {
         "section": "Section 393",
@@ -44,6 +46,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Dividend Distribution",
         "default_rate": 10.0,
         "legacy_section": "194",
+        "zoho_section_slug": "dividend",
     },
     "INSURANCE_COMMISSION": {
         "section": "Section 393",
@@ -51,6 +54,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Insurance Commission",
         "default_rate": 2.0,
         "legacy_section": "194D",
+        "zoho_section_slug": "insurance_commission",
     },
     "COMMISSION_BROKERAGE": {
         "section": "Section 393",
@@ -58,6 +62,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Commission & Brokerage Payments",
         "default_rate": 2.0,
         "legacy_section": "194H",
+        "zoho_section_slug": "commission_or_brokerage",
     },
     "RENT_PLANT_MACHINERY": {
         "section": "Section 393",
@@ -65,6 +70,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Rent of Plant, Machinery or Equipment",
         "default_rate": 2.0,
         "legacy_section": "194-I(a)",
+        "zoho_section_slug": "rent_plant_machinery",
     },
     "RENT_LAND_BUILDING": {
         "section": "Section 393",
@@ -72,6 +78,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Rent of Land, Building or Furniture",
         "default_rate": 10.0,
         "legacy_section": "194-I(b)",
+        "zoho_section_slug": "rent_land_building",
     },
     "CONTRACTORS": {
         "section": "Section 393",
@@ -80,6 +87,31 @@ STATUTORY_TDS_TABLE_2025 = {
         "default_rate": 2.0,
         "individual_rate": 1.0,
         "legacy_section": "194C",
+        "zoho_section_slug": "payment_contractors_and_professionals",
+    },
+    "CONTRACTORS_INDIVIDUAL": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 6(i)] - Payments to Contractors (Individual/HUF)",
+        "nature_of_payment": "Contractor Services (Individual / HUF)",
+        "default_rate": 1.0,
+        "legacy_section": "194C",
+        "zoho_section_slug": "contract_payments_individual_or_huf",
+    },
+    "TECHNICAL_SERVICES": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+        "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+        "default_rate": 2.0,
+        "legacy_section": "194J(1)(b)",
+        "zoho_section_slug": "technical_services",
+    },
+    "PROFESSIONAL_SERVICES": {
+        "section": "Section 393",
+        "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+        "nature_of_payment": "Professional Services & Consultancy",
+        "default_rate": 10.0,
+        "legacy_section": "194J(1)(a)",
+        "zoho_section_slug": "professional_fees",
     },
     "PROFESSIONAL_TECHNICAL": {
         "section": "Section 393",
@@ -88,6 +120,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "default_rate": 2.0,
         "professional_rate": 10.0,
         "legacy_section": "194J",
+        "zoho_section_slug": "technical_services",
     },
     "MUTUAL_FUND_UNITS": {
         "section": "Section 393",
@@ -95,6 +128,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Income from Units",
         "default_rate": 10.0,
         "legacy_section": "194K",
+        "zoho_section_slug": "income_units",
     },
     "PURCHASE_OF_GOODS": {
         "section": "Section 393",
@@ -102,6 +136,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Purchase of Goods",
         "default_rate": 0.10,
         "legacy_section": "194Q",
+        "zoho_section_slug": "purchase_of_goods",
     },
     "BENEFIT_PERQUISITE": {
         "section": "Section 393",
@@ -109,6 +144,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Benefit or Perquisite in respect of Business",
         "default_rate": 10.0,
         "legacy_section": "194R",
+        "zoho_section_slug": "benefit_or_perquisite",
     },
     "ECOMMERCE": {
         "section": "Section 393",
@@ -116,6 +152,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "E-commerce Participant Supply",
         "default_rate": 0.10,
         "legacy_section": "194-O",
+        "zoho_section_slug": "e_commerce_operator",
     },
     "VIRTUAL_DIGITAL_ASSET": {
         "section": "Section 393",
@@ -123,6 +160,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Transfer of Virtual Digital Asset",
         "default_rate": 1.0,
         "legacy_section": "194S",
+        "zoho_section_slug": "virtual_digital_asset",
     },
     "CASH_WITHDRAWAL": {
         "section": "Section 393",
@@ -130,6 +168,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Cash Withdrawal",
         "default_rate": 2.0,
         "legacy_section": "194N",
+        "zoho_section_slug": "cash_withdrawal",
     },
     "PARTNER_REMUNERATION": {
         "section": "Section 393",
@@ -137,6 +176,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Partner Remuneration or Interest",
         "default_rate": 10.0,
         "legacy_section": "194T",
+        "zoho_section_slug": "partner_remuneration",
     },
     "NON_RESIDENT": {
         "section": "Section 393",
@@ -144,81 +184,139 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Non-Resident Payment / Foreign Remittance",
         "default_rate": 20.0,
         "legacy_section": "195",
+        "zoho_section_slug": "non_resident_payments",
     },
 }
+
+
+def normalize_statutory_text(text: Optional[str]) -> str:
+    """
+    Normalizes statutory text (removing dots, extra spaces, brackets) for robust comparison.
+    E.g., 'Section 393(1) SI6(iii)(D)(b) - Fees' -> 'SECTION 393 1 SL 6 III D B FEES'
+    """
+    if not text:
+        return ""
+    s = str(text).upper()
+    # Normalize SI/Sl -> SL
+    s = re.sub(r"\bSI\b", "SL", s)
+    s = re.sub(r"\bSI(\d)", r"SL \1", s)
+    s = re.sub(r"\bSL(\d)", r"SL \1", s)
+    # Replace punctuation with spaces
+    s = re.sub(r"[\[\]\(\)\-\.,_/:;]", " ", s)
+    # Normalize multiple whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 def resolve_tds_tax_details(
     section_raw: Optional[str] = None,
     provision_raw: Optional[str] = None,
     nature_raw: Optional[str] = None,
+    rate_hint: Optional[float] = None,
 ) -> Dict[str, str]:
     """
     Cleans raw/unformatted TDS section, provision, and nature of payment strings into
     canonical Indian Income Tax statutory descriptions using STATUTORY_TDS_TABLE_2025.
+    Respects rate_hint (e.g. 10% vs 2%) to disambiguate subclauses when available.
     """
     combined = f"{provision_raw or ''} {section_raw or ''} {nature_raw or ''}".upper()
+    norm = normalize_statutory_text(combined)
 
     # Handle Section 392 (Salaries / EPF)
-    if "392" in combined or "SALARY" in combined or "192" in combined or "EPF" in combined:
-        entry = STATUTORY_TDS_TABLE_2025["EPF_PREMATURE"] if "EPF" in combined else STATUTORY_TDS_TABLE_2025["SALARY"]
+    if "392" in norm or "SALARY" in norm or "192" in norm or "EPF" in norm:
+        entry = STATUTORY_TDS_TABLE_2025["EPF_PREMATURE"] if "EPF" in norm else STATUTORY_TDS_TABLE_2025["SALARY"]
         return {
             "section": entry["section"],
             "provision": entry["provision"],
             "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else entry["nature_of_payment"],
+            "zoho_section_slug": entry.get("zoho_section_slug"),
         }
     # Handle composite multi-section withholding (e.g., 'Sl. 6(i), Sl. 6(iii)')
-    elif "COMPOSITE" in combined or ("," in (section_raw or "") and any(k in combined for k in ("194C", "194J", "194I", "SL. 6", "SL.6", "SL. 2"))):
+    elif "COMPOSITE" in norm or ("," in (section_raw or "") and any(k in norm for k in ("194C", "194J", "194I", "SL 6", "SL 2"))):
         sec = section_raw or "Composite"
         prov = provision_raw if (provision_raw and "_" not in provision_raw) else f"Sections {sec} - Composite Statutory Withholding"
         nat = nature_raw if (nature_raw and "_" not in nature_raw) else f"Composite Services ({sec})"
-        return {"section": sec, "provision": prov, "nature_of_payment": nat}
+        return {"section": sec, "provision": prov, "nature_of_payment": nat, "zoho_section_slug": None}
 
-    # Match against STATUTORY_TDS_TABLE_2025
-    if any(k in combined for k in ("SL.6(III)", "SL. 6(III)", "393", "194J", "TECHNICAL", "PROFESSIONAL")):
-        entry = STATUTORY_TDS_TABLE_2025["PROFESSIONAL_TECHNICAL"]
-    elif any(k in combined for k in ("SL.6(I)", "SL. 6(I)", "194C", "CONTRACT", "SUB_CONTRACT", "MANPOWER", "GUARD")):
-        entry = STATUTORY_TDS_TABLE_2025["CONTRACTORS"]
-    elif any(k in combined for k in ("SL.2", "SL. 2", "RENT", "194I", "194-I")):
-        is_land = any(w in combined for w in ("LAND", "BUILDING", "FURNITURE", "IMMOVABLE"))
+    # Match against STATUTORY_TDS_TABLE_2025 with strict clause & rate disambiguation
+    is_explicit_fts = (
+        any(k in norm for k in ("D A", "TECHNICAL", "TECH SERVICES", "FTS", "CLOUD", "SOFTWARE", "IT SERVICE"))
+        or (rate_hint is not None and abs(rate_hint - 2.0) < 0.05 and any(k in norm for k in ("393", "194J", "SL 6 III")))
+    )
+    is_explicit_prof = (
+        any(k in norm for k in ("D B", "PROFESSIONAL", "LEGAL", "CONSULTING", "ARCHITECT", "MEDICAL", "ROYALTY"))
+        or (rate_hint is not None and abs(rate_hint - 10.0) < 0.05 and any(k in norm for k in ("393", "194J", "SL 6 III", "FEES", "WITHHELD")))
+    )
+
+    # 1. First check explicit specific provisions / categories
+    tokens = set(norm.split())
+    is_contractor = (
+        ("SL 6 I" in norm and "SL 6 III" not in norm and "SL 6 II" not in norm)
+        or any(k in norm for k in ("194C", "CONTRACT", "SUB CONTRACT", "MANPOWER", "GUARD"))
+    )
+    if is_contractor and not any(k in norm for k in ("FTS", "TECHNICAL", "PROFESSIONAL", "LEGAL", "CONSULT")):
+        if rate_hint is not None and abs(rate_hint - 1.0) < 0.05:
+            entry = STATUTORY_TDS_TABLE_2025["CONTRACTORS_INDIVIDUAL"]
+        else:
+            entry = STATUTORY_TDS_TABLE_2025["CONTRACTORS"]
+    elif any(k in norm for k in ("SL 2", "RENT", "194I", "194 I")):
+        is_land = any(w in norm for w in ("LAND", "BUILDING", "FURNITURE", "IMMOVABLE"))
+        if rate_hint is not None and abs(rate_hint - 10.0) < 0.05:
+            is_land = True
+        elif rate_hint is not None and abs(rate_hint - 2.0) < 0.05:
+            is_land = False
         entry = STATUTORY_TDS_TABLE_2025["RENT_LAND_BUILDING"] if is_land else STATUTORY_TDS_TABLE_2025["RENT_PLANT_MACHINERY"]
-    elif any(k in combined for k in ("SL.1(II)", "SL. 1(II)", "COMMISSION", "BROKER", "194H")):
+    elif any(k in norm for k in ("SL 1 II", "COMMISSION", "BROKER", "194H")):
         entry = STATUTORY_TDS_TABLE_2025["COMMISSION_BROKERAGE"]
-    elif any(k in combined for k in ("SL.1(I)", "SL. 1(I)", "INSURANCE", "194D")):
+    elif any(k in norm for k in ("SL 1 I", "INSURANCE", "194D")):
         entry = STATUTORY_TDS_TABLE_2025["INSURANCE_COMMISSION"]
-    elif any(k in combined for k in ("SL.8(II)", "SL. 8(II)", "GOODS", "PURCHASE", "194Q")):
+    elif any(k in norm for k in ("SL 8 II", "GOODS", "PURCHASE", "194Q")):
         entry = STATUTORY_TDS_TABLE_2025["PURCHASE_OF_GOODS"]
-    elif any(k in combined for k in ("SL.8(IV)", "SL. 8(IV)", "PERQUISITE", "BENEFIT", "194R")):
+    elif any(k in norm for k in ("SL 8 IV", "PERQUISITE", "BENEFIT", "194R")):
         entry = STATUTORY_TDS_TABLE_2025["BENEFIT_PERQUISITE"]
-    elif any(k in combined for k in ("SL.8(V)", "SL. 8(V)", "ECOMMERCE", "E-COMMERCE", "194-O", "194O")):
+    elif any(k in norm for k in ("SL 8 V", "ECOMMERCE", "E COMMERCE", "194 O")):
         entry = STATUTORY_TDS_TABLE_2025["ECOMMERCE"]
-    elif any(k in combined for k in ("SL.8(VI)", "SL. 8(VI)", "VIRTUAL", "CRYPTO", "VDA", "194S")):
+    elif any(k in norm for k in ("SL 8 VI", "VIRTUAL", "CRYPTO", "VDA", "194S")):
         entry = STATUTORY_TDS_TABLE_2025["VIRTUAL_DIGITAL_ASSET"]
-    elif any(k in combined for k in ("SL.5(I)", "SL. 5(I)", "193")):
+    elif any(k in norm for k in ("SL 5 I", " 193 ", " 193")):
         entry = STATUTORY_TDS_TABLE_2025["INTEREST_SECURITIES"]
-    elif any(k in combined for k in ("SL.5(II)", "SL. 5(II)", "INTEREST", "194A")):
+    elif any(k in norm for k in ("SL 5 II", "INTEREST", "194A")):
         entry = STATUTORY_TDS_TABLE_2025["INTEREST_OTHER"]
-    elif any(k in combined for k in ("SL.7", "DIVIDEND", "194")):
+    elif "DIVIDEND" in norm or "SL 7" in norm or " 194 " in f" {norm} ":
         entry = STATUTORY_TDS_TABLE_2025["DIVIDENDS"]
-    elif any(k in combined for k in ("SL.4(I)", "SL. 4(I)", "MUTUAL", "194K")):
+    elif any(k in norm for k in ("SL 4 I", "MUTUAL", "194K")):
         entry = STATUTORY_TDS_TABLE_2025["MUTUAL_FUND_UNITS"]
-    elif any(k in combined for k in ("194N", "CASH")):
+    elif any(k in norm for k in ("194N", "CASH")):
         entry = STATUTORY_TDS_TABLE_2025["CASH_WITHDRAWAL"]
-    elif any(k in combined for k in ("194T", "PARTNER")):
+    elif any(k in norm for k in ("194T", "PARTNER")):
         entry = STATUTORY_TDS_TABLE_2025["PARTNER_REMUNERATION"]
-    elif any(k in combined for k in ("195", "NON_RESIDENT", "FOREIGN")):
+    elif any(k in norm for k in ("195", "NON RESIDENT", "FOREIGN")):
         entry = STATUTORY_TDS_TABLE_2025["NON_RESIDENT"]
+    # 2. Then check Section 393(1) Sl 6(iii) / 194J (Professional vs Technical Services)
+    elif is_explicit_prof and not (is_explicit_fts and rate_hint == 2.0):
+        entry = STATUTORY_TDS_TABLE_2025["PROFESSIONAL_SERVICES"]
+    elif is_explicit_fts:
+        entry = STATUTORY_TDS_TABLE_2025["TECHNICAL_SERVICES"]
+    elif any(k in norm for k in ("SL 6 III", "393", "194J", "TECHNICAL", "PROFESSIONAL")):
+        if rate_hint is not None and abs(rate_hint - 10.0) < 0.05:
+            entry = STATUTORY_TDS_TABLE_2025["PROFESSIONAL_SERVICES"]
+        elif rate_hint is not None and abs(rate_hint - 2.0) < 0.05:
+            entry = STATUTORY_TDS_TABLE_2025["TECHNICAL_SERVICES"]
+        else:
+            entry = STATUTORY_TDS_TABLE_2025["PROFESSIONAL_TECHNICAL"]
     else:
         return {
             "section": "Section 393",
             "provision": f"Section 393 - Statutory Deduction ({section_raw or 'Services'})",
             "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else "Technical / Professional Services",
+            "zoho_section_slug": None,
         }
 
     return {
         "section": entry["section"],
         "provision": entry["provision"],
         "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else entry["nature_of_payment"],
+        "zoho_section_slug": entry.get("zoho_section_slug"),
     }
 
 
@@ -299,7 +397,7 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
         )
 
         if is_app:
-            canonical = resolve_tds_tax_details(section_val, provision_val, nature_val)
+            canonical = resolve_tds_tax_details(section_val, provision_val, nature_val, rate_hint=rate_float)
             section_val = canonical["section"]
             provision_val = canonical["provision"]
             nature_val = canonical["nature_of_payment"]

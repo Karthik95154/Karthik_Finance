@@ -686,11 +686,17 @@ class ModelResponseAdapter:
             l_sec = None
             l_prov = None
 
-            # Section 194J (IT audit, Technical, Consultancy, Professional, Legal)
-            if any(k in combo_text for k in ("9983", "9982", "AUDIT", "VULNERABILITY", "CONSULT", "TECHNICAL", "PROFESSIONAL", "SOFTWARE", "IT_SERVICE", "DEVELOPMENT", "LEGAL")):
+            # Section 194J / Section 393(1) Sl 6(iii)
+            is_prof_candidate = any(k in combo_text for k in ("PROFESSIONAL", "LEGAL", "CONSULTING", "ARCHITECT", "STATUTORY AUDIT", "TAX AUDIT"))
+            is_tech_candidate = any(k in combo_text for k in ("9983", "9982", "TECHNICAL", "SOFTWARE", "IT SERVICE", "IT_SERVICE", "DEVELOPMENT", "CLOUD", "INFRASTRUCTURE", "SECURITY AUDIT", "VULNERABILITY"))
+            if is_prof_candidate or is_tech_candidate:
                 l_sec = "194J"
-                l_prov = "Section 194J - Fees for Technical Services"
-                l_rate = 2.0 if any(t in combo_text for t in ("TECHNICAL", "IT", "AUDIT", "SOFTWARE", "SECURITY", "VULNERABILITY", "DEVELOPMENT")) else 10.0
+                if is_tech_candidate and not (is_prof_candidate and "LEGAL" in combo_text):
+                    l_prov = "Section 194J - Fees for Technical Services"
+                    l_rate = 2.0
+                else:
+                    l_prov = "Section 194J - Professional Services"
+                    l_rate = 10.0
                 l_app = (li_taxable > 0)
             # Section 194I (Rent / Lease of Equipment vs Immovable Property)
             elif any(k in combo_text for k in ("9972", "9973", "RENT", "RENTAL", "LEASE", "HIRING")):

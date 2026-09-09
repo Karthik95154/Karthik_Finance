@@ -152,6 +152,11 @@ async def test_export_service_tds_not_applicable_never_sends_tds_tax_id():
                 "applicable": True,
                 "rate": 0.1,
             },
+            "itc_assessment": {
+                "status": "ELIGIBLE",
+                "is_hitl_override": True,
+                "eligible_itc": 27216.0,
+            },
             "accounting": [
                 {"line_index": 1, "approved_account_id": "4076465000000000567"},
                 {"line_index": 2, "approved_account_id": "4076465000000000567"},
@@ -162,10 +167,18 @@ async def test_export_service_tds_not_applicable_never_sends_tds_tax_id():
 
     mock_conn = ZohoConnection(id=uuid4(), tenant_id=tenant_id, organization_id="org_123", status="CONNECTED")
     mock_journal = MagicMock(is_balanced=True, status="APPROVED", total_debit=178416.0)
+    mock_coa = MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[
+        MagicMock(zoho_account_id="4076465000000000567", account_name="COGS", account_code="COGS", account_type="expense")
+    ]))))
+    mock_journal_lines = MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[
+        MagicMock(debit=27216.0, line_type="INPUT_TAX")
+    ]))))
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
+        mock_coa,
+        mock_journal_lines,
     ])
     mock_db.commit = AsyncMock()
 
@@ -227,6 +240,11 @@ async def test_export_service_missing_tds_tax_raises_blocking_error():
                 "tds_rate": 0.1,
                 "tds_section": "194Q",
             },
+            "itc_assessment": {
+                "status": "ELIGIBLE",
+                "is_hitl_override": True,
+                "eligible_itc": 18900.0,
+            },
             "accounting": [
                 {"line_index": 1, "approved_account_id": "4076465000000000567"},
             ],
@@ -236,10 +254,18 @@ async def test_export_service_missing_tds_tax_raises_blocking_error():
 
     mock_conn = ZohoConnection(id=uuid4(), tenant_id=tenant_id, organization_id="org_123", status="CONNECTED")
     mock_journal = MagicMock(is_balanced=True, status="APPROVED", total_debit=178416.0)
+    mock_coa = MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[
+        MagicMock(zoho_account_id="4076465000000000567", account_name="COGS", account_code="COGS", account_type="expense")
+    ]))))
+    mock_journal_lines = MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[
+        MagicMock(debit=18900.0, line_type="INPUT_TAX")
+    ]))))
     mock_db = AsyncMock()
     mock_db.execute = AsyncMock(side_effect=[
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
+        mock_coa,
+        mock_journal_lines,
     ])
     mock_db.commit = AsyncMock()
 
