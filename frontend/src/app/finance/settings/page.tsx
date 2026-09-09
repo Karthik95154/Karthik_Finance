@@ -37,6 +37,7 @@ import {
   triggerZohoSync,
   getMasterDataSummary,
   disconnectZoho,
+  invalidateZohoCache,
   getCurrentUser,
   switchDevRole,
   ZohoStatusResponse,
@@ -145,6 +146,7 @@ function SettingsContent() {
     const errorDetail = searchParams.get("error_detail");
 
     if (zohoRedirectStatus === "connected") {
+      invalidateZohoCache();
       setNotice({
         type: "success",
         message: `Zoho Books successfully connected${orgName ? ` to ${orgName}` : ""}! Master Chart of Accounts, Tax Rates, and Vendors synchronized.`,
