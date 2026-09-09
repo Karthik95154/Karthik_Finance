@@ -806,15 +806,11 @@ class AIService:
             "3. Do NOT arbitrarily select Depreciation, Bad Debt, or other irrelevant accounts for operating expenses or services.\n"
             "4. Extract exact printed values from the image for header, vendor, customer, line items, and taxes without fabricating or altering numbers.\n\n"
             "========================================================\n"
-            "FIXED OUTPUT JSON CONTRACT — DO NOT ALTER KEYS\n"
-            "========================================================\n"
-            f"{FIXED_JSON_EXAMPLE_STR}\n\n"
-            "========================================================\n"
             "RUNTIME ZOHO CHART OF ACCOUNTS (ACTIVE TENANT ACCOUNTS)\n"
             "========================================================\n"
             "Use ONLY these accounts for coa_support.line_matches. Never invent an account ID.\n"
             f"{json.dumps(coa_sample, indent=2, ensure_ascii=False)}\n\n"
-            "Return valid JSON only adhering strictly to the contract above."
+            "Return valid JSON only adhering strictly to the contract defined in the system prompt."
         )
 
     def _extract_and_validate_json(self, raw_text: str) -> Dict[str, Any]:
@@ -900,11 +896,12 @@ class AIService:
         logger.info(f"[AI-OPENAI] Dispatching request to OpenAI model '{model}'...")
 
         client = self._get_openai_client()
+        max_tokens = int(getattr(settings, "OPENAI_MAX_COMPLETION_TOKENS", 8192) or 8192)
         kwargs = {
             "model": model,
             "messages": messages,
             "response_format": {"type": "json_object"},
-            "max_completion_tokens": 4096,
+            "max_completion_tokens": max_tokens,
         }
         # GPT-5.6 series models enforce default temperature (1.0). Only pass temperature=0.0 on models that support it.
         if not ("gpt-5" in model.lower() or "o1" in model.lower() or "o3" in model.lower()):

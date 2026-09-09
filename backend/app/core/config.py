@@ -132,6 +132,7 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-5.6-terra"
     OPENAI_TIMEOUT: float = 120.0
     OPENAI_MAX_RETRIES: int = 1
+    OPENAI_MAX_COMPLETION_TOKENS: int = 8192
 
     @property
     def kimi_k3_url(self) -> str:
