@@ -135,14 +135,14 @@ export default function InvoiceProcessingPage() {
   const getHeaderTitle = () => {
     if (isApproved || isAccountingDone) return "Processing Complete!";
     if (isAccountingRunning) return "Classifying Accounting & Taxes...";
-    if (isVlmRunning) return "Kimi K3 Extraction Active...";
+    if (isVlmRunning) return "Extracting invoice details...";
     return "Processing Invoice";
   };
 
   const getHeaderSubtitle = () => {
     if (isApproved || isAccountingDone) return "AI extraction and tax reasoning finished. Redirecting to workspace...";
     if (isAccountingRunning) return "Classifying line items against Chart of Accounts (COA) and evaluating TDS rules.";
-    if (isVlmRunning) return "Kimi K3 is extracting semantic tables, vendor details, header fields and line items.";
+    if (isVlmRunning) return "Extracting semantic tables, vendor details, header fields and line items.";
     return "Extracting and analyzing invoice details.";
   };
 
@@ -307,7 +307,7 @@ export default function InvoiceProcessingPage() {
                   <CheckCircle2 size={18} />
                 </div>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: "14px", fontWeight: "700", color: "#0f172a" }}>1. Upload & Storage Completed</div>
+                  <div style={{ fontSize: "14px", fontWeight: "700", color: "#0f172a" }}>1. Uploaded</div>
                 </div>
               </div>
 
@@ -325,7 +325,7 @@ export default function InvoiceProcessingPage() {
                 )}
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "14px", fontWeight: "700", color: isVlmRunning ? "#2563eb" : "#0f172a", display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span>2. Kimi K3 AI Extraction</span>
+                    <span>2. Extracting Details</span>
                   </div>
                 </div>
               </div>
@@ -344,15 +344,14 @@ export default function InvoiceProcessingPage() {
                 )}
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: "14px", fontWeight: "700", color: isAccountingRunning ? "#2563eb" : "#0f172a", display: "flex", alignItems: "center", gap: "8px" }}>
-                    <span>3. Accounting & Tax Reasoning</span>
+                    <span>3. Processing Accounts & Tax</span>
                   </div>
                 </div>
               </div>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "8px", fontSize: "13px", color: "var(--text-secondary)", padding: "8px" }}>
-              <Sparkles size={16} color="var(--accent)" />
-              <span>{isApproved || isAccountingDone ? "Opening invoice workspace..." : "Automated AI pipeline active. Redirecting as soon as ready."}</span>
+              <span>{isApproved || isAccountingDone ? "Opening invoice workspace..." : "Redirecting as soon as ready."}</span>
             </div>
           </div>
         )}

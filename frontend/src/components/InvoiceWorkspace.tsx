@@ -2570,7 +2570,7 @@ export default function InvoiceWorkspace({
             title="Create a new Chart of Account in Zoho Books anytime"
           >
             <Plus size={13} color="#2563eb" />
-            <span>+ Create COA</span>
+            <span>Create COA</span>
           </button>
 
           {/* Action Buttons: Reject, Approve, Export to Zoho (Internal Finance Only) */}
