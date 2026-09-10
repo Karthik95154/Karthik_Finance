@@ -3,6 +3,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.services.financial_validator import parse_clean_numeric
+from app.services.tds_engine import parse_vendor_declared_tds
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,7 @@ class ModelResponseAdapter:
         user_zoho_coa: Optional[
             List[Dict[str, Any]]
         ] = None,
+        raw_document_text: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Convert the AI model's fixed JSON response into the internal
@@ -670,11 +672,31 @@ class ModelResponseAdapter:
             or "TDS proposal"
         )
 
+        # Extract vendor-declared TDS evidence from text sources (raw document text, notes, terms, descriptions)
+        text_sources_to_scan = [
+            raw_document_text,
+            notes_val,
+            invoice_details.get("payment_terms"),
+            financial_details.get("payment_terms"),
+        ]
+        for li in normalized_line_items:
+            if li.get("description"):
+                text_sources_to_scan.append(li.get("description"))
+
+        vendor_decl = parse_vendor_declared_tds(
+            text_sources=text_sources_to_scan,
+            base_amount=subtotal_val,
+        )
+
+        tds_sec_code = None
+
         # Statutory evaluation: evaluate both line-item level composite services and header-level fallbacks
         is_indiv = bool(v_pan and len(v_pan) >= 4 and v_pan[3].upper() in ("P", "H"))
         
         # 1. Inspect line items for specific statutory service classifications
         line_tds_deductions = []
+        has_ambiguous_9973 = False
+
         for l_idx, li in enumerate(normalized_line_items, 1):
             li_desc = str(li.get("description") or "").upper()
             li_sac = str(li.get("hsn_sac") or li.get("hsn_code") or "").upper()
@@ -686,9 +708,26 @@ class ModelResponseAdapter:
             l_sec = None
             l_prov = None
 
+            # Check for software / SaaS / licensing first (even if SAC has 9973 / 997331)
+            is_software_saas = any(
+                k in combo_text
+                for k in (
+                    "997331",
+                    "99733",
+                    "SOFTWARE",
+                    "SAAS",
+                    "SUBSCRIPTION",
+                    "LICENSE",
+                    "LICENSING",
+                    "PLATFORM",
+                    "APPLICATION",
+                    "PORTAL",
+                )
+            )
+
             # Section 194J / Section 393(1) Sl 6(iii)
             is_prof_candidate = any(k in combo_text for k in ("PROFESSIONAL", "LEGAL", "CONSULTING", "ARCHITECT", "STATUTORY AUDIT", "TAX AUDIT"))
-            is_tech_candidate = any(k in combo_text for k in ("9983", "9982", "TECHNICAL", "SOFTWARE", "IT SERVICE", "IT_SERVICE", "DEVELOPMENT", "CLOUD", "INFRASTRUCTURE", "SECURITY AUDIT", "VULNERABILITY"))
+            is_tech_candidate = is_software_saas or any(k in combo_text for k in ("9983", "9982", "TECHNICAL", "IT SERVICE", "IT_SERVICE", "DEVELOPMENT", "CLOUD", "INFRASTRUCTURE", "SECURITY AUDIT", "VULNERABILITY"))
             if is_prof_candidate or is_tech_candidate:
                 l_sec = "194J"
                 if is_tech_candidate and not (is_prof_candidate and "LEGAL" in combo_text):
@@ -700,10 +739,54 @@ class ModelResponseAdapter:
                 l_app = (li_taxable > 0)
             # Section 194I (Rent / Lease of Equipment vs Immovable Property)
             elif any(k in combo_text for k in ("9972", "9973", "RENT", "RENTAL", "LEASE", "HIRING")):
-                l_sec = "194I"
-                l_prov = "Section 194I - Rent of Plant, Machinery or Equipment"
-                l_rate = 2.0 if any(m in combo_text for m in ("EQUIPMENT", "CCTV", "PLANT", "MACHINERY", "VEHICLE", "HARDWARE")) else 10.0
-                l_app = (li_taxable > 0)
+                # Check for physical equipment / machinery / vehicles / plant
+                is_equipment = any(
+                    m in combo_text
+                    for m in (
+                        "99731",
+                        "99732",
+                        "EQUIPMENT",
+                        "CCTV",
+                        "PLANT",
+                        "MACHINERY",
+                        "VEHICLE",
+                        "HARDWARE",
+                        "GENERATOR",
+                        "COMPUTER HARDWARE",
+                    )
+                )
+                # Check for immovable property (land, building, office space)
+                is_immovable = any(
+                    p in combo_text
+                    for p in (
+                        "9972",
+                        "BUILDING",
+                        "LAND",
+                        "OFFICE",
+                        "PREMISES",
+                        "WAREHOUSE",
+                        "PROPERTY",
+                        "COMMERCIAL SPACE",
+                    )
+                )
+
+                if is_equipment:
+                    l_sec = "194I"
+                    l_prov = "Section 194I - Rent of Plant, Machinery or Equipment"
+                    l_rate = 2.0
+                    l_app = (li_taxable > 0)
+                elif is_immovable or any(r in combo_text for r in ("RENT", "RENTAL", "LEASE")):
+                    l_sec = "194I"
+                    l_prov = "Section 194I - Rent of Immovable Property"
+                    l_rate = 10.0
+                    l_app = (li_taxable > 0)
+                else:
+                    # Ambiguous 9973xx with no equipment or rent keywords: flag for review, do NOT default to 10%
+                    has_ambiguous_9973 = True
+                    l_sec = "194I"
+                    l_prov = "Section 194I - Leasing/Rental Services (Review Required)"
+                    l_rate = 2.0
+                    l_app = (li_taxable > 0)
             # Section 194C (Manpower, Security Guards, Contractor, Facilities, Transportation)
             elif any(k in combo_text for k in ("9985", "MANPOWER", "GUARD", "FACILITY", "CONTRACTOR", "WORK_CONTRACT", "SUBCONTRACT", "TRANSPORT", "HOUSEKEEPING", "CLEANING")) or ("SECURITY" in combo_text and any(w in combo_text for w in ("GUARD", "PERSONNEL", "MANPOWER", "DEPLOYMENT", "FACILITY", "PATROL", "SURVEILLANCE"))):
                 l_sec = "194C"
@@ -743,10 +826,19 @@ class ModelResponseAdapter:
                 tds_reason_parts = [f"{d['section']} on Rs.{d['base_amount']:,.2f}" for d in line_tds_deductions]
                 tds_reason = f"Composite statutory withholding: {', '.join(tds_reason_parts)}"
             else:
-                tds_provision = tds_provision or (unique_sections[0] if unique_sections else "194J")
+                tds_sec_code = (
+                    line_tds_deductions[0].get("section")
+                    if line_tds_deductions and line_tds_deductions[0].get("section")
+                    else (unique_sections[0] if unique_sections else "194J")
+                )
+                tds_provision = (
+                    line_tds_deductions[0].get("provision")
+                    if line_tds_deductions and line_tds_deductions[0].get("provision")
+                    else (tds_provision or tds_sec_code)
+                )
                 tds_nature = tds_nature or (line_tds_deductions[0].get("provision") if line_tds_deductions else "Statutory deduction")
                 tds_rate = tds_rate or (line_tds_deductions[0].get("rate") if line_tds_deductions else 2.0)
-                tds_reason = f"Statutory withholding under Section {tds_provision} on assessable value Rs.{comp_base:,.2f}"
+                tds_reason = f"Statutory withholding under {tds_provision} on assessable value Rs.{comp_base:,.2f}"
 
             tds_base = comp_base
             proposed_tds = comp_tds_total
@@ -815,11 +907,44 @@ class ModelResponseAdapter:
         if tds_applicable and (proposed_tds is None or proposed_tds <= 0) and tds_base and tds_rate:
             proposed_tds = round((tds_base * tds_rate) / 100.0, 2)
 
+        # Conflict & Review Evaluation between Statutory Assessment and Vendor-Declared TDS
+        tds_needs_review = bool(tds_requires_backend_validation or has_ambiguous_9973)
+        tds_conflict_code = None
+        tds_conflict_reason = None
+
+        if has_ambiguous_9973:
+            tds_needs_review = True
+            tds_conflict_code = "TDS_AMBIGUOUS_SAC"
+            tds_conflict_reason = "Ambiguous SAC 9973 service without clear equipment or software classification. Review required."
+
+        if vendor_decl and vendor_decl.get("present"):
+            v_amt = vendor_decl.get("amount")
+            v_rate = vendor_decl.get("rate") or vendor_decl.get("derived_rate")
+            has_amt_diff = v_amt is not None and proposed_tds is not None and abs(v_amt - proposed_tds) > 1.0
+            has_rate_diff = v_rate is not None and tds_rate is not None and abs(v_rate - tds_rate) > 0.05
+
+            if has_amt_diff or has_rate_diff:
+                tds_needs_review = True
+                tds_conflict_code = "TDS_VENDOR_STATUTORY_MISMATCH"
+                v_desc = f"₹{v_amt:,.2f}" if v_amt is not None else ""
+                if v_rate is not None:
+                    v_desc += f" ({v_rate}%)"
+                s_desc = f"₹{proposed_tds:,.2f}" if proposed_tds is not None else ""
+                if tds_rate is not None:
+                    s_desc += f" ({tds_rate}%)"
+                tds_conflict_reason = (
+                    f"Conflict between vendor-declared TDS [{v_desc}] and statutory determination [{s_desc}]. "
+                    f"Statutory section: {tds_provision or 'Services'}. Manual review required."
+                )
+
+        eff_approval_status = "REVIEW_REQUIRED" if tds_needs_review else "PENDING"
+        final_sec = tds_sec_code if (line_tds_deductions and len(unique_sections) <= 1) else tds_provision
+
         normalized_tds = {
             "applicable": tds_applicable,
             "tds_applicable": tds_applicable,
-            "section": tds_provision,
-            "tds_section": tds_provision,
+            "section": final_sec,
+            "tds_section": final_sec,
             "provision": tds_provision,
             "tds_provision": tds_provision,
             "nature_of_payment": tds_nature,
@@ -834,9 +959,13 @@ class ModelResponseAdapter:
             "pan_status": pan_status,
             "cumulative_vendor_data_required": cumulative_required,
             "requires_backend_validation": tds_requires_backend_validation,
-            "tds_reasoning": tds_reason,
+            "tds_reasoning": tds_conflict_reason or tds_reason,
             "is_approved": False,
-            "approval_status": "PENDING",
+            "approval_status": eff_approval_status,
+            "vendor_declared_tds": vendor_decl,
+            "tds_needs_review": tds_needs_review,
+            "tds_conflict_code": tds_conflict_code,
+            "tds_conflict_reason": tds_conflict_reason,
         }
 
         # ---------------------------------------------------------
@@ -916,6 +1045,7 @@ class ModelResponseAdapter:
             "accounting": accounting_lines,
             "tds_assessment": normalized_tds,
             "tds": normalized_tds,
+            "vendor_declared_tds": vendor_decl,
             "gst_support": gst_support,
             "itc_support": itc_support,
             "tcs_support": tcs_support,

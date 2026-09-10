@@ -1,10 +1,116 @@
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 PAN_PATTERN = re.compile(r"^[A-Z]{5}[0-9]{4}[A-Z]{1}$")
+
+
+def parse_vendor_declared_tds(
+    text_sources: Optional[List[Any]] = None,
+    base_amount: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Deterministic generic parser for explicit vendor-declared TDS declarations
+    found in invoice text, terms, footnotes, or model textual notes.
+    Extracts statements such as:
+      - 'We have booked TDS amount Rs. 31.08...'
+      - 'TDS deducted Rs. 500...'
+      - 'TDS @ 1%' or 'TDS rate 2%'
+      - 'TDS withheld amount Rs. 100...'
+    Does not hardcode any vendor name, invoice number, or amount.
+    """
+    empty_result = {
+        "present": False,
+        "amount": None,
+        "rate": None,
+        "derived_rate": None,
+        "raw_text": None,
+    }
+    if not text_sources:
+        return empty_result
+
+    lines: List[str] = []
+    for src in text_sources:
+        if not src:
+            continue
+        if isinstance(src, str):
+            lines.extend(src.splitlines())
+        elif isinstance(src, list):
+            for item in src:
+                if isinstance(item, str):
+                    lines.extend(item.splitlines())
+
+    p_amt_booked = re.compile(
+        r"(?:(?:we\s+have\s+)?(?:booked|deducted|withheld|deposited)|(?:please\s+)?(?:book|deduct))\s+tds\s+(?:amount\s+)?(?:of\s+)?(?:rs\.?|inr|₹)?\s*([0-9,]+(?:\.[0-9]+)?)",
+        re.IGNORECASE,
+    )
+    p_tds_amt_action = re.compile(
+        r"tds\s+(?:(?:booked|deducted|withheld|deposited)\s+)?(?:amount\s+)?(?:of\s+)?(?:rs\.?|inr|₹)?\s*([0-9,]+(?:\.[0-9]+)?)(?:\s*(?:has\s+been\s+)?(?:booked|deducted|withheld|deposited))?",
+        re.IGNORECASE,
+    )
+    p_tds_rate_explicit = re.compile(
+        r"tds\s*(?:@|at|\b(?:rate|percentage)\b)?\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+        re.IGNORECASE,
+    )
+    p_tds_deducted_rate = re.compile(
+        r"tds\s+(?:deducted|booked|withheld)\s*@\s*([0-9]+(?:\.[0-9]+)?)\s*%",
+        re.IGNORECASE,
+    )
+
+    found_amt: Optional[float] = None
+    found_rate: Optional[float] = None
+    matched_line: Optional[str] = None
+
+    for raw_l in lines:
+        l = raw_l.strip()
+        if not l or "tds" not in l.lower():
+            continue
+
+        # Check explicit rate first
+        m_rate = p_tds_deducted_rate.search(l) or p_tds_rate_explicit.search(l)
+        if m_rate:
+            try:
+                r_val = float(m_rate.group(1))
+                if 0.01 <= r_val <= 30.0:
+                    found_rate = r_val
+                    matched_line = l
+            except Exception:
+                pass
+
+        # Check explicit amount
+        m_amt = p_amt_booked.search(l) or p_tds_amt_action.search(l)
+        if m_amt:
+            try:
+                a_str = m_amt.group(1).replace(",", "")
+                a_val = float(a_str)
+                if a_val > 0:
+                    found_amt = round(a_val, 2)
+                    matched_line = l
+            except Exception:
+                pass
+
+        if found_amt is not None or found_rate is not None:
+            break
+
+    if found_amt is None and found_rate is None:
+        return empty_result
+
+    derived_rate = None
+    if found_rate is not None:
+        pass
+    elif found_amt is not None and base_amount and base_amount > 0:
+        raw_calc = (found_amt / base_amount) * 100.0
+        derived_rate = round(raw_calc, 2) if raw_calc >= 0.05 else round(raw_calc, 4)
+
+    return {
+        "present": True,
+        "amount": found_amt,
+        "rate": found_rate,
+        "derived_rate": derived_rate,
+        "raw_text": matched_line,
+    }
 
 
 # Complete Statutory TDS Comparison Table (Income-tax Act, 2025 - FY 2026-27)
@@ -418,6 +524,40 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
         if is_app and (tds_amt_float is None or tds_amt_float == 0) and base_float and rate_float and rate_float > 0:
             tds_amt_float = round((base_float * rate_float) / 100.0, 2)
 
+        vendor_decl = tds_assessment.get("vendor_declared_tds") or accounting.get("vendor_declared_tds")
+        tds_needs_review = bool(tds_assessment.get("tds_needs_review"))
+        conflict_code = tds_assessment.get("tds_conflict_code")
+        conflict_reason = tds_assessment.get("tds_conflict_reason")
+
+        # Conflict check: If vendor explicitly declared TDS, compare against statutory calculation
+        if vendor_decl and isinstance(vendor_decl, dict) and vendor_decl.get("present"):
+            v_amt = vendor_decl.get("amount")
+            v_rate = vendor_decl.get("rate") or vendor_decl.get("derived_rate")
+            
+            # Check for material discrepancy (amount diff > 1.0 or rate diff > 0.05%)
+            has_amt_mismatch = (
+                v_amt is not None and tds_amt_float is not None and abs(v_amt - tds_amt_float) > 1.0
+            )
+            has_rate_mismatch = (
+                v_rate is not None and rate_float is not None and abs(v_rate - rate_float) > 0.05
+            )
+
+            if has_amt_mismatch or has_rate_mismatch:
+                tds_needs_review = True
+                conflict_code = "TDS_VENDOR_STATUTORY_MISMATCH"
+                v_desc = f"₹{v_amt:,.2f}" if v_amt is not None else ""
+                if v_rate is not None:
+                    v_desc += f" ({v_rate}%)"
+                s_desc = f"₹{tds_amt_float:,.2f}" if tds_amt_float is not None else ""
+                if rate_float is not None:
+                    s_desc += f" ({rate_float}%)"
+                conflict_reason = (
+                    f"Conflict between vendor-declared TDS [{v_desc}] and statutory determination [{s_desc}]. "
+                    f"Statutory section: {section_val or 'Services'}. Manual review required."
+                )
+
+        eff_approval = "APPROVED" if is_appr else ("REVIEW_REQUIRED" if tds_needs_review else "PENDING")
+
         return {
             "applicable": is_app,
             "section": section_val if is_app else None,
@@ -432,9 +572,13 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
             "tds_base_amount": base_float if is_app else None,
             "tds_amount": tds_amt_float if is_app else None,
             "proposed_tds_amount": tds_amt_float if is_app else None,
-            "reasoning": tds_assessment.get("tds_reasoning") or tds_assessment.get("reason"),
+            "reasoning": conflict_reason or tds_assessment.get("tds_reasoning") or tds_assessment.get("reason"),
             "is_approved": is_appr,
-            "approval_status": "APPROVED" if is_appr else "PENDING",
+            "approval_status": eff_approval,
+            "tds_needs_review": tds_needs_review,
+            "tds_conflict_code": conflict_code,
+            "tds_conflict_reason": conflict_reason,
+            "vendor_declared_tds": vendor_decl,
         }
 
     # 2. Fallback to legacy tds only if tds_assessment is completely absent
@@ -637,11 +781,14 @@ class TDSEngine:
         vendor_pan: Optional[str] = None,
         is_subcontractor: bool = False,
         is_tech_service: bool = True,
+        vendor_declared_tds: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Computes statutory TDS amount according to Indian Income Tax rules.
         If applicable is False, strictly returns TDS not applicable with 0.0 amounts.
         If applicable is None and no section/rate is specified, defaults to not applicable.
+        Preserves vendor_declared_tds separately and flags conflicts if vendor declaration
+        materially differs from the statutory calculation.
         """
         if applicable is False or base_amount <= 0 or (rate is None and not section and not provision and not nature_of_payment):
             return {
@@ -653,6 +800,10 @@ class TDSEngine:
                 "base_amount": 0.0,
                 "tds_amount": 0.0,
                 "reason": "TDS not applicable or zero base amount",
+                "vendor_declared_tds": vendor_declared_tds,
+                "tds_needs_review": False,
+                "tds_conflict_code": None,
+                "tds_conflict_reason": None,
             }
 
         # If applicable is unspecified (None) and rate is 0 or None with no section/provision, not applicable
@@ -666,6 +817,10 @@ class TDSEngine:
                 "base_amount": 0.0,
                 "tds_amount": 0.0,
                 "reason": "TDS not applicable",
+                "vendor_declared_tds": vendor_declared_tds,
+                "tds_needs_review": False,
+                "tds_conflict_code": None,
+                "tds_conflict_reason": None,
             }
 
         pan_valid = cls.is_valid_pan(vendor_pan) if vendor_pan else True
@@ -708,6 +863,27 @@ class TDSEngine:
         # TDS is strictly calculated on base_amount (Subtotal), NEVER on subtotal + GST
         tds_amount = round((base_amount * computed_rate) / 100.0, 2)
 
+        tds_needs_review = False
+        conflict_code = None
+        conflict_reason = None
+
+        if vendor_declared_tds and isinstance(vendor_declared_tds, dict) and vendor_declared_tds.get("present"):
+            v_amt = vendor_declared_tds.get("amount")
+            v_rate = vendor_declared_tds.get("rate") or vendor_declared_tds.get("derived_rate")
+            has_amt_mismatch = v_amt is not None and abs(v_amt - tds_amount) > 1.0
+            has_rate_mismatch = v_rate is not None and abs(v_rate - computed_rate) > 0.05
+            if has_amt_mismatch or has_rate_mismatch:
+                tds_needs_review = True
+                conflict_code = "TDS_VENDOR_STATUTORY_MISMATCH"
+                v_desc = f"₹{v_amt:,.2f}" if v_amt is not None else ""
+                if v_rate is not None:
+                    v_desc += f" ({v_rate}%)"
+                s_desc = f"₹{tds_amount:,.2f} ({computed_rate}%)"
+                conflict_reason = (
+                    f"Conflict between vendor-declared TDS [{v_desc}] and statutory determination [{s_desc}]. "
+                    f"Statutory provision: {provision or section or 'Services'}. Manual review required."
+                )
+
         return {
             "applicable": True,
             "provision": provision,
@@ -717,7 +893,11 @@ class TDSEngine:
             "base_amount": round(base_amount, 2),
             "tds_amount": tds_amount,
             "pan_valid": pan_valid,
-            "reason": reason,
+            "reason": conflict_reason or reason,
+            "vendor_declared_tds": vendor_declared_tds,
+            "tds_needs_review": tds_needs_review,
+            "tds_conflict_code": conflict_code,
+            "tds_conflict_reason": conflict_reason,
         }
 
 

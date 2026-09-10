@@ -158,12 +158,23 @@ export interface TdsResult {
   approval_status?: "PENDING" | "APPROVED" | string | null;
   approved_by?: string | null;
   approved_at?: string | null;
+  vendor_declared_tds?: {
+    present: boolean;
+    amount?: number | null;
+    rate?: number | null;
+    derived_rate?: number | null;
+    raw_text?: string | null;
+  } | null;
+  tds_needs_review?: boolean | null;
+  tds_conflict_code?: string | null;
+  tds_conflict_reason?: string | null;
 }
 
 export interface AccountingOutput {
   accounting?: AccountingLineItem[];
   tds?: TdsResult | null;
   tds_assessment?: TdsResult | null;
+  vendor_declared_tds?: any;
 }
 
 export interface InvoiceListItem {

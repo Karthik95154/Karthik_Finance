@@ -531,11 +531,24 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 logger.error(f"Failed to update status to NOT_PROCESSED for invoice {invoice_id}: {commit_err}")
         return
 
+    # 3b. Extract raw document text from PDF via PyMuPDF (fitz) if available
+    raw_doc_text = None
+    if file_bytes and (not file_mime_type or "pdf" in file_mime_type.lower() or (file_name and file_name.lower().endswith(".pdf"))):
+        try:
+            import fitz
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            extracted_pages = [page.get_text() for page in doc]
+            raw_doc_text = "\n".join(extracted_pages)
+            doc.close()
+        except Exception as pdf_text_err:
+            logger.warning(f"Could not extract raw PDF text via PyMuPDF for invoice {invoice_id}: {pdf_text_err}")
+
     # 4. Normalize model response via ModelResponseAdapter
     from app.services.model_response_adapter import ModelResponseAdapter
     normalized = ModelResponseAdapter.normalize_model_response(
         model_response=raw_model_response,
         user_zoho_coa=cached_coa,
+        raw_document_text=raw_doc_text,
     )
 
     raw_snapshot = normalized["raw_vlm_output"]
@@ -696,6 +709,11 @@ async def process_accounting_downstream_background(invoice_id) -> None:
         tds_nature = effective_tds.get("nature_of_payment")
         vendor_pan = invoice_payload.get("vendor_pan")
 
+        vendor_decl_data = (
+            tds_assessment.get("vendor_declared_tds")
+            or (normalized_accounting_state.get("vendor_declared_tds") if isinstance(normalized_accounting_state, dict) else None)
+        )
+
         final_tds_calc = tds_engine.calculate_tds(
             applicable=tds_applicable,
             section=tds_section,
@@ -704,6 +722,7 @@ async def process_accounting_downstream_background(invoice_id) -> None:
             base_amount=tds_base_amt,
             rate=float(tds_rate) if tds_rate is not None else None,
             vendor_pan=vendor_pan,
+            vendor_declared_tds=vendor_decl_data,
         )
 
         persisted_accounting_output = {
@@ -725,9 +744,14 @@ async def process_accounting_downstream_background(invoice_id) -> None:
                 "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
                 "tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
                 "tds_reasoning": final_tds_calc.get("reason"),
+                "vendor_declared_tds": vendor_decl_data,
+                "tds_needs_review": final_tds_calc.get("tds_needs_review", False),
+                "tds_conflict_code": final_tds_calc.get("tds_conflict_code"),
+                "tds_conflict_reason": final_tds_calc.get("tds_conflict_reason"),
             },
             "tds_final": final_tds_calc,
             "tds": final_tds_calc,
+            "vendor_declared_tds": vendor_decl_data,
             "itc_assessment": itc_result,
         }
 

@@ -4497,6 +4497,83 @@ export default function InvoiceWorkspace({
                       </div>
                     </div>
 
+                    {/* Vendor-Declared TDS Evidence & Statutory Mismatch Warning */}
+                    {(() => {
+                      const vDecl = tdsResult.vendor_declared_tds || accountingData?.vendor_declared_tds;
+                      const hasConflict = tdsResult.tds_conflict_code === "TDS_VENDOR_STATUTORY_MISMATCH" || tdsResult.tds_needs_review && vDecl?.present;
+                      if (!vDecl?.present && !hasConflict) return null;
+
+                      return (
+                        <div style={{ marginBottom: "14px", display: "flex", flexDirection: "column", gap: "8px" }}>
+                          {/* Mismatch Alert Banner */}
+                          {hasConflict && (
+                            <div
+                              style={{
+                                background: "#fef2f2",
+                                border: "1px solid #f87171",
+                                borderRadius: "var(--radius-sm)",
+                                padding: "10px 14px",
+                                display: "flex",
+                                alignItems: "flex-start",
+                                gap: "10px",
+                              }}
+                            >
+                              <AlertTriangle size={16} color="#dc2626" style={{ marginTop: "2px", flexShrink: 0 }} />
+                              <div>
+                                <div style={{ fontSize: "12px", fontWeight: "700", color: "#b91c1c", marginBottom: "2px" }}>
+                                  TDS Discrepancy: Vendor Declaration vs Statutory Assessment
+                                </div>
+                                <div style={{ fontSize: "11px", color: "#7f1d1d", lineHeight: "1.4" }}>
+                                  {tdsResult.tds_conflict_reason ||
+                                    "The vendor declared a withholding amount or rate on the invoice that materially differs from our statutory engine calculation. Please review both assessments before approving."}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Vendor Declared Evidence Card */}
+                          {vDecl?.present && (
+                            <div
+                              style={{
+                                background: "#f0f9ff",
+                                border: "1px solid #bae6fd",
+                                borderRadius: "var(--radius-sm)",
+                                padding: "10px 14px",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                flexWrap: "wrap",
+                                gap: "10px",
+                              }}
+                            >
+                              <div>
+                                <div style={{ fontSize: "11px", fontWeight: "700", color: "#0369a1", textTransform: "uppercase", letterSpacing: "0.03em" }}>
+                                  Vendor-Declared Invoice Evidence
+                                </div>
+                                <div style={{ fontSize: "11px", color: "#0c4a6e", marginTop: "2px", fontStyle: "italic" }}>
+                                  "{vDecl.raw_text}"
+                                </div>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                                {vDecl.amount !== null && vDecl.amount !== undefined && (
+                                  <div style={{ textAlign: "right" }}>
+                                    <div style={{ fontSize: "10px", color: "#0284c7", fontWeight: "600" }}>DECLARED AMOUNT</div>
+                                    <div style={{ fontSize: "12px", fontWeight: "700", color: "#0369a1" }}>₹{Number(vDecl.amount).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</div>
+                                  </div>
+                                )}
+                                {(vDecl.rate !== null && vDecl.rate !== undefined || vDecl.derived_rate !== null && vDecl.derived_rate !== undefined) && (
+                                  <div style={{ textAlign: "right" }}>
+                                    <div style={{ fontSize: "10px", color: "#0284c7", fontWeight: "600" }}>{vDecl.rate !== null ? "DECLARED RATE" : "DERIVED RATE"}</div>
+                                    <div style={{ fontSize: "12px", fontWeight: "700", color: "#0369a1" }}>{vDecl.rate ?? vDecl.derived_rate}%</div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
                     <div
                       style={{
                         display: "grid",

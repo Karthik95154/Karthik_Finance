@@ -10,8 +10,8 @@ class TDSService:
     Service for TDS assessment using AI model output and local deterministic TDS engine.
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, base_url: Optional[str] = None):
+        self.base_url = base_url
 
     async def check_health(self) -> bool:
         """Check if TDS service is active."""
