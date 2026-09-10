@@ -633,7 +633,7 @@ async def get_invoice_vendor_status(
     vendor_address = vlm_data.get("vendor_address")
 
     from app.services.master_data_service import master_data_service
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
     if connection.status != "CONNECTED" or not connection.organization_id:
         return {
             "invoice_id": str(invoice_id),
@@ -704,7 +704,7 @@ async def add_vendor_to_zoho(
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     from app.services.master_data_service import master_data_service
-    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db)
+    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, db, user_id=current_user.id)
     if connection.status != "CONNECTED" or not connection.organization_id:
         raise HTTPException(status_code=400, detail="Tenant is not connected to Zoho Books.")
 

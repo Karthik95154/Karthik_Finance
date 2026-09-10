@@ -20,48 +20,55 @@ class MasterDataService:
         db: AsyncSession,
         user_id: Optional[Any] = None,
     ) -> ZohoConnection:
-        """Retrieves active ZohoConnection strictly for the specified tenant_id and user_id."""
-        query = select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id)
-        if user_id:
-            try:
-                user_uuid = uuid.UUID(str(user_id))
-                user_query = query.where(ZohoConnection.user_id == user_uuid).order_by(ZohoConnection.created_at.desc())
-                user_res = await db.execute(user_query)
-                user_conns = user_res.scalars().all()
-                if user_conns:
-                    conns = user_conns
-            except Exception:
-                pass
+        """
+        Retrieves the ZohoConnection for the given user.
 
-        query = query.order_by(ZohoConnection.created_at.desc())
+        ISOLATION RULE: When user_id is provided, this method ONLY ever returns
+        that specific user's connection. It will NEVER return another user's
+        connection as a fallback, even if they share the same tenant_id.
+
+        When user_id is None (internal/legacy calls only), falls back to
+        tenant-scoped lookup with a warning.
+        """
+        user_uuid: Optional[uuid.UUID] = None
+
+        if not user_id:
+            logger.error("get_or_create_zoho_connection called without user_id. Refusing tenant fallback.")
+            return ZohoConnection(tenant_id=tenant_id, user_id=None, status="DISCONNECTED")
+
+        try:
+            user_uuid = uuid.UUID(str(user_id))
+        except Exception:
+            logger.error(f"get_or_create_zoho_connection: invalid user_id '{user_id}'. Refusing tenant fallback.")
+            return ZohoConnection(tenant_id=tenant_id, user_id=None, status="DISCONNECTED")
+
+        # Query strictly by user_id ONLY — completely ignore tenant_id for user connection matching
+        query = (
+            select(ZohoConnection)
+            .where(ZohoConnection.user_id == user_uuid)
+            .order_by(ZohoConnection.created_at.desc())
+        )
+
         res = await db.execute(query)
-        conns = []
-        if hasattr(res, "scalars"):
-            scalars_res = res.scalars()
-            if hasattr(scalars_res, "all"):
-                all_res = scalars_res.all()
-                if isinstance(all_res, list):
-                    conns = all_res
-        if not conns and hasattr(res, "scalar_one_or_none"):
-            single = res.scalar_one_or_none()
-            if single and isinstance(single, ZohoConnection):
-                conns = [single]
+        conns = res.scalars().all()
 
         if not conns:
-            connection = ZohoConnection(tenant_id=tenant_id, status="DISCONNECTED")
+            # No connection found for this user — create a clean DISCONNECTED record
+            connection = ZohoConnection(
+                tenant_id=tenant_id,
+                user_id=user_uuid,
+                status="DISCONNECTED",
+            )
             db.add(connection)
             await db.commit()
             await db.refresh(connection)
             return connection
 
-        # If multiple records exist, pick the active CONNECTED one, or the most recently updated
+        # Pick the best record: prefer CONNECTED + has org_id, else most recent
         connected = [c for c in conns if c.status == "CONNECTED" and c.organization_id]
-        if connected:
-            primary = connected[0]
-        else:
-            primary = conns[0]
+        primary = connected[0] if connected else conns[0]
 
-        # Clean up any extra orphan disconnected records to keep database clean
+        # Clean up any extra orphan DISCONNECTED records for this user
         if len(conns) > 1:
             for extra in conns:
                 if extra.id != primary.id and extra.status != "CONNECTED":
@@ -93,9 +100,10 @@ class MasterDataService:
         tenant_id: str,
         db: AsyncSession,
         organization_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Fetches live COA from Zoho and upserts into local chart_of_accounts table scoped to organization_id."""
-        connection = await self.get_or_create_zoho_connection(tenant_id, db)
+        connection = await self.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
         if connection.status != "CONNECTED" or not connection.organization_id:
             logger.warning(f"Tenant {tenant_id} is not connected to Zoho. Skipping live COA sync.")
             return await self.get_cached_chart_of_accounts(tenant_id, db, organization_id=organization_id)
@@ -424,9 +432,10 @@ class MasterDataService:
         tenant_id: str,
         db: AsyncSession,
         organization_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Fetches live GST taxes and statutory TDS taxes from Zoho and upserts into local tax_rates table scoped to organization_id."""
-        connection = await self.get_or_create_zoho_connection(tenant_id, db)
+        connection = await self.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
         if connection.status != "CONNECTED" or not connection.organization_id:
             logger.warning(f"Tenant {tenant_id} is not connected to Zoho. Skipping live tax sync.")
             return await self.get_cached_taxes(tenant_id, db, organization_id=organization_id)
@@ -857,9 +866,10 @@ class MasterDataService:
         tenant_id: str,
         db: AsyncSession,
         organization_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         """Fetches vendor contacts from Zoho and upserts into local vendors table scoped to organization_id."""
-        connection = await self.get_or_create_zoho_connection(tenant_id, db)
+        connection = await self.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
         if connection.status != "CONNECTED" or not connection.organization_id:
             logger.warning(f"Tenant {tenant_id} is not connected to Zoho. Skipping live vendor sync.")
             return await self.get_cached_vendors(tenant_id, db, organization_id=organization_id)

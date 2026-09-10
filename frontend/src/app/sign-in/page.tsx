@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import PublicNavbar from "@/components/PublicNavbar";
 import PublicFooter from "@/components/PublicFooter";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, invalidateZohoCache, clearAuthToken } from "@/lib/api";
 import { ShieldCheck, ArrowRight, Lock, Mail, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 
 export default function SignInPage() {
@@ -60,8 +60,16 @@ export default function SignInPage() {
 
       const data = await res.json();
       if (typeof window !== "undefined" && data.access_token) {
-        localStorage.setItem("dev_auth_token", data.access_token);
+        // Clear ALL user-scoped caches before writing the new user's token.
+        // This prevents the previous user's Zoho status (and other cached data)
+        // from being returned to the newly logged-in user.
+        clearAuthToken();
+        invalidateZohoCache();
         sessionStorage.removeItem("sakshi_imap_settings_cache");
+        sessionStorage.removeItem("sakshi_invoices_cache");
+        sessionStorage.removeItem("sakshi_staged_docs_cache");
+
+        localStorage.setItem("dev_auth_token", data.access_token);
         if (data.user) {
           localStorage.setItem("user_info", JSON.stringify(data.user));
         }
