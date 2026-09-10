@@ -25,36 +25,28 @@ class MasterDataService:
         if user_id:
             try:
                 user_uuid = uuid.UUID(str(user_id))
-                user_query = query.where(ZohoConnection.user_id == user_uuid).order_by(ZohoConnection.created_at.desc())
-                user_res = await db.execute(user_query)
-                user_conns = user_res.scalars().all()
-                if user_conns:
-                    conns = user_conns
+                query = query.where(ZohoConnection.user_id == user_uuid)
             except Exception:
                 pass
 
         query = query.order_by(ZohoConnection.created_at.desc())
         res = await db.execute(query)
-        conns = []
-        if hasattr(res, "scalars"):
-            scalars_res = res.scalars()
-            if hasattr(scalars_res, "all"):
-                all_res = scalars_res.all()
-                if isinstance(all_res, list):
-                    conns = all_res
-        if not conns and hasattr(res, "scalar_one_or_none"):
-            single = res.scalar_one_or_none()
-            if single and isinstance(single, ZohoConnection):
-                conns = [single]
+        conns = res.scalars().all()
 
         if not conns:
-            connection = ZohoConnection(tenant_id=tenant_id, status="DISCONNECTED")
+            user_uuid_val = None
+            if user_id:
+                try:
+                    user_uuid_val = uuid.UUID(str(user_id))
+                except Exception:
+                    pass
+            connection = ZohoConnection(tenant_id=tenant_id, user_id=user_uuid_val, status="DISCONNECTED")
             db.add(connection)
             await db.commit()
             await db.refresh(connection)
             return connection
 
-        # If multiple records exist, pick the active CONNECTED one, or the most recently updated
+        # If multiple records exist for this user, pick the active CONNECTED one, or the most recently created
         connected = [c for c in conns if c.status == "CONNECTED" and c.organization_id]
         if connected:
             primary = connected[0]
