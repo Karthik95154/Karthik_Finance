@@ -502,13 +502,18 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
             or tds_assessment.get("approval_status") == "APPROVED"
         )
 
-        if is_app:
+        is_classification_unresolved = (
+            tds_assessment.get("tds_conflict_code") == "TDS_AMBIGUOUS_SAC"
+            or (is_app and not section_val and not provision_val and (rate_float is None or rate_float <= 0))
+        )
+
+        if is_app and not is_classification_unresolved:
             canonical = resolve_tds_tax_details(section_val, provision_val, nature_val, rate_hint=rate_float)
             section_val = canonical["section"]
             provision_val = canonical["provision"]
             nature_val = canonical["nature_of_payment"]
 
-        if is_app and (rate_float is None or rate_float <= 0):
+        if is_app and not is_classification_unresolved and (rate_float is None or rate_float <= 0):
             sec_str = f"{provision_val or ''} {section_val or ''} {nature_val or ''}".upper()
             if "CONTRACT" in sec_str or "194C" in sec_str:
                 rate_float = 2.0
@@ -521,7 +526,7 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
             else:
                 rate_float = 2.0
 
-        if is_app and (tds_amt_float is None or tds_amt_float == 0) and base_float and rate_float and rate_float > 0:
+        if is_app and not is_classification_unresolved and (tds_amt_float is None or tds_amt_float == 0) and base_float and rate_float and rate_float > 0:
             tds_amt_float = round((base_float * rate_float) / 100.0, 2)
 
         vendor_decl = tds_assessment.get("vendor_declared_tds") or accounting.get("vendor_declared_tds")
@@ -804,6 +809,24 @@ class TDSEngine:
                 "tds_needs_review": False,
                 "tds_conflict_code": None,
                 "tds_conflict_reason": None,
+            }
+
+        # If applicable is True and base_amount > 0, but no rate, section, or provision is resolved (unresolved classification)
+        if applicable is True and (rate is None or rate == 0.0) and not section and not provision:
+            return {
+                "applicable": True,
+                "provision": None,
+                "section": None,
+                "nature_of_payment": nature_of_payment or "Classification Unresolved",
+                "rate": None,
+                "base_amount": round(base_amount, 2),
+                "tds_amount": None,
+                "pan_valid": cls.is_valid_pan(vendor_pan) if vendor_pan else True,
+                "reason": "TDS classification unresolved - manual review required",
+                "vendor_declared_tds": vendor_declared_tds,
+                "tds_needs_review": True,
+                "tds_conflict_code": "TDS_AMBIGUOUS_SAC",
+                "tds_conflict_reason": "TDS classification unresolved - manual review required",
             }
 
         # If applicable is unspecified (None) and rate is 0 or None with no section/provision, not applicable

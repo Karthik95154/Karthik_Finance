@@ -199,7 +199,7 @@ def test_property_rent_still_maps_correctly_to_194i_10():
 
 
 def test_ambiguous_9973_requires_review():
-    """Test 8: Ambiguous 9973xx with no equipment or software keywords triggers REVIEW_REQUIRED and does not default to 10%."""
+    """Test 8: Ambiguous 9973xx with no equipment or software keywords triggers REVIEW_REQUIRED without forced statutory classification."""
     model_response = {
         "invoice_details": {"invoice_number": "INV-AMBIG-1"},
         "line_items": [
@@ -219,11 +219,24 @@ def test_ambiguous_9973_requires_review():
     norm = ModelResponseAdapter.normalize_model_response(model_response)
     tds = norm["normalized_accounting"]["tds_assessment"]
 
-    # Ambiguous 9973 must not default to 10% rent
-    assert tds["rate"] != 10.0
+    # Ambiguous 9973: no forced section 194I, no forced rate, preserved base, review required
+    assert tds["section"] is None
+    assert tds["rate"] is None
+    assert tds["proposed_tds_amount"] is None
+    assert tds["base_amount"] == 60000.0
     assert tds["approval_status"] == "REVIEW_REQUIRED"
     assert tds["tds_needs_review"] is True
     assert tds["tds_conflict_code"] == "TDS_AMBIGUOUS_SAC"
+
+    # Verify downstream TDS SSOT represents "classification unresolved" without inventing section or rate
+    effective = get_effective_tds_data({"tds_assessment": tds})
+    assert effective["applicable"] is True
+    assert effective["section"] is None
+    assert effective["rate"] is None
+    assert effective["tds_amount"] is None
+    assert effective["base_amount"] == 60000.0
+    assert effective["approval_status"] == "REVIEW_REQUIRED"
+    assert effective["tds_conflict_code"] == "TDS_AMBIGUOUS_SAC"
 
 
 def test_no_vendor_tds_declaration_unchanged():

@@ -781,11 +781,12 @@ class ModelResponseAdapter:
                     l_rate = 10.0
                     l_app = (li_taxable > 0)
                 else:
-                    # Ambiguous 9973xx with no equipment or rent keywords: flag for review, do NOT default to 10%
+                    # Ambiguous 9973xx with no equipment, software, or rent keywords:
+                    # Do NOT force statutory classification (no 194I, no rate). Flag for review and preserve taxable base.
                     has_ambiguous_9973 = True
-                    l_sec = "194I"
-                    l_prov = "Section 194I - Leasing/Rental Services (Review Required)"
-                    l_rate = 2.0
+                    l_sec = None
+                    l_prov = None
+                    l_rate = None
                     l_app = (li_taxable > 0)
             # Section 194C (Manpower, Security Guards, Contractor, Facilities, Transportation)
             elif any(k in combo_text for k in ("9985", "MANPOWER", "GUARD", "FACILITY", "CONTRACTOR", "WORK_CONTRACT", "SUBCONTRACT", "TRANSPORT", "HOUSEKEEPING", "CLEANING")) or ("SECURITY" in combo_text and any(w in combo_text for w in ("GUARD", "PERSONNEL", "MANPOWER", "DEPLOYMENT", "FACILITY", "PATROL", "SURVEILLANCE"))):
@@ -801,7 +802,7 @@ class ModelResponseAdapter:
                 l_app = (li_taxable > 0)
 
             if l_app and li_taxable > 0:
-                l_tds_amt = round((li_taxable * l_rate) / 100.0, 2)
+                l_tds_amt = round((li_taxable * l_rate) / 100.0, 2) if (l_rate is not None and l_rate > 0) else None
                 line_tds_deductions.append({
                     "line_index": l_idx,
                     "section": l_sec,
@@ -815,21 +816,22 @@ class ModelResponseAdapter:
         if line_tds_deductions:
             tds_applicable = True
             comp_base = round(sum(d["base_amount"] for d in line_tds_deductions), 2)
-            comp_tds_total = round(sum(d["tds_amount"] for d in line_tds_deductions), 2)
+            known_tds_amts = [d["tds_amount"] for d in line_tds_deductions if d["tds_amount"] is not None]
+            comp_tds_total = round(sum(known_tds_amts), 2) if known_tds_amts else None
             unique_sections = sorted(list(set(d["section"] for d in line_tds_deductions if d["section"])))
             
             # If model already provided an explicit provision/section (e.g. 194C) and deductions are single-section, preserve it
             if len(unique_sections) > 1:
                 tds_provision = ", ".join(unique_sections)
-                tds_nature = "Composite Services (" + ", ".join(f"{d['section']}: Rs.{d['tds_amount']}" for d in line_tds_deductions) + ")"
-                tds_rate = round((comp_tds_total / comp_base) * 100.0, 2) if comp_base > 0 else 2.0
-                tds_reason_parts = [f"{d['section']} on Rs.{d['base_amount']:,.2f}" for d in line_tds_deductions]
+                tds_nature = "Composite Services (" + ", ".join(f"{d['section']}: Rs.{d['tds_amount']}" for d in line_tds_deductions if d['tds_amount'] is not None) + ")"
+                tds_rate = round((comp_tds_total / comp_base) * 100.0, 2) if (comp_tds_total is not None and comp_base > 0) else None
+                tds_reason_parts = [f"{d['section']} on Rs.{d['base_amount']:,.2f}" for d in line_tds_deductions if d['section']]
                 tds_reason = f"Composite statutory withholding: {', '.join(tds_reason_parts)}"
-            else:
+            elif len(unique_sections) == 1:
                 tds_sec_code = (
                     line_tds_deductions[0].get("section")
                     if line_tds_deductions and line_tds_deductions[0].get("section")
-                    else (unique_sections[0] if unique_sections else "194J")
+                    else unique_sections[0]
                 )
                 tds_provision = (
                     line_tds_deductions[0].get("provision")
@@ -839,6 +841,13 @@ class ModelResponseAdapter:
                 tds_nature = tds_nature or (line_tds_deductions[0].get("provision") if line_tds_deductions else "Statutory deduction")
                 tds_rate = tds_rate or (line_tds_deductions[0].get("rate") if line_tds_deductions else 2.0)
                 tds_reason = f"Statutory withholding under {tds_provision} on assessable value Rs.{comp_base:,.2f}"
+            else:
+                # No unique statutory sections resolved (e.g. all lines are ambiguous SAC 9973)
+                tds_sec_code = None
+                tds_provision = None
+                tds_nature = "Classification Unresolved"
+                tds_rate = None
+                tds_reason = f"Classification unresolved for assessable value Rs.{comp_base:,.2f}. Manual review required."
 
             tds_base = comp_base
             proposed_tds = comp_tds_total
