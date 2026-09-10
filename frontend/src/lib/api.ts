@@ -748,6 +748,25 @@ export interface JournalPreviewResponse {
 
 let devToken: string | null = null;
 
+/** Call this when a new user logs in to wipe the cached in-memory token. */
+export function clearAuthToken() {
+  devToken = null;
+}
+
+export function getCurrentUserIdFromToken(): string | null {
+  if (typeof window === "undefined") return null;
+  const token = localStorage.getItem("dev_auth_token") || devToken;
+  if (!token) return null;
+  try {
+    const parts = token.split(".");
+    if (parts.length < 2) return null;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    return payload.sub || payload.user_id || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 export async function getAuthHeaders(): Promise<Record<string, string>> {
   if (typeof window !== "undefined") {
     const stored = localStorage.getItem("dev_auth_token");
@@ -824,8 +843,10 @@ const ZOHO_STATUS_CACHE_KEY = "sakshi_zoho_status_cache";
 const ZOHO_MASTER_DATA_CACHE_KEY = "sakshi_zoho_md_cache";
 const IMAP_SETTINGS_CACHE_KEY = "sakshi_imap_settings_cache";
 let inMemoryZohoStatus: ZohoStatusResponse | null = null;
+let inMemoryZohoStatusUserId: string | null = null;
 let inMemoryZohoStatusTime = 0;
 let inMemoryMasterData: ZohoMasterDataSummary | null = null;
+let inMemoryMasterDataUserId: string | null = null;
 let inMemoryMasterDataTime = 0;
 let inMemoryImapSettings: IMAPSettings | null = null;
 let inMemoryImapSettingsTime = 0;
@@ -911,12 +932,14 @@ export function invalidateStagedDocumentsCache() {
 }
 
 export function getCachedZohoStatus(): ZohoStatusResponse | null {
-  if (inMemoryZohoStatus) return inMemoryZohoStatus;
-  if (typeof window !== "undefined") {
+  const currentUserId = getCurrentUserIdFromToken();
+  if (inMemoryZohoStatus && inMemoryZohoStatusUserId === currentUserId) return inMemoryZohoStatus;
+  if (typeof window !== "undefined" && currentUserId) {
     try {
-      const raw = sessionStorage.getItem(ZOHO_STATUS_CACHE_KEY);
+      const raw = sessionStorage.getItem(`${ZOHO_STATUS_CACHE_KEY}_${currentUserId}`);
       if (raw) {
         inMemoryZohoStatus = JSON.parse(raw);
+        inMemoryZohoStatusUserId = currentUserId;
         return inMemoryZohoStatus;
       }
     } catch (_) { }
@@ -925,12 +948,14 @@ export function getCachedZohoStatus(): ZohoStatusResponse | null {
 }
 
 export function getCachedMasterData(): ZohoMasterDataSummary | null {
-  if (inMemoryMasterData) return inMemoryMasterData;
-  if (typeof window !== "undefined") {
+  const currentUserId = getCurrentUserIdFromToken();
+  if (inMemoryMasterData && inMemoryMasterDataUserId === currentUserId) return inMemoryMasterData;
+  if (typeof window !== "undefined" && currentUserId) {
     try {
-      const raw = sessionStorage.getItem(ZOHO_MASTER_DATA_CACHE_KEY);
+      const raw = sessionStorage.getItem(`${ZOHO_MASTER_DATA_CACHE_KEY}_${currentUserId}`);
       if (raw) {
         inMemoryMasterData = JSON.parse(raw);
+        inMemoryMasterDataUserId = currentUserId;
         return inMemoryMasterData;
       }
     } catch (_) { }
@@ -939,12 +964,19 @@ export function getCachedMasterData(): ZohoMasterDataSummary | null {
 }
 
 export function invalidateZohoCache() {
+  const currentUserId = getCurrentUserIdFromToken();
   inMemoryZohoStatus = null;
+  inMemoryZohoStatusUserId = null;
   inMemoryZohoStatusTime = 0;
   inMemoryMasterData = null;
+  inMemoryMasterDataUserId = null;
   inMemoryMasterDataTime = 0;
   if (typeof window !== "undefined") {
     try {
+      if (currentUserId) {
+        sessionStorage.removeItem(`${ZOHO_STATUS_CACHE_KEY}_${currentUserId}`);
+        sessionStorage.removeItem(`${ZOHO_MASTER_DATA_CACHE_KEY}_${currentUserId}`);
+      }
       sessionStorage.removeItem(ZOHO_STATUS_CACHE_KEY);
       sessionStorage.removeItem(ZOHO_MASTER_DATA_CACHE_KEY);
     } catch (_) { }
@@ -952,17 +984,15 @@ export function invalidateZohoCache() {
 }
 
 export async function getZohoStatus(forceRefresh = false): Promise<ZohoStatusResponse> {
+  const currentUserId = getCurrentUserIdFromToken();
   const now = Date.now();
-  // Return cached result if fresh (within 20s) and not forced
-  if (!forceRefresh && inMemoryZohoStatus && now - inMemoryZohoStatusTime < 20000) {
+  if (!forceRefresh && inMemoryZohoStatus && inMemoryZohoStatusUserId === currentUserId && now - inMemoryZohoStatusTime < 20000) {
     return inMemoryZohoStatus;
   }
 
-  // Check sessionStorage fallback if in-memory is empty
-  if (!forceRefresh && !inMemoryZohoStatus && typeof window !== "undefined") {
+  if (!forceRefresh && currentUserId) {
     const cached = getCachedZohoStatus();
     if (cached) {
-      // Return cached immediately and refresh in background
       fetchFreshZohoStatus().catch(() => { });
       return cached;
     }
@@ -983,10 +1013,15 @@ async function fetchFreshZohoStatus(): Promise<ZohoStatusResponse> {
       return fallback;
     }
     const data: ZohoStatusResponse = await res.json();
+    const currentUserId = getCurrentUserIdFromToken();
     inMemoryZohoStatus = data;
+    inMemoryZohoStatusUserId = currentUserId;
     inMemoryZohoStatusTime = Date.now();
     if (typeof window !== "undefined") {
       try {
+        if (currentUserId) {
+          sessionStorage.setItem(`${ZOHO_STATUS_CACHE_KEY}_${currentUserId}`, JSON.stringify(data));
+        }
         sessionStorage.setItem(ZOHO_STATUS_CACHE_KEY, JSON.stringify(data));
         window.dispatchEvent(new CustomEvent("zoho-status-updated", { detail: data }));
       } catch (_) { }

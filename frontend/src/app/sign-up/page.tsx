@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import PublicNavbar from "@/components/PublicNavbar";
 import PublicFooter from "@/components/PublicFooter";
-import { API_BASE } from "@/lib/api";
+import { API_BASE, invalidateZohoCache, clearAuthToken } from "@/lib/api";
 import { ShieldCheck, ArrowRight, Lock, Mail, User, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
 
 export default function SignUpPage() {
@@ -64,8 +64,13 @@ export default function SignUpPage() {
 
       const data = await res.json();
       if (typeof window !== "undefined" && data.access_token) {
-        localStorage.setItem("dev_auth_token", data.access_token);
+        // Clear all user-scoped caches before setting the new user's token
+        clearAuthToken();
+        invalidateZohoCache();
         sessionStorage.removeItem("sakshi_imap_settings_cache");
+        sessionStorage.removeItem("sakshi_invoices_cache");
+        sessionStorage.removeItem("sakshi_staged_docs_cache");
+        localStorage.setItem("dev_auth_token", data.access_token);
         if (data.user) {
           localStorage.setItem("user_info", JSON.stringify(data.user));
         }

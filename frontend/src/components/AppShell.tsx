@@ -21,7 +21,7 @@ import {
   AlertTriangle,
   XCircle,
 } from "lucide-react";
-import { getHealth, HealthResponse, getCurrentUser, UserProfile } from "@/lib/api";
+import { getHealth, HealthResponse, getCurrentUser, UserProfile, invalidateZohoCache, clearAuthToken } from "@/lib/api";
 import SystemStatusModal, { getStatusBadge } from "./SystemStatusModal";
 
 interface AppShellProps {
@@ -49,6 +49,12 @@ export default function AppShell({
 
   const handleLogoutConfirm = () => {
     if (typeof window !== "undefined") {
+      // Clear in-memory and persisted caches so the next user starts clean
+      clearAuthToken();
+      invalidateZohoCache();
+      sessionStorage.removeItem("sakshi_imap_settings_cache");
+      sessionStorage.removeItem("sakshi_invoices_cache");
+      sessionStorage.removeItem("sakshi_staged_docs_cache");
       localStorage.removeItem("dev_auth_token");
       localStorage.removeItem("user_info");
       window.location.href = "/";

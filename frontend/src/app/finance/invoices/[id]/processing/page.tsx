@@ -38,13 +38,19 @@ export default function InvoiceProcessingPage() {
         setStatusData(data);
         setPollCount((prev) => prev + 1);
 
+        const isNonCurrentFY =
+          data.period_category === "PREVIOUS_FINANCIAL_YEAR" ||
+          (data.period_category && data.period_category !== "CURRENT_FINANCIAL_YEAR");
+        const requiresPeriodConfirmation = isNonCurrentFY && data.period_decision === "PENDING";
+
         const isReadyForWorkspace =
-          data.status === "HITL_REVIEW" ||
-          data.status === "FINAL_HITL_REVIEW" ||
-          data.status === "APPROVED" ||
-          data.approval_status === "APPROVED" ||
-          data.status === "COMPLETED" ||
-          data.status === "PROCESSED";
+          (data.status === "HITL_REVIEW" ||
+            data.status === "FINAL_HITL_REVIEW" ||
+            data.status === "APPROVED" ||
+            data.approval_status === "APPROVED" ||
+            data.status === "COMPLETED" ||
+            data.status === "PROCESSED") &&
+          !requiresPeriodConfirmation;
 
         if (isReadyForWorkspace) {
           // Trigger Windows / Native Desktop Notification Toast

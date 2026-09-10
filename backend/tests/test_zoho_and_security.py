@@ -143,6 +143,9 @@ async def test_zoho_disconnect_endpoint():
     )
 
     mock_db = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [mock_connection]
+    mock_db.execute.return_value = mock_result
 
     async def override_get_db():
         yield mock_db
@@ -150,7 +153,7 @@ async def test_zoho_disconnect_endpoint():
     app.dependency_overrides[get_db] = override_get_db
 
     token = create_access_token(
-        user_id="user_admin",
+        user_id="00000000-0000-0000-0000-000000000001",
         email="admin@sakshi.ai",
         tenant_id="default-tenant-001",
         role="ADMIN",

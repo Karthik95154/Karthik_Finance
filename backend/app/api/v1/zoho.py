@@ -199,9 +199,9 @@ async def zoho_oauth_callback(
     # Trigger automatic initial sync if org was selected
     if connection.organization_id:
         try:
-            await master_data_service.sync_chart_of_accounts(tenant_id, db)
-            await master_data_service.sync_taxes(tenant_id, db)
-            await master_data_service.sync_vendors(tenant_id, db)
+            await master_data_service.sync_chart_of_accounts(tenant_id, db, organization_id=connection.organization_id, user_id=user_id)
+            await master_data_service.sync_taxes(tenant_id, db, organization_id=connection.organization_id, user_id=user_id)
+            await master_data_service.sync_vendors(tenant_id, db, organization_id=connection.organization_id, user_id=user_id)
         except Exception as sync_exc:
             logger.warning(f"Initial sync warning: {sync_exc}")
 
@@ -422,17 +422,30 @@ async def disconnect_zoho(
     current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
     db: AsyncSession = Depends(get_db),
 ):
-    """Disconnects Zoho integration and removes stored tokens for the tenant."""
+    """Disconnects Zoho integration and removes stored tokens for the current user only."""
     tenant_id = current_user.tenant_id
-    
-    # Query all active or existing ZohoConnection records for this tenant
-    result = await db.execute(select(ZohoConnection).where(ZohoConnection.tenant_id == tenant_id))
+    import uuid as _uuid
+
+    # Resolve user_id as UUID
+    try:
+        user_uuid = _uuid.UUID(str(current_user.id))
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid user identity.",
+        )
+
+    # Query strictly by user_id ONLY
+    result = await db.execute(
+        select(ZohoConnection).where(
+            ZohoConnection.user_id == user_uuid,
+        )
+    )
     connections = result.scalars().all()
-    
+
     if not connections:
-        connection = ZohoConnection(tenant_id=tenant_id, status="DISCONNECTED")
-        db.add(connection)
-        connections = [connection]
+        # Nothing to disconnect — already clean for this user
+        return {"status": "success", "message": "Zoho connection was already disconnected."}
 
     for conn in connections:
         conn.status = "DISCONNECTED"
@@ -442,7 +455,7 @@ async def disconnect_zoho(
         conn.organization_id = None
         conn.organization_name = None
         conn.updated_at = datetime.now(timezone.utc)
-    
+
     await db.commit()
 
     return {"status": "success", "message": "Zoho connection disconnected successfully."}
