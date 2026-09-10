@@ -178,6 +178,7 @@ class MasterDataService:
             except Exception as e:
                 logger.warning(f"On-demand COA sync error: {e}")
 
+
         if not accounts:
             return []
 
@@ -996,6 +997,16 @@ class MasterDataService:
         except Exception as e:
             logger.warning(f"Could not fetch Zoho branches: {e}")
 
+        # Determine if organization genuinely supports multi-branch transaction tracking.
+        # In Zoho Books (India Edition), single-branch organizations have only 1 default Head Office
+        # branch registration. Sending branch_id on POST /bills for such organizations fails with
+        # code 8 ("Invalid Element branch_id"). Only true multi-branch organizations (len(branches) > 1
+        # or having explicit non-primary branches) accept/require branch_id on transaction headers.
+        is_multi_branch_org = (
+            len(branches) > 1
+            or any(not b.get("is_primary_branch", False) for b in branches if isinstance(b, dict))
+        )
+
         matched_branch = None
         # Match branch by GSTIN first
         if invoice_recipient_gstin and branches:
@@ -1018,11 +1029,14 @@ class MasterDataService:
         if matched_branch:
             b_state = matched_branch.get("address", {}).get("state_code") or matched_branch.get("address", {}).get("state")
             zoho_b_st, _, _ = normalize_indian_state(state_input=b_state)
+            # Only return branch_id if organization is genuinely multi-branched.
+            # For single-branch / single-entity Head Office orgs, return None so the field is safely omitted.
+            resolved_bid = matched_branch.get("branch_id") if is_multi_branch_org else None
             return {
                 "destination_state_code": zoho_b_st or target_zoho_st,
-                "branch_id": matched_branch.get("branch_id"),
+                "branch_id": resolved_bid,
                 "branch_name": matched_branch.get("branch_name"),
-                "source": "zoho_branch_match",
+                "source": "zoho_branch_match" if is_multi_branch_org else "zoho_org_primary_branch",
             }
 
         # 2. Match against primary organization registration

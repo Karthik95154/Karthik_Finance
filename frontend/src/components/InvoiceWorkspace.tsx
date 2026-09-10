@@ -5418,18 +5418,17 @@ export default function InvoiceWorkspace({
                     </div>
 
                     {/* Journal Lines Table (Editable Journal) */}
-                    <div style={{ overflowX: "auto", marginBottom: "12px" }}>
-                      <table style={{ width: "100%", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
+                    <div style={{ overflowX: "auto", marginBottom: "12px", width: "100%" }}>
+                      <table style={{ width: "100%", minWidth: "920px", tableLayout: "fixed", fontSize: "11px", borderCollapse: "collapse", textAlign: "left" }}>
                         <thead>
                           <tr style={{ borderBottom: "1px solid var(--border-subtle)", color: "var(--text-secondary)", background: "var(--bg-main)" }}>
-                            <th style={{ padding: "8px 6px", width: "30px" }}>#</th>
-                            <th style={{ padding: "8px 6px", minWidth: "160px" }}>Account Name / COA</th>
-                            <th style={{ padding: "8px 6px", width: "100px" }}>Account Code</th>
-                            <th style={{ padding: "8px 6px", width: "110px" }}>Type</th>
-                            <th style={{ padding: "8px 6px", width: "100px", textAlign: "right" }}>Debit (₹)</th>
-                            <th style={{ padding: "8px 6px", width: "100px", textAlign: "right" }}>Credit (₹)</th>
-                            <th style={{ padding: "8px 6px", width: "95px" }}>Provenance</th>
-                            <th style={{ padding: "8px 6px", minWidth: "140px" }}>Description</th>
+                            <th style={{ padding: "8px 6px", width: "36px" }}>#</th>
+                            <th style={{ padding: "8px 6px", width: "240px" }}>Account Name / COA</th>
+                            <th style={{ padding: "8px 6px", width: "110px" }}>Account Code</th>
+                            <th style={{ padding: "8px 6px", width: "140px" }}>Type</th>
+                            <th style={{ padding: "8px 6px", width: "85px", textAlign: "right" }}>Debit (₹)</th>
+                            <th style={{ padding: "8px 6px", width: "85px", textAlign: "right" }}>Credit (₹)</th>
+                            <th style={{ padding: "8px 6px" }}>Description</th>
                             <th style={{ padding: "8px 6px", width: "36px" }}></th>
                           </tr>
                         </thead>
@@ -5621,7 +5620,14 @@ export default function InvoiceWorkspace({
                               <td style={{ padding: "6px" }}>
                                 <select
                                   className="table-input"
-                                  style={{ fontSize: "10px", padding: "4px 6px" }}
+                                  style={{
+                                    width: "100%",
+                                    fontSize: "11px",
+                                    fontWeight: "500",
+                                    padding: "4px 8px",
+                                    cursor: "pointer",
+                                    background: "#ffffff",
+                                  }}
                                   value={line.line_type || "EXPENSE"}
                                   onChange={(e) => handleJournalLineChange(idx, "line_type", e.target.value)}
                                 >
@@ -5661,21 +5667,6 @@ export default function InvoiceWorkspace({
                                   }}
                                 />
                               </td>
-                              <td style={{ padding: "6px", fontSize: "10px", color: "var(--text-secondary)" }}>
-                                <span
-                                  style={{
-                                    fontFamily: "monospace",
-                                    padding: "2px 5px",
-                                    borderRadius: "4px",
-                                    background: line.provenance === "HITL_OVERRIDE" || line.provenance === "CUSTOMER_EDIT" || line.provenance === "MANUAL_EDIT" ? "#fef3c7" : "#f1f5f9",
-                                    color: line.provenance === "HITL_OVERRIDE" || line.provenance === "CUSTOMER_EDIT" || line.provenance === "MANUAL_EDIT" ? "#92400e" : "var(--text-secondary)",
-                                    fontWeight: "600",
-                                    fontSize: "9px",
-                                  }}
-                                >
-                                  {line.provenance === "HITL_OVERRIDE" ? "EDITED" : (line.provenance || "EDITED")}
-                                </span>
-                              </td>
                               <td style={{ padding: "6px" }}>
                                 <input
                                   type="text"
@@ -5709,7 +5700,7 @@ export default function InvoiceWorkspace({
                             <td style={{ padding: "8px", textAlign: "right", fontFamily: "monospace", color: "#15803d" }}>
                               ₹{journalEntry.total_credit?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) ?? "0.00"}
                             </td>
-                            <td colSpan={3} style={{ padding: "8px", fontSize: "10px", color: "var(--text-secondary)" }}>
+                            <td colSpan={2} style={{ padding: "8px", fontSize: "10px", color: "var(--text-secondary)" }}>
                               {journalEntry.validation?.balanced ? "✓ Reconciled & Balanced" : "⚠ Review Discrepancy"}
                             </td>
                           </tr>
