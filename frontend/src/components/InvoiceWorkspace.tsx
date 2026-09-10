@@ -843,13 +843,13 @@ export default function InvoiceWorkspace({
           if (!bankObj.upi_id) bankObj.upi_id = addBank.upi_id || addBank.vpa || addBank.upi;
         }
 
-        // Direct fallback to top-level or vDet flat bank fields
-        bankObj.bank_name = bankObj.bank_name || (vDet as any).bank_name || rawData.bank_name || currData.bank_name;
-        bankObj.account_number = bankObj.account_number || (vDet as any).account_number || (vDet as any).bank_account_number || rawData.account_number || currData.account_number;
-        bankObj.ifsc_code = bankObj.ifsc_code || (vDet as any).ifsc_code || (vDet as any).ifsc || rawData.ifsc_code || currData.ifsc_code;
-        bankObj.branch = bankObj.branch || (vDet as any).branch || rawData.branch || currData.branch;
+        // Direct fallback to top-level or vDet flat bank fields, with canonical bank_details fallback
+        bankObj.bank_name = bankObj.bank_name || (vDet as any).bank_name || rawData.bank_details?.bank_name || currData.bank_details?.bank_name;
+        bankObj.account_number = bankObj.account_number || (vDet as any).account_number || (vDet as any).bank_account_number || rawData.bank_details?.account_number || currData.bank_details?.account_number;
+        bankObj.ifsc_code = bankObj.ifsc_code || (vDet as any).ifsc_code || (vDet as any).ifsc || rawData.bank_details?.ifsc_code || currData.bank_details?.ifsc_code;
+        bankObj.branch = bankObj.branch || (vDet as any).branch || rawData.bank_details?.branch || currData.bank_details?.branch;
         bankObj.branch_name = bankObj.branch_name || bankObj.branch;
-        bankObj.upi_id = bankObj.upi_id || (vDet as any).upi_id || (vDet as any).vpa || rawData.upi_id || currData.upi_id;
+        bankObj.upi_id = bankObj.upi_id || (vDet as any).upi_id || (vDet as any).vpa || rawData.bank_details?.upi_id || currData.bank_details?.upi_id;
 
         const unparsedBankText: string =
           (typeof (vDet as any)?.bank_details === "string" ? (vDet as any).bank_details : "") ||

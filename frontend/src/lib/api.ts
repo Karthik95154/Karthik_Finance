@@ -30,6 +30,7 @@ export interface BankDetails {
   bank_name?: string | null;
   branch?: string | null;
   upi_id?: string | null;
+  raw_text?: string | null;
 }
 
 export interface ExtractedInvoiceData {
@@ -67,6 +68,7 @@ export interface ExtractedInvoiceData {
 
   subtotal?: number | null;
   discount_total?: number | null;
+  taxable_amount?: number | null;
   tax_total?: number | null;
   cgst?: number | null;
   cgst_amount?: number | null;
