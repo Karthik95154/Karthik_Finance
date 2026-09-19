@@ -1,0 +1,21 @@
+{
+  "test_id": "CASE_8",
+  "name": "Bare Section 393 + Missing PAN",
+  "invoice_number": "INV-P0-008",
+  "invoice_date": "2026-05-17",
+  "vendor_name": "Unspecified Service Provider",
+  "vendor_pan": null,
+  "section": "Section 393",
+  "provision": null,
+  "nature_of_payment": null,
+  "subtotal": 100000.00,
+  "total_amount": 118000.00,
+  "tds_assessment": {
+    "tds_applicable": true,
+    "section": "Section 393",
+    "provision": null,
+    "nature_of_payment": null,
+    "tds_base_amount": 100000.00,
+    "vendor_pan": null
+  }
+}

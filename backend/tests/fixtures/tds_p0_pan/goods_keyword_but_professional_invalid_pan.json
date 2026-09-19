@@ -1,0 +1,21 @@
+{
+  "test_id": "CASE_10",
+  "name": "Goods Keyword but Canonical Professional Services + Invalid PAN",
+  "invoice_number": "INV-P0-010",
+  "invoice_date": "2026-05-19",
+  "vendor_name": "Regulatory & Legal Associates",
+  "vendor_pan": "INVALID_PAN_PROF_GOODS",
+  "section": "Section 393",
+  "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+  "nature_of_payment": "Professional legal consulting involving consumer goods compliance",
+  "subtotal": 100000.00,
+  "total_amount": 118000.00,
+  "tds_assessment": {
+    "tds_applicable": true,
+    "section": "Section 393",
+    "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+    "nature_of_payment": "Professional legal consulting involving consumer goods compliance",
+    "tds_base_amount": 100000.00,
+    "vendor_pan": "INVALID_PAN_PROF_GOODS"
+  }
+}

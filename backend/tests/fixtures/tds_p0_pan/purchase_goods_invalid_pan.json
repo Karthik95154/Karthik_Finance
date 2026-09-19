@@ -1,0 +1,21 @@
+{
+  "test_id": "CASE_3",
+  "name": "Purchase of Goods / Section 393 Table 8(ii) + Invalid PAN",
+  "invoice_number": "INV-P0-003",
+  "invoice_date": "2026-05-12",
+  "vendor_name": "National Steel & Hardware Traders",
+  "vendor_pan": "INVALID_PAN_GOODS",
+  "section": "Section 393",
+  "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+  "nature_of_payment": "Purchase of Goods",
+  "subtotal": 100000.00,
+  "total_amount": 118000.00,
+  "tds_assessment": {
+    "tds_applicable": true,
+    "section": "Section 393",
+    "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+    "nature_of_payment": "Purchase of Goods",
+    "tds_base_amount": 100000.00,
+    "vendor_pan": "INVALID_PAN_GOODS"
+  }
+}

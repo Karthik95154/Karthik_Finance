@@ -1,0 +1,453 @@
+[
+  {
+    "test_case": "Technical Services + Invalid PAN",
+    "fixture_file": "technical_invalid_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-001",
+      "vendor_pan": "INVALID_PAN_TECH",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "TECHNICAL_SERVICES",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 397(2) higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "expected_after": {
+      "rate": 20.0,
+      "tds_amount": 20000.0,
+      "review": false,
+      "category_key": "TECHNICAL_SERVICES"
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "Professional Services + Invalid PAN",
+    "fixture_file": "professional_invalid_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-002",
+      "vendor_pan": "INVALID_PAN_PROF",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+      "nature_of_payment": "Professional Services & Consultancy",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+      "nature_of_payment": "Professional Services & Consultancy",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "PROFESSIONAL_SERVICES",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+      "nature_of_payment": "Professional Services & Consultancy",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 397(2) higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "expected_after": {
+      "rate": 20.0,
+      "tds_amount": 20000.0,
+      "review": false,
+      "category_key": "PROFESSIONAL_SERVICES"
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "Purchase of Goods / Section 393 Table 8(ii) + Invalid PAN",
+    "fixture_file": "purchase_goods_invalid_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-003",
+      "vendor_pan": "INVALID_PAN_GOODS",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "PURCHASE_OF_GOODS",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "pan_valid": false,
+      "tds_rate": 5.0,
+      "tds_amount": 5000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 397(2) higher deduction (5%) applied to Purchase of Goods due to invalid vendor PAN."
+    },
+    "expected_after": {
+      "rate": 5.0,
+      "tds_amount": 5000.0,
+      "review": false,
+      "category_key": "PURCHASE_OF_GOODS"
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "E-commerce / Section 393 Table 8(v) + Invalid PAN",
+    "fixture_file": "ecommerce_invalid_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-004",
+      "vendor_pan": "INVALID_PAN_ECOM",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(v)] - E-commerce Participant",
+      "nature_of_payment": "E-commerce Participant Supply",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(v)] - E-commerce Participant",
+      "nature_of_payment": "E-commerce Participant Supply",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "ECOMMERCE",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(v)] - E-commerce Participant",
+      "nature_of_payment": "E-commerce Participant Supply",
+      "pan_valid": false,
+      "tds_rate": 5.0,
+      "tds_amount": 5000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 397(2) higher deduction (5%) applied to E-commerce Participant supply due to invalid vendor PAN."
+    },
+    "expected_after": {
+      "rate": 5.0,
+      "tds_amount": 5000.0,
+      "review": false,
+      "category_key": "ECOMMERCE"
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "Purchase of Goods + Valid PAN",
+    "fixture_file": "purchase_goods_valid_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-005",
+      "vendor_pan": "AABCB1234F",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "pan_valid": true,
+      "tds_rate": 10.0,
+      "tds_amount": 10000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Professional/Technical TDS (10.0%) for Purchase of Goods"
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "PURCHASE_OF_GOODS",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "pan_valid": true,
+      "tds_rate": 0.1,
+      "tds_amount": 100.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Purchase of Goods TDS (0.1%)"
+    },
+    "expected_after": {
+      "rate": 0.1,
+      "tds_amount": 100.0,
+      "review": false,
+      "category_key": "PURCHASE_OF_GOODS"
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "Technical Services + Missing PAN",
+    "fixture_file": "technical_missing_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-006",
+      "vendor_pan": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+      "pan_valid": true,
+      "tds_rate": 10.0,
+      "tds_amount": 10000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Professional/Technical TDS (10.0%) for Fees for Technical Services (FTS) & Cloud Infrastructure"
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "TECHNICAL_SERVICES",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 397(2) higher deduction (20%) applied due to missing vendor PAN."
+    },
+    "expected_after": {
+      "rate": 20.0,
+      "tds_amount": 20000.0,
+      "review": false,
+      "category_key": "TECHNICAL_SERVICES"
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "Purchase of Goods + Missing PAN",
+    "fixture_file": "purchase_goods_missing_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-007",
+      "vendor_pan": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "pan_valid": true,
+      "tds_rate": 10.0,
+      "tds_amount": 10000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Professional/Technical TDS (10.0%) for Purchase of Goods"
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "PURCHASE_OF_GOODS",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+      "nature_of_payment": "Purchase of Goods",
+      "pan_valid": false,
+      "tds_rate": 5.0,
+      "tds_amount": 5000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 397(2) higher deduction (5%) applied to Purchase of Goods due to missing vendor PAN."
+    },
+    "expected_after": {
+      "rate": 5.0,
+      "tds_amount": 5000.0,
+      "review": false,
+      "category_key": "PURCHASE_OF_GOODS"
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "Bare Section 393 + Missing PAN",
+    "fixture_file": "bare_section_393_missing_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-008",
+      "vendor_pan": null,
+      "section": "Section 393",
+      "provision": null,
+      "nature_of_payment": null,
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": null,
+      "nature_of_payment": null,
+      "pan_valid": true,
+      "tds_rate": 10.0,
+      "tds_amount": 10000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Professional/Technical TDS (10.0%) for Professional services"
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": null,
+      "nature_of_payment": "Classification Unresolved",
+      "pan_valid": false,
+      "tds_rate": null,
+      "tds_amount": null,
+      "review_required": true,
+      "conflict_code": "TDS_AMBIGUOUS_SAC",
+      "reason": "TDS classification unresolved - manual review required for Section 393"
+    },
+    "expected_after": {
+      "rate": null,
+      "tds_amount": null,
+      "review": true,
+      "conflict_code": "TDS_AMBIGUOUS_SAC",
+      "category_key": null
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "Goods Keyword but Canonical Technical Services + Invalid PAN",
+    "fixture_file": "goods_keyword_but_technical_invalid_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-009",
+      "vendor_pan": "INVALID_PAN_TECH_GOODS",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Technical service for goods logistics and ERP integration",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Technical service for goods logistics and ERP integration",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "TECHNICAL_SERVICES",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+      "nature_of_payment": "Technical service for goods logistics and ERP integration",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 397(2) higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "expected_after": {
+      "rate": 20.0,
+      "tds_amount": 20000.0,
+      "review": false,
+      "category_key": "TECHNICAL_SERVICES"
+    },
+    "status": "PASS"
+  },
+  {
+    "test_case": "Goods Keyword but Canonical Professional Services + Invalid PAN",
+    "fixture_file": "goods_keyword_but_professional_invalid_pan.json",
+    "input": {
+      "invoice_number": "INV-P0-010",
+      "vendor_pan": "INVALID_PAN_PROF_GOODS",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+      "nature_of_payment": "Professional legal consulting involving consumer goods compliance",
+      "subtotal": 100000.0
+    },
+    "before_fix": {
+      "tds_applicable": true,
+      "category_key": null,
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+      "nature_of_payment": "Professional legal consulting involving consumer goods compliance",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "after_fix": {
+      "tds_applicable": true,
+      "category_key": "PROFESSIONAL_SERVICES",
+      "section": "Section 393",
+      "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
+      "nature_of_payment": "Professional legal consulting involving consumer goods compliance",
+      "pan_valid": false,
+      "tds_rate": 20.0,
+      "tds_amount": 20000.0,
+      "review_required": false,
+      "conflict_code": null,
+      "reason": "Section 397(2) higher deduction (20%) applied due to invalid vendor PAN."
+    },
+    "expected_after": {
+      "rate": 20.0,
+      "tds_amount": 20000.0,
+      "review": false,
+      "category_key": "PROFESSIONAL_SERVICES"
+    },
+    "status": "PASS"
+  }
+]

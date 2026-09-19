@@ -1,0 +1,21 @@
+{
+  "test_id": "CASE_1",
+  "name": "Technical Services + Invalid PAN",
+  "invoice_number": "INV-P0-001",
+  "invoice_date": "2026-05-10",
+  "vendor_name": "Cloud Infra Tech Ltd",
+  "vendor_pan": "INVALID_PAN_TECH",
+  "section": "Section 393",
+  "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+  "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+  "subtotal": 100000.00,
+  "total_amount": 118000.00,
+  "tds_assessment": {
+    "tds_applicable": true,
+    "section": "Section 393",
+    "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+    "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+    "tds_base_amount": 100000.00,
+    "vendor_pan": "INVALID_PAN_TECH"
+  }
+}

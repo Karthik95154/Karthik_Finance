@@ -79,6 +79,31 @@ STANDARD_ACCOUNTS = {
         "account_name": "Invoice Adjustments",
         "account_type": "expense",
     },
+    "RCM_CGST_PAYABLE": {
+        "account_id": "LIAB_RCM_CGST",
+        "account_name": "RCM CGST Payable (Recipient Liability)",
+        "account_type": "liability",
+    },
+    "RCM_SGST_PAYABLE": {
+        "account_id": "LIAB_RCM_SGST",
+        "account_name": "RCM SGST / UTGST Payable (Recipient Liability)",
+        "account_type": "liability",
+    },
+    "RCM_IGST_PAYABLE": {
+        "account_id": "LIAB_RCM_IGST",
+        "account_name": "RCM IGST Payable (Recipient Liability)",
+        "account_type": "liability",
+    },
+    "RCM_CESS_PAYABLE": {
+        "account_id": "LIAB_RCM_CESS",
+        "account_name": "RCM Cess Payable (Recipient Liability)",
+        "account_type": "liability",
+    },
+    "RCM_PENDING_ITC": {
+        "account_id": "TAX_RCM_PENDING",
+        "account_name": "Input GST Pending Cash Discharge (RCM)",
+        "account_type": "asset",
+    },
 }
 
 DEFAULT_TOLERANCE = 1.0  # 1 INR tolerance for monetary rounding
@@ -434,6 +459,15 @@ class JournalGenerator:
                 )
             )
 
+        # RCM Determination from Authoritative GST Engine
+        is_rcm = bool(effective_gst.get("is_reverse_charge")) if effective_gst else False
+        rcm_notification = (effective_gst.get("rcm_notification") or "Notif 13/2017-CT(R)") if is_rcm else None
+        rcm_category = effective_gst.get("rcm_category") if is_rcm else None
+
+        if effective_gst and effective_gst.get("rcm_conflict"):
+            requires_review = True
+            warnings.append(f"RCM Conflict detected: {effective_gst.get('rcm_reason') or 'Invoice tax fields conflict with RCM classification.'}")
+
         # Authoritative ITC Evaluation Consumption via SSOT
         from app.services.itc_engine import get_effective_itc_data, ITCStatus
 
@@ -471,99 +505,61 @@ class JournalGenerator:
                     )
                 )
         elif itc_status == "ELIGIBLE":
-            if cgst_amt > 0:
-                lines.append(
-                    JournalLine(
-                        account_id=STANDARD_ACCOUNTS["INPUT_CGST"]["account_id"],
-                        account_name=STANDARD_ACCOUNTS["INPUT_CGST"]["account_name"],
-                        line_type="INPUT_TAX",
-                        debit=cgst_amt,
-                        credit=0.0,
-                        amount=cgst_amt,
-                        provenance="DETERMINISTIC",
-                        description="Input CGST (Eligible)",
-                        cost_center=cost_center,
-                        project=project,
-                        department=department,
-                        rule_reference="CGST Act Sec 16(1)",
+            if is_rcm:
+                # Under RCM (Sec 16(2) and Sec 49), ITC is claimable only after discharging RCM tax in cash.
+                # In the invoice stage without authoritative cash discharge ledger, record as Input GST Pending Cash Discharge (RCM).
+                # Note: if partially blocked (e.g. eligible_tax and blocked_tax both > 0), split accordingly.
+                rcm_elig = eligible_tax if eligible_tax > 0 else (total_extracted_gst - blocked_tax)
+                if rcm_elig > 0:
+                    lines.append(
+                        JournalLine(
+                            account_id=STANDARD_ACCOUNTS["RCM_PENDING_ITC"]["account_id"],
+                            account_name=STANDARD_ACCOUNTS["RCM_PENDING_ITC"]["account_name"],
+                            line_type="INPUT_TAX",
+                            debit=rcm_elig,
+                            credit=0.0,
+                            amount=rcm_elig,
+                            provenance="DETERMINISTIC",
+                            description=f"Input GST under RCM - Eligible upon discharging tax liability in cash (Sec 16(2)) [{rcm_category or 'RCM'}]",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=f"CGST Act Sec 16(2) RCM Cash Discharge ({rcm_notification or '13/2017-CT(R)'})",
+                        )
                     )
-                )
-            if sgst_amt > 0:
-                lines.append(
-                    JournalLine(
-                        account_id=STANDARD_ACCOUNTS["INPUT_SGST"]["account_id"],
-                        account_name=STANDARD_ACCOUNTS["INPUT_SGST"]["account_name"],
-                        line_type="INPUT_TAX",
-                        debit=sgst_amt,
-                        credit=0.0,
-                        amount=sgst_amt,
-                        provenance="DETERMINISTIC",
-                        description="Input SGST / UTGST (Eligible)",
-                        cost_center=cost_center,
-                        project=project,
-                        department=department,
-                        rule_reference="CGST Act Sec 16(1)",
+                if blocked_tax > 0:
+                    lines.append(
+                        JournalLine(
+                            account_id=STANDARD_ACCOUNTS["INELIGIBLE_TAX"]["account_id"],
+                            account_name=STANDARD_ACCOUNTS["INELIGIBLE_TAX"]["account_name"],
+                            line_type="EXPENSE",
+                            debit=blocked_tax,
+                            credit=0.0,
+                            amount=blocked_tax,
+                            provenance="DETERMINISTIC",
+                            description="Ineligible Input Tax Expense under Section 17(5)",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=effective_itc.get("rule_reference") or "CGST Act Sec 17(5)",
+                        )
                     )
-                )
-            if igst_amt > 0:
-                lines.append(
-                    JournalLine(
-                        account_id=STANDARD_ACCOUNTS["INPUT_IGST"]["account_id"],
-                        account_name=STANDARD_ACCOUNTS["INPUT_IGST"]["account_name"],
-                        line_type="INPUT_TAX",
-                        debit=igst_amt,
-                        credit=0.0,
-                        amount=igst_amt,
-                        provenance="DETERMINISTIC",
-                        description="Input IGST (Eligible)",
-                        cost_center=cost_center,
-                        project=project,
-                        department=department,
-                        rule_reference="CGST Act Sec 16(1)",
-                    )
-                )
-            if cess_amt > 0:
-                lines.append(
-                    JournalLine(
-                        account_id=STANDARD_ACCOUNTS["INPUT_CESS"]["account_id"],
-                        account_name=STANDARD_ACCOUNTS["INPUT_CESS"]["account_name"],
-                        line_type="INPUT_TAX",
-                        debit=cess_amt,
-                        credit=0.0,
-                        amount=cess_amt,
-                        provenance="DETERMINISTIC",
-                        description="Input Cess (Eligible)",
-                        cost_center=cost_center,
-                        project=project,
-                        department=department,
-                    )
-                )
-        else:
-            # PARTIALLY_ELIGIBLE, GSTR2B_PENDING, or REVIEW_REQUIRED
-            if itc_status in ("REVIEW_REQUIRED", ITCStatus.REVIEW_REQUIRED.value) or review_tax > 0:
-                requires_review = True
-                warnings.append(f"ITC status is {itc_status}. Input tax requires verification.")
             else:
-                warnings.append(f"ITC status is {itc_status}. Booked with standard split.")
-            
-            # 1. Eligible Portion -> Input GST Asset
-            if eligible_tax > 0:
-                ratio = eligible_tax / (total_extracted_gst if total_extracted_gst > 0 else 1.0)
                 if cgst_amt > 0:
                     lines.append(
                         JournalLine(
                             account_id=STANDARD_ACCOUNTS["INPUT_CGST"]["account_id"],
                             account_name=STANDARD_ACCOUNTS["INPUT_CGST"]["account_name"],
                             line_type="INPUT_TAX",
-                            debit=round(cgst_amt * ratio, 2),
+                            debit=cgst_amt,
                             credit=0.0,
-                            amount=round(cgst_amt * ratio, 2),
+                            amount=cgst_amt,
                             provenance="DETERMINISTIC",
-                            description="Input CGST (Eligible Portion)",
+                            description="Input CGST (Eligible)",
                             cost_center=cost_center,
                             project=project,
                             department=department,
-                            rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
+                            rule_reference="CGST Act Sec 16(1)",
                         )
                     )
                 if sgst_amt > 0:
@@ -572,15 +568,15 @@ class JournalGenerator:
                             account_id=STANDARD_ACCOUNTS["INPUT_SGST"]["account_id"],
                             account_name=STANDARD_ACCOUNTS["INPUT_SGST"]["account_name"],
                             line_type="INPUT_TAX",
-                            debit=round(sgst_amt * ratio, 2),
+                            debit=sgst_amt,
                             credit=0.0,
-                            amount=round(sgst_amt * ratio, 2),
+                            amount=sgst_amt,
                             provenance="DETERMINISTIC",
-                            description="Input SGST (Eligible Portion)",
+                            description="Input SGST / UTGST (Eligible)",
                             cost_center=cost_center,
                             project=project,
                             department=department,
-                            rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
+                            rule_reference="CGST Act Sec 16(1)",
                         )
                     )
                 if igst_amt > 0:
@@ -589,17 +585,113 @@ class JournalGenerator:
                             account_id=STANDARD_ACCOUNTS["INPUT_IGST"]["account_id"],
                             account_name=STANDARD_ACCOUNTS["INPUT_IGST"]["account_name"],
                             line_type="INPUT_TAX",
-                            debit=round(igst_amt * ratio, 2),
+                            debit=igst_amt,
                             credit=0.0,
-                            amount=round(igst_amt * ratio, 2),
+                            amount=igst_amt,
                             provenance="DETERMINISTIC",
-                            description="Input IGST (Eligible Portion)",
+                            description="Input IGST (Eligible)",
                             cost_center=cost_center,
                             project=project,
                             department=department,
-                            rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
+                            rule_reference="CGST Act Sec 16(1)",
                         )
                     )
+                if cess_amt > 0:
+                    lines.append(
+                        JournalLine(
+                            account_id=STANDARD_ACCOUNTS["INPUT_CESS"]["account_id"],
+                            account_name=STANDARD_ACCOUNTS["INPUT_CESS"]["account_name"],
+                            line_type="INPUT_TAX",
+                            debit=cess_amt,
+                            credit=0.0,
+                            amount=cess_amt,
+                            provenance="DETERMINISTIC",
+                            description="Input Cess (Eligible)",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                        )
+                    )
+        else:
+            # PARTIALLY_ELIGIBLE, GSTR2B_PENDING, or REVIEW_REQUIRED
+            if itc_status in ("REVIEW_REQUIRED", ITCStatus.REVIEW_REQUIRED.value) or review_tax > 0:
+                requires_review = True
+                warnings.append(f"ITC status is {itc_status}. Input tax requires verification.")
+            else:
+                warnings.append(f"ITC status is {itc_status}. Booked with standard split.")
+            
+            # 1. Eligible Portion -> Input GST Asset (or RCM Pending if RCM)
+            if eligible_tax > 0:
+                if is_rcm:
+                    lines.append(
+                        JournalLine(
+                            account_id=STANDARD_ACCOUNTS["RCM_PENDING_ITC"]["account_id"],
+                            account_name=STANDARD_ACCOUNTS["RCM_PENDING_ITC"]["account_name"],
+                            line_type="INPUT_TAX",
+                            debit=eligible_tax,
+                            credit=0.0,
+                            amount=eligible_tax,
+                            provenance="DETERMINISTIC",
+                            description=f"Input GST (Eligible Portion) under RCM - Pending cash discharge under Sec 16(2)",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=f"CGST Act Sec 16(2) RCM ({rcm_notification or '13/2017-CT(R)'})",
+                        )
+                    )
+                else:
+                    ratio = eligible_tax / (total_extracted_gst if total_extracted_gst > 0 else 1.0)
+                    if cgst_amt > 0:
+                        lines.append(
+                            JournalLine(
+                                account_id=STANDARD_ACCOUNTS["INPUT_CGST"]["account_id"],
+                                account_name=STANDARD_ACCOUNTS["INPUT_CGST"]["account_name"],
+                                line_type="INPUT_TAX",
+                                debit=round(cgst_amt * ratio, 2),
+                                credit=0.0,
+                                amount=round(cgst_amt * ratio, 2),
+                                provenance="DETERMINISTIC",
+                                description="Input CGST (Eligible Portion)",
+                                cost_center=cost_center,
+                                project=project,
+                                department=department,
+                                rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
+                            )
+                        )
+                    if sgst_amt > 0:
+                        lines.append(
+                            JournalLine(
+                                account_id=STANDARD_ACCOUNTS["INPUT_SGST"]["account_id"],
+                                account_name=STANDARD_ACCOUNTS["INPUT_SGST"]["account_name"],
+                                line_type="INPUT_TAX",
+                                debit=round(sgst_amt * ratio, 2),
+                                credit=0.0,
+                                amount=round(sgst_amt * ratio, 2),
+                                provenance="DETERMINISTIC",
+                                description="Input SGST (Eligible Portion)",
+                                cost_center=cost_center,
+                                project=project,
+                                department=department,
+                                rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
+                            )
+                        )
+                    if igst_amt > 0:
+                        lines.append(
+                            JournalLine(
+                                account_id=STANDARD_ACCOUNTS["INPUT_IGST"]["account_id"],
+                                account_name=STANDARD_ACCOUNTS["INPUT_IGST"]["account_name"],
+                                line_type="INPUT_TAX",
+                                debit=round(igst_amt * ratio, 2),
+                                credit=0.0,
+                                amount=round(igst_amt * ratio, 2),
+                                provenance="DETERMINISTIC",
+                                description="Input IGST (Eligible Portion)",
+                                cost_center=cost_center,
+                                project=project,
+                                department=department,
+                                rule_reference=itc_result.get("rule_reference") if itc_result else "CGST Act Sec 16",
+                            )
+                        )
 
             # 2. Blocked Portion -> Ineligible Tax Expense
             if blocked_tax > 0:
@@ -823,16 +915,35 @@ class JournalGenerator:
         # ----------------------------------------------------
         # 7. ACCOUNTS PAYABLE / VENDOR LIABILITY CREDIT
         # ----------------------------------------------------
-        gross_invoice_obligation = total_amount
-        if gross_invoice_obligation is None:
-            gross_invoice_obligation = (
+        if is_rcm:
+            # Under RCM, the vendor payable must represent the amount actually payable to the supplier.
+            # RCM GST is the recipient's tax liability, NOT GST collected by or payable to the vendor.
+            # Vendor obligation is strictly pretax base + direct charges (shipping/other/adjustments/roundoff),
+            # regardless of whether the supplier erroneously printed GST on their invoice.
+            gross_invoice_obligation = round(
                 total_line_taxable_debits
-                + total_extracted_gst
                 + shipping
                 + other_charges
                 + adjustment
-                + round_off
+                + round_off,
+                2
             )
+            if total_amount is not None and abs(total_amount - (gross_invoice_obligation + total_extracted_gst)) <= self.tolerance and total_extracted_gst > 0:
+                warnings.append(
+                    f"Invoice is subject to Reverse Charge (RCM). Printed/extracted tax (₹{total_extracted_gst:,.2f}) "
+                    f"is excluded from Vendor Payable and recognized as Recipient RCM Liability."
+                )
+        else:
+            gross_invoice_obligation = total_amount
+            if gross_invoice_obligation is None:
+                gross_invoice_obligation = (
+                    total_line_taxable_debits
+                    + total_extracted_gst
+                    + shipping
+                    + other_charges
+                    + adjustment
+                    + round_off
+                )
 
         vendor_payable = round(gross_invoice_obligation - tds_amount, 2)
         if vendor_payable < 0:
@@ -855,6 +966,90 @@ class JournalGenerator:
                 department=department,
             )
         )
+
+        # ----------------------------------------------------
+        # 7b. RECIPIENT RCM GST TAX LIABILITY CREDITS
+        # ----------------------------------------------------
+        if is_rcm and total_extracted_gst > 0:
+            if supply_type == "INTER_STATE":
+                rcm_igst = round(igst_amt if igst_amt > 0 else (cgst_amt + sgst_amt), 2)
+                if rcm_igst > 0:
+                    lines.append(
+                        JournalLine(
+                            account_id=STANDARD_ACCOUNTS["RCM_IGST_PAYABLE"]["account_id"],
+                            account_name=STANDARD_ACCOUNTS["RCM_IGST_PAYABLE"]["account_name"],
+                            line_type="RCM_TAX_LIABILITY",
+                            debit=0.0,
+                            credit=rcm_igst,
+                            amount=rcm_igst,
+                            provenance="DETERMINISTIC",
+                            description=f"RCM IGST Recipient Liability - {rcm_category or 'RCM'} ({rcm_notification or '10/2017-IT(R)'})",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=f"IGST Act Sec 5(3) RCM ({rcm_notification or '10/2017-IT(R)'})",
+                        )
+                    )
+            else:
+                # Intra-state: CGST + SGST liabilities
+                rcm_cgst = cgst_amt
+                rcm_sgst = sgst_amt
+                if rcm_cgst == 0.0 and rcm_sgst == 0.0 and total_extracted_gst > 0:
+                    rcm_cgst = round(total_extracted_gst / 2.0, 2)
+                    rcm_sgst = round(total_extracted_gst - rcm_cgst, 2)
+
+                if rcm_cgst > 0:
+                    lines.append(
+                        JournalLine(
+                            account_id=STANDARD_ACCOUNTS["RCM_CGST_PAYABLE"]["account_id"],
+                            account_name=STANDARD_ACCOUNTS["RCM_CGST_PAYABLE"]["account_name"],
+                            line_type="RCM_TAX_LIABILITY",
+                            debit=0.0,
+                            credit=rcm_cgst,
+                            amount=rcm_cgst,
+                            provenance="DETERMINISTIC",
+                            description=f"RCM CGST Recipient Liability - {rcm_category or 'RCM'} ({rcm_notification or '13/2017-CT(R)'})",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=f"CGST Act Sec 9(3) RCM ({rcm_notification or '13/2017-CT(R)'})",
+                        )
+                    )
+                if rcm_sgst > 0:
+                    lines.append(
+                        JournalLine(
+                            account_id=STANDARD_ACCOUNTS["RCM_SGST_PAYABLE"]["account_id"],
+                            account_name=STANDARD_ACCOUNTS["RCM_SGST_PAYABLE"]["account_name"],
+                            line_type="RCM_TAX_LIABILITY",
+                            debit=0.0,
+                            credit=rcm_sgst,
+                            amount=rcm_sgst,
+                            provenance="DETERMINISTIC",
+                            description=f"RCM SGST Recipient Liability - {rcm_category or 'RCM'} ({rcm_notification or '13/2017-CT(R)'})",
+                            cost_center=cost_center,
+                            project=project,
+                            department=department,
+                            rule_reference=f"CGST Act Sec 9(3) RCM ({rcm_notification or '13/2017-CT(R)'})",
+                        )
+                    )
+
+            if cess_amt > 0:
+                lines.append(
+                    JournalLine(
+                        account_id=STANDARD_ACCOUNTS["RCM_CESS_PAYABLE"]["account_id"],
+                        account_name=STANDARD_ACCOUNTS["RCM_CESS_PAYABLE"]["account_name"],
+                        line_type="RCM_TAX_LIABILITY",
+                        debit=0.0,
+                        credit=cess_amt,
+                        amount=cess_amt,
+                        provenance="DETERMINISTIC",
+                        description="RCM Cess Recipient Liability",
+                        cost_center=cost_center,
+                        project=project,
+                        department=department,
+                        rule_reference="GST (Compensation to States) Act Sec 8(2)",
+                    )
+                )
 
         # ----------------------------------------------------
         # 8. JOURNAL BALANCING & STATUS EVALUATION
@@ -943,6 +1138,16 @@ class JournalGenerator:
                 acc_id_alias = "INPUT_SGST"
             elif raw_acc_id == "TAX_INP_IGST":
                 acc_id_alias = "INPUT_IGST"
+            elif raw_acc_id == "LIAB_RCM_CGST":
+                acc_id_alias = "RCM_CGST_PAYABLE"
+            elif raw_acc_id == "LIAB_RCM_SGST":
+                acc_id_alias = "RCM_SGST_PAYABLE"
+            elif raw_acc_id == "LIAB_RCM_IGST":
+                acc_id_alias = "RCM_IGST_PAYABLE"
+            elif raw_acc_id == "LIAB_RCM_CESS":
+                acc_id_alias = "RCM_CESS_PAYABLE"
+            elif raw_acc_id == "TAX_RCM_PENDING":
+                acc_id_alias = "RCM_PENDING_ITC"
 
             legacy_lines.append({
                 "line_number": idx,

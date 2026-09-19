@@ -1,0 +1,21 @@
+{
+  "test_id": "CASE_6",
+  "name": "Technical Services + Missing PAN",
+  "invoice_number": "INV-P0-006",
+  "invoice_date": "2026-05-15",
+  "vendor_name": "DevOps Engineering Enterprise",
+  "vendor_pan": null,
+  "section": "Section 393",
+  "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+  "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+  "subtotal": 100000.00,
+  "total_amount": 118000.00,
+  "tds_assessment": {
+    "tds_applicable": true,
+    "section": "Section 393",
+    "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+    "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
+    "tds_base_amount": 100000.00,
+    "vendor_pan": null
+  }
+}

@@ -265,3 +265,109 @@ def test_no_vendor_tds_declaration_unchanged():
     assert tds["rate"] == 10.0
     assert tds["proposed_tds_amount"] == 2500.0
     assert tds["tds_conflict_code"] is None
+
+
+def test_section_393_purchase_of_goods_rate():
+    """Test 10: Section 393 + Purchase of Goods (194Q) correctly applies 0.1% rate, NOT 2%."""
+    calc_res = tds_engine.calculate_tds(
+        applicable=True,
+        section="Section 393",
+        provision="Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+        nature_of_payment="Purchase of Goods",
+        base_amount=834260.0,
+        vendor_pan="AABCB1234F",
+    )
+    assert calc_res["applicable"] is True
+    assert calc_res["rate"] == 0.1
+    assert calc_res["tds_amount"] == 834.26
+
+
+def test_section_393_professional_services_rate():
+    """Test 11: Section 393 + Professional Services (194J(1)(a)) applies 10% rate, NOT 2%."""
+    calc_res = tds_engine.calculate_tds(
+        applicable=True,
+        section="Section 393",
+        provision="Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services",
+        nature_of_payment="Professional Services & Legal Consulting",
+        base_amount=50000.0,
+        vendor_pan="AABCB1234F",
+    )
+    assert calc_res["applicable"] is True
+    assert calc_res["rate"] == 10.0
+    assert calc_res["tds_amount"] == 5000.0
+
+
+def test_section_393_technical_services_rate():
+    """Test 12: Section 393 + Technical Services (194J(1)(b)) applies 2% rate."""
+    calc_res = tds_engine.calculate_tds(
+        applicable=True,
+        section="Section 393",
+        provision="Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+        nature_of_payment="Fees for Technical Services (FTS) & Cloud Infrastructure",
+        base_amount=50000.0,
+        vendor_pan="AABCB1234F",
+    )
+    assert calc_res["applicable"] is True
+    assert calc_res["rate"] == 2.0
+    assert calc_res["tds_amount"] == 1000.0
+
+
+def test_section_393_ambiguous_requires_review():
+    """Test 13: Section 393 alone without reliable category/provision does NOT force 2% and marks review required."""
+    calc_res = tds_engine.calculate_tds(
+        applicable=True,
+        section="Section 393",
+        provision=None,
+        nature_of_payment=None,
+        base_amount=100000.0,
+        vendor_pan="AABCB1234F",
+    )
+    assert calc_res["applicable"] is True
+    assert calc_res["rate"] is None
+    assert calc_res["tds_amount"] is None
+    assert calc_res["tds_needs_review"] is True
+    assert calc_res["tds_conflict_code"] == "TDS_AMBIGUOUS_SAC"
+
+
+def test_section_393_coexistence_regression():
+    """
+    Coexistence Regression:
+    Proves that Section 393 can coexist with multiple distinct statutory rates based on specific provision:
+      - Section 393 + Technical Services -> 2%
+      - Section 393 + Professional Services -> 10%
+      - Section 393 + Purchase of Goods -> 0.1%
+    """
+    res_tech = tds_engine.calculate_tds(
+        applicable=True,
+        section="Section 393",
+        provision="Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Technical Services",
+        nature_of_payment="Technical Services",
+        base_amount=100000.0,
+        vendor_pan="AABCB1234F",
+    )
+    res_prof = tds_engine.calculate_tds(
+        applicable=True,
+        section="Section 393",
+        provision="Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services",
+        nature_of_payment="Professional Services",
+        base_amount=100000.0,
+        vendor_pan="AABCB1234F",
+    )
+    res_goods = tds_engine.calculate_tds(
+        applicable=True,
+        section="Section 393",
+        provision="Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+        nature_of_payment="Goods Supply",
+        base_amount=100000.0,
+        vendor_pan="AABCB1234F",
+    )
+
+    assert res_tech["rate"] == 2.0
+    assert res_tech["tds_amount"] == 2000.0
+
+    assert res_prof["rate"] == 10.0
+    assert res_prof["tds_amount"] == 10000.0
+
+    assert res_goods["rate"] == 0.1
+    assert res_goods["tds_amount"] == 100.0
+

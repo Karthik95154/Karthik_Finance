@@ -1,0 +1,21 @@
+{
+  "test_id": "CASE_4",
+  "name": "E-commerce / Section 393 Table 8(v) + Invalid PAN",
+  "invoice_number": "INV-P0-004",
+  "invoice_date": "2026-05-13",
+  "vendor_name": "Digital Mart E-commerce Operator",
+  "vendor_pan": "INVALID_PAN_ECOM",
+  "section": "Section 393",
+  "provision": "Section 393(1) [Table Sl. No. 8(v)] - E-commerce Participant",
+  "nature_of_payment": "E-commerce Participant Supply",
+  "subtotal": 100000.00,
+  "total_amount": 118000.00,
+  "tds_assessment": {
+    "tds_applicable": true,
+    "section": "Section 393",
+    "provision": "Section 393(1) [Table Sl. No. 8(v)] - E-commerce Participant",
+    "nature_of_payment": "E-commerce Participant Supply",
+    "tds_base_amount": 100000.00,
+    "vendor_pan": "INVALID_PAN_ECOM"
+  }
+}

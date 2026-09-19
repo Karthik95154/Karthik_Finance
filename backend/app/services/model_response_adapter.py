@@ -839,7 +839,7 @@ class ModelResponseAdapter:
                     else (tds_provision or tds_sec_code)
                 )
                 tds_nature = tds_nature or (line_tds_deductions[0].get("provision") if line_tds_deductions else "Statutory deduction")
-                tds_rate = tds_rate or (line_tds_deductions[0].get("rate") if line_tds_deductions else 2.0)
+                tds_rate = tds_rate or (line_tds_deductions[0].get("rate") if line_tds_deductions else None)
                 tds_reason = f"Statutory withholding under {tds_provision} on assessable value Rs.{comp_base:,.2f}"
             else:
                 # No unique statutory sections resolved (e.g. all lines are ambiguous SAC 9973)
@@ -856,10 +856,11 @@ class ModelResponseAdapter:
             candidate_base = tds_base or subtotal_val or 0.0
             nature_check = (f"{tds_nature or ''} {tds_provision or ''}").upper()
 
-            is_contractor = any(k in nature_check for k in ("CONTRACTOR", "MANPOWER", "SECURITY", "FACILITY", "SUBCONTRACT", "WORK_CONTRACT", "194C"))
-            is_prof_tech = any(k in nature_check for k in ("TECHNICAL", "PROFESSIONAL", "CONSULTING", "LEGAL", "SOFTWARE", "IT_SERVICE", "194J", "393"))
-            is_rent = any(k in nature_check for k in ("RENT", "LEASE", "194I"))
-            is_commission = any(k in nature_check for k in ("COMMISSION", "BROKERAGE", "194H"))
+            is_contractor = any(k in nature_check for k in ("CONTRACTOR", "MANPOWER", "SECURITY", "FACILITY", "SUBCONTRACT", "WORK_CONTRACT", "194C", "SL 6 I"))
+            is_prof_tech = any(k in nature_check for k in ("TECHNICAL", "PROFESSIONAL", "CONSULTING", "LEGAL", "SOFTWARE", "IT_SERVICE", "194J", "SL 6 III", "FTS"))
+            is_rent = any(k in nature_check for k in ("RENT", "LEASE", "194I", "SL 2"))
+            is_commission = any(k in nature_check for k in ("COMMISSION", "BROKERAGE", "194H", "SL 1 II"))
+            is_purchase = any(k in nature_check for k in ("PURCHASE", "GOODS", "194Q", "SL 8 II"))
 
             if is_contractor:
                 if candidate_base > 0:
@@ -870,6 +871,17 @@ class ModelResponseAdapter:
                         tds_nature = "CONTRACTOR_WORK"
                     if tds_rate is None or tds_rate <= 0:
                         tds_rate = 1.0 if is_indiv else 2.0
+                else:
+                    tds_applicable = False
+            elif is_purchase:
+                if candidate_base > 0:
+                    tds_applicable = True
+                    if not tds_provision:
+                        tds_provision = "194Q"
+                    if not tds_nature:
+                        tds_nature = "PURCHASE_OF_GOODS"
+                    if tds_rate is None or tds_rate <= 0:
+                        tds_rate = 0.1
                 else:
                     tds_applicable = False
             elif is_prof_tech:
@@ -917,14 +929,19 @@ class ModelResponseAdapter:
             proposed_tds = round((tds_base * tds_rate) / 100.0, 2)
 
         # Conflict & Review Evaluation between Statutory Assessment and Vendor-Declared TDS
-        tds_needs_review = bool(tds_requires_backend_validation or has_ambiguous_9973)
+        # If TDS is applicable but rate/category is unresolved, flag for review
+        is_category_unresolved = tds_applicable and (tds_rate is None or not tds_provision or tds_provision == "Section 393")
+        tds_needs_review = bool(tds_requires_backend_validation or has_ambiguous_9973 or is_category_unresolved)
         tds_conflict_code = None
         tds_conflict_reason = None
 
-        if has_ambiguous_9973:
+        if has_ambiguous_9973 or is_category_unresolved:
             tds_needs_review = True
             tds_conflict_code = "TDS_AMBIGUOUS_SAC"
-            tds_conflict_reason = "Ambiguous SAC 9973 service without clear equipment or software classification. Review required."
+            if has_ambiguous_9973:
+                tds_conflict_reason = "Ambiguous SAC 9973 service without clear equipment or software classification. Review required."
+            else:
+                tds_conflict_reason = f"TDS classification unresolved for '{tds_provision or tds_nature or 'Services'}'. Manual review required."
 
         if vendor_decl and vendor_decl.get("present"):
             v_amt = vendor_decl.get("amount")

@@ -1,0 +1,21 @@
+{
+  "test_id": "CASE_5",
+  "name": "Purchase of Goods + Valid PAN",
+  "invoice_number": "INV-P0-005",
+  "invoice_date": "2026-05-14",
+  "vendor_name": "Bharat Raw Materials Private Limited",
+  "vendor_pan": "AABCB1234F",
+  "section": "Section 393",
+  "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+  "nature_of_payment": "Purchase of Goods",
+  "subtotal": 100000.00,
+  "total_amount": 118000.00,
+  "tds_assessment": {
+    "tds_applicable": true,
+    "section": "Section 393",
+    "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
+    "nature_of_payment": "Purchase of Goods",
+    "tds_base_amount": 100000.00,
+    "vendor_pan": "AABCB1234F"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "test_id": "CASE_9",
+  "name": "Goods Keyword but Canonical Technical Services + Invalid PAN",
+  "invoice_number": "INV-P0-009",
+  "invoice_date": "2026-05-18",
+  "vendor_name": "Supply Chain Analytics Technologies",
+  "vendor_pan": "INVALID_PAN_TECH_GOODS",
+  "section": "Section 393",
+  "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+  "nature_of_payment": "Technical service for goods logistics and ERP integration",
+  "subtotal": 100000.00,
+  "total_amount": 118000.00,
+  "tds_assessment": {
+    "tds_applicable": true,
+    "section": "Section 393",
+    "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
+    "nature_of_payment": "Technical service for goods logistics and ERP integration",
+    "tds_base_amount": 100000.00,
+    "vendor_pan": "INVALID_PAN_TECH_GOODS"
+  }
+}

@@ -328,30 +328,34 @@ def resolve_tds_tax_details(
     combined = f"{provision_raw or ''} {section_raw or ''} {nature_raw or ''}".upper()
     norm = normalize_statutory_text(combined)
 
+    category_key = None
+
     # Handle Section 392 (Salaries / EPF)
     if "392" in norm or "SALARY" in norm or "192" in norm or "EPF" in norm:
-        entry = STATUTORY_TDS_TABLE_2025["EPF_PREMATURE"] if "EPF" in norm else STATUTORY_TDS_TABLE_2025["SALARY"]
+        category_key = "EPF_PREMATURE" if "EPF" in norm else "SALARY"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
         return {
             "section": entry["section"],
             "provision": entry["provision"],
             "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else entry["nature_of_payment"],
             "zoho_section_slug": entry.get("zoho_section_slug"),
+            "category_key": category_key,
         }
     # Handle composite multi-section withholding (e.g., 'Sl. 6(i), Sl. 6(iii)')
     elif "COMPOSITE" in norm or ("," in (section_raw or "") and any(k in norm for k in ("194C", "194J", "194I", "SL 6", "SL 2"))):
         sec = section_raw or "Composite"
         prov = provision_raw if (provision_raw and "_" not in provision_raw) else f"Sections {sec} - Composite Statutory Withholding"
         nat = nature_raw if (nature_raw and "_" not in nature_raw) else f"Composite Services ({sec})"
-        return {"section": sec, "provision": prov, "nature_of_payment": nat, "zoho_section_slug": None}
+        return {"section": sec, "provision": prov, "nature_of_payment": nat, "zoho_section_slug": None, "category_key": None}
 
     # Match against STATUTORY_TDS_TABLE_2025 with strict clause & rate disambiguation
     is_explicit_fts = (
         any(k in norm for k in ("D A", "TECHNICAL", "TECH SERVICES", "FTS", "CLOUD", "SOFTWARE", "IT SERVICE"))
-        or (rate_hint is not None and abs(rate_hint - 2.0) < 0.05 and any(k in norm for k in ("393", "194J", "SL 6 III")))
+        or (rate_hint is not None and abs(rate_hint - 2.0) < 0.05 and any(k in norm for k in ("194J", "SL 6 III")))
     )
     is_explicit_prof = (
         any(k in norm for k in ("D B", "PROFESSIONAL", "LEGAL", "CONSULTING", "ARCHITECT", "MEDICAL", "ROYALTY"))
-        or (rate_hint is not None and abs(rate_hint - 10.0) < 0.05 and any(k in norm for k in ("393", "194J", "SL 6 III", "FEES", "WITHHELD")))
+        or (rate_hint is not None and abs(rate_hint - 10.0) < 0.05 and any(k in norm for k in ("194J", "SL 6 III", "FEES", "WITHHELD")))
     )
 
     # 1. First check explicit specific provisions / categories
@@ -362,60 +366,81 @@ def resolve_tds_tax_details(
     )
     if is_contractor and not any(k in norm for k in ("FTS", "TECHNICAL", "PROFESSIONAL", "LEGAL", "CONSULT")):
         if rate_hint is not None and abs(rate_hint - 1.0) < 0.05:
-            entry = STATUTORY_TDS_TABLE_2025["CONTRACTORS_INDIVIDUAL"]
+            category_key = "CONTRACTORS_INDIVIDUAL"
         else:
-            entry = STATUTORY_TDS_TABLE_2025["CONTRACTORS"]
+            category_key = "CONTRACTORS"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
     elif any(k in norm for k in ("SL 2", "RENT", "194I", "194 I")):
         is_land = any(w in norm for w in ("LAND", "BUILDING", "FURNITURE", "IMMOVABLE"))
         if rate_hint is not None and abs(rate_hint - 10.0) < 0.05:
             is_land = True
         elif rate_hint is not None and abs(rate_hint - 2.0) < 0.05:
             is_land = False
-        entry = STATUTORY_TDS_TABLE_2025["RENT_LAND_BUILDING"] if is_land else STATUTORY_TDS_TABLE_2025["RENT_PLANT_MACHINERY"]
+        category_key = "RENT_LAND_BUILDING" if is_land else "RENT_PLANT_MACHINERY"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
     elif any(k in norm for k in ("SL 1 II", "COMMISSION", "BROKER", "194H")):
-        entry = STATUTORY_TDS_TABLE_2025["COMMISSION_BROKERAGE"]
+        category_key = "COMMISSION_BROKERAGE"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
     elif any(k in norm for k in ("SL 1 I", "INSURANCE", "194D")):
-        entry = STATUTORY_TDS_TABLE_2025["INSURANCE_COMMISSION"]
-    elif any(k in norm for k in ("SL 8 II", "GOODS", "PURCHASE", "194Q")):
-        entry = STATUTORY_TDS_TABLE_2025["PURCHASE_OF_GOODS"]
-    elif any(k in norm for k in ("SL 8 IV", "PERQUISITE", "BENEFIT", "194R")):
-        entry = STATUTORY_TDS_TABLE_2025["BENEFIT_PERQUISITE"]
-    elif any(k in norm for k in ("SL 8 V", "ECOMMERCE", "E COMMERCE", "194 O")):
-        entry = STATUTORY_TDS_TABLE_2025["ECOMMERCE"]
-    elif any(k in norm for k in ("SL 8 VI", "VIRTUAL", "CRYPTO", "VDA", "194S")):
-        entry = STATUTORY_TDS_TABLE_2025["VIRTUAL_DIGITAL_ASSET"]
+        category_key = "INSURANCE_COMMISSION"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif "SL 8 II" in norm or "194Q" in norm or "194 Q" in norm or "PURCHASE OF GOODS" in norm or ("PURCHASE" in norm and "GOODS" in norm):
+        category_key = "PURCHASE_OF_GOODS"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif any(k in norm for k in ("SL 8 IV", "PERQUISITE", "BENEFIT", "194R", "194 R")):
+        category_key = "BENEFIT_PERQUISITE"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif "SL 8 V" in norm or "194 O" in norm or "194O" in norm or "ECOMMERCE" in norm or "E COMMERCE" in norm:
+        category_key = "ECOMMERCE"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif any(k in norm for k in ("SL 8 VI", "VIRTUAL", "CRYPTO", "VDA", "194S", "194 S")):
+        category_key = "VIRTUAL_DIGITAL_ASSET"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
     elif any(k in norm for k in ("SL 5 I", " 193 ", " 193")):
-        entry = STATUTORY_TDS_TABLE_2025["INTEREST_SECURITIES"]
-    elif any(k in norm for k in ("SL 5 II", "INTEREST", "194A")):
-        entry = STATUTORY_TDS_TABLE_2025["INTEREST_OTHER"]
+        category_key = "INTEREST_SECURITIES"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif any(k in norm for k in ("SL 5 II", "INTEREST", "194A", "194 A")):
+        category_key = "INTEREST_OTHER"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
     elif "DIVIDEND" in norm or "SL 7" in norm or " 194 " in f" {norm} ":
-        entry = STATUTORY_TDS_TABLE_2025["DIVIDENDS"]
-    elif any(k in norm for k in ("SL 4 I", "MUTUAL", "194K")):
-        entry = STATUTORY_TDS_TABLE_2025["MUTUAL_FUND_UNITS"]
-    elif any(k in norm for k in ("194N", "CASH")):
-        entry = STATUTORY_TDS_TABLE_2025["CASH_WITHDRAWAL"]
-    elif any(k in norm for k in ("194T", "PARTNER")):
-        entry = STATUTORY_TDS_TABLE_2025["PARTNER_REMUNERATION"]
+        category_key = "DIVIDENDS"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif any(k in norm for k in ("SL 4 I", "MUTUAL", "194K", "194 K")):
+        category_key = "MUTUAL_FUND_UNITS"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif any(k in norm for k in ("194N", "194 N", "CASH")):
+        category_key = "CASH_WITHDRAWAL"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif any(k in norm for k in ("194T", "194 T", "PARTNER")):
+        category_key = "PARTNER_REMUNERATION"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
     elif any(k in norm for k in ("195", "NON RESIDENT", "FOREIGN")):
-        entry = STATUTORY_TDS_TABLE_2025["NON_RESIDENT"]
+        category_key = "NON_RESIDENT"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
     # 2. Then check Section 393(1) Sl 6(iii) / 194J (Professional vs Technical Services)
     elif is_explicit_prof and not (is_explicit_fts and rate_hint == 2.0):
-        entry = STATUTORY_TDS_TABLE_2025["PROFESSIONAL_SERVICES"]
+        category_key = "PROFESSIONAL_SERVICES"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
     elif is_explicit_fts:
-        entry = STATUTORY_TDS_TABLE_2025["TECHNICAL_SERVICES"]
-    elif any(k in norm for k in ("SL 6 III", "393", "194J", "TECHNICAL", "PROFESSIONAL")):
+        category_key = "TECHNICAL_SERVICES"
+        entry = STATUTORY_TDS_TABLE_2025[category_key]
+    elif any(k in norm for k in ("SL 6 III", "194J", "TECHNICAL", "PROFESSIONAL")):
         if rate_hint is not None and abs(rate_hint - 10.0) < 0.05:
-            entry = STATUTORY_TDS_TABLE_2025["PROFESSIONAL_SERVICES"]
+            category_key = "PROFESSIONAL_SERVICES"
+            entry = STATUTORY_TDS_TABLE_2025[category_key]
         elif rate_hint is not None and abs(rate_hint - 2.0) < 0.05:
-            entry = STATUTORY_TDS_TABLE_2025["TECHNICAL_SERVICES"]
+            category_key = "TECHNICAL_SERVICES"
+            entry = STATUTORY_TDS_TABLE_2025[category_key]
         else:
-            entry = STATUTORY_TDS_TABLE_2025["PROFESSIONAL_TECHNICAL"]
+            category_key = "PROFESSIONAL_TECHNICAL"
+            entry = STATUTORY_TDS_TABLE_2025[category_key]
     else:
         return {
             "section": "Section 393",
             "provision": f"Section 393 - Statutory Deduction ({section_raw or 'Services'})",
-            "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else "Technical / Professional Services",
+            "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else "Statutory Deduction",
             "zoho_section_slug": None,
+            "category_key": None,
         }
 
     return {
@@ -423,6 +448,7 @@ def resolve_tds_tax_details(
         "provision": entry["provision"],
         "nature_of_payment": nature_raw if (nature_raw and "_" not in nature_raw) else entry["nature_of_payment"],
         "zoho_section_slug": entry.get("zoho_section_slug"),
+        "category_key": category_key,
     }
 
 
@@ -502,6 +528,11 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
             or tds_assessment.get("approval_status") == "APPROVED"
         )
 
+        vendor_decl = tds_assessment.get("vendor_declared_tds") or accounting.get("vendor_declared_tds")
+        tds_needs_review = bool(tds_assessment.get("tds_needs_review"))
+        conflict_code = tds_assessment.get("tds_conflict_code")
+        conflict_reason = tds_assessment.get("tds_conflict_reason")
+
         is_classification_unresolved = (
             tds_assessment.get("tds_conflict_code") == "TDS_AMBIGUOUS_SAC"
             or (is_app and not section_val and not provision_val and (rate_float is None or rate_float <= 0))
@@ -512,27 +543,41 @@ def get_effective_tds_data(accounting: Optional[Dict[str, Any]]) -> Dict[str, An
             section_val = canonical["section"]
             provision_val = canonical["provision"]
             nature_val = canonical["nature_of_payment"]
+            if canonical.get("category_key") is None and (rate_float is None or rate_float <= 0):
+                is_classification_unresolved = True
 
         if is_app and not is_classification_unresolved and (rate_float is None or rate_float <= 0):
             sec_str = f"{provision_val or ''} {section_val or ''} {nature_val or ''}".upper()
-            if "CONTRACT" in sec_str or "194C" in sec_str:
+            if "CONTRACT" in sec_str or "194C" in sec_str or "SL 6 I" in sec_str:
                 rate_float = 2.0
-            elif "RENT" in sec_str or "194I" in sec_str:
-                rate_float = 10.0
-            elif "COMMISSION" in sec_str or "194H" in sec_str:
+            elif "RENT" in sec_str or "194I" in sec_str or "SL 2" in sec_str:
+                rate_float = 10.0 if any(k in sec_str for k in ("LAND", "BUILDING", "IMMOVABLE", "FURNITURE")) else 2.0
+            elif "COMMISSION" in sec_str or "194H" in sec_str or "SL 1 II" in sec_str or "BROKER" in sec_str:
                 rate_float = 2.0
-            elif "PURCHASE" in sec_str or "194Q" in sec_str:
+            elif "PURCHASE" in sec_str or "194Q" in sec_str or "GOODS" in sec_str or "SL 8 II" in sec_str:
                 rate_float = 0.1
+            elif "DIVIDEND" in sec_str or "SL 7" in sec_str or " 194 " in f" {sec_str} ":
+                rate_float = 10.0
+            elif "PROFESSIONAL" in sec_str or "194J" in sec_str or "TECHNICAL" in sec_str or "FTS" in sec_str or "SL 6 III" in sec_str:
+                rate_float = 10.0 if ("PROFESSIONAL" in sec_str or "LEGAL" in sec_str or "CONSULT" in sec_str) else 2.0
             else:
-                rate_float = 2.0
+                # UNRESOLVED TDS CATEGORY: NEVER silently default to 2% or 10%!
+                # Must leave rate unresolved and flag for manual review.
+                rate_float = None
+                is_classification_unresolved = True
+                tds_needs_review = True
+                conflict_code = conflict_code or "TDS_AMBIGUOUS_SAC"
+                conflict_reason = conflict_reason or f"TDS classification unresolved for '{section_val or provision_val or nature_val or 'Services'}'. Manual review required."
+
+        if is_classification_unresolved and (rate_float is None or rate_float <= 0):
+            rate_float = None
+            tds_amt_float = None
+            tds_needs_review = True
+            conflict_code = conflict_code or "TDS_AMBIGUOUS_SAC"
+            conflict_reason = conflict_reason or f"TDS classification unresolved for '{section_val or provision_val or nature_val or 'Services'}'. Manual review required."
 
         if is_app and not is_classification_unresolved and (tds_amt_float is None or tds_amt_float == 0) and base_float and rate_float and rate_float > 0:
             tds_amt_float = round((base_float * rate_float) / 100.0, 2)
-
-        vendor_decl = tds_assessment.get("vendor_declared_tds") or accounting.get("vendor_declared_tds")
-        tds_needs_review = bool(tds_assessment.get("tds_needs_review"))
-        conflict_code = tds_assessment.get("tds_conflict_code")
-        conflict_reason = tds_assessment.get("tds_conflict_reason")
 
         # Conflict check: If vendor explicitly declared TDS, compare against statutory calculation
         if vendor_decl and isinstance(vendor_decl, dict) and vendor_decl.get("present"):
@@ -795,7 +840,7 @@ class TDSEngine:
         Preserves vendor_declared_tds separately and flags conflicts if vendor declaration
         materially differs from the statutory calculation.
         """
-        if applicable is False or base_amount <= 0 or (rate is None and not section and not provision and not nature_of_payment):
+        if applicable is False or base_amount <= 0:
             return {
                 "applicable": False,
                 "provision": provision,
@@ -821,7 +866,7 @@ class TDSEngine:
                 "rate": None,
                 "base_amount": round(base_amount, 2),
                 "tds_amount": None,
-                "pan_valid": cls.is_valid_pan(vendor_pan) if vendor_pan else True,
+                "pan_valid": cls.is_valid_pan(vendor_pan),
                 "reason": "TDS classification unresolved - manual review required",
                 "vendor_declared_tds": vendor_declared_tds,
                 "tds_needs_review": True,
@@ -830,7 +875,7 @@ class TDSEngine:
             }
 
         # If applicable is unspecified (None) and rate is 0 or None with no section/provision, not applicable
-        if applicable is None and (rate is None or rate == 0.0) and not section and not provision:
+        if (applicable is None or applicable is False) and (rate is None or rate == 0.0) and not section and not provision:
             return {
                 "applicable": False,
                 "provision": provision,
@@ -846,8 +891,9 @@ class TDSEngine:
                 "tds_conflict_reason": None,
             }
 
-        pan_valid = cls.is_valid_pan(vendor_pan) if vendor_pan else True
+        pan_valid = cls.is_valid_pan(vendor_pan)
         individual = cls.is_individual_or_huf(vendor_pan)
+        pan_missing_or_invalid = not pan_valid
 
         computed_rate: float = 0.0
         reason: str = ""
@@ -858,30 +904,98 @@ class TDSEngine:
             reason = f"Authoritative TDS rate ({computed_rate}%) applied to base amount (₹{base_amount:,.2f}) for {label}."
         else:
             sec_str = (f"{provision or ''} {section or ''} {nature_of_payment or ''}").upper()
-            if vendor_pan and not pan_valid:
-                computed_rate = 20.0
-                reason = "Section 206AA higher deduction (20%) applied due to invalid vendor PAN."
+            norm = normalize_statutory_text(sec_str)
+
+            # Check if category is ambiguous bare Section 393 without category/provision
+            if section and normalize_statutory_text(section) == "SECTION 393" and not provision and not nature_of_payment:
+                return {
+                    "applicable": True,
+                    "provision": None,
+                    "section": section,
+                    "nature_of_payment": nature_of_payment or "Classification Unresolved",
+                    "rate": None,
+                    "base_amount": round(base_amount, 2),
+                    "tds_amount": None,
+                    "pan_valid": pan_valid,
+                    "reason": "TDS classification unresolved - manual review required for Section 393",
+                    "vendor_declared_tds": vendor_declared_tds,
+                    "tds_needs_review": True,
+                    "tds_conflict_code": "TDS_AMBIGUOUS_SAC",
+                    "tds_conflict_reason": "TDS classification unresolved - manual review required for Section 393",
+                }
+
+            # Canonical category resolution via resolve_tds_tax_details
+            resolved = resolve_tds_tax_details(
+                section_raw=section,
+                provision_raw=provision,
+                nature_raw=nature_of_payment,
+            )
+            resolved_category = resolved.get("category_key")
+
+            is_purchase_goods = (resolved_category == "PURCHASE_OF_GOODS")
+            is_ecommerce = (resolved_category == "ECOMMERCE")
+
+            if pan_missing_or_invalid:
+                pan_status_desc = "missing" if not vendor_pan else "invalid"
+                if is_purchase_goods:
+                    computed_rate = 5.0
+                    reason = f"Section 397(2) higher deduction (5%) applied to Purchase of Goods due to {pan_status_desc} vendor PAN."
+                elif is_ecommerce:
+                    computed_rate = 5.0
+                    reason = f"Section 397(2) higher deduction (5%) applied to E-commerce Participant supply due to {pan_status_desc} vendor PAN."
+                else:
+                    computed_rate = 20.0
+                    reason = f"Section 397(2) higher deduction (20%) applied due to {pan_status_desc} vendor PAN."
             elif "392" in sec_str or "EPF" in sec_str:
                 computed_rate = 10.0
                 reason = "Premature EPF Withdrawal TDS (10%) under Section 392"
-            elif "CONTRACT" in sec_str or "194C" in sec_str:
+            elif "CONTRACT" in sec_str or "194C" in sec_str or "SL 6 I" in sec_str:
                 computed_rate = 1.0 if individual else 2.0
                 reason = f"Contractor TDS ({computed_rate}%) for {'Individual/HUF' if individual else 'Company/Firm'}"
-            elif "PROFESSIONAL" in sec_str or "393" in sec_str or "194J" in sec_str:
-                computed_rate = 2.0 if is_tech_service else 10.0
-                reason = f"Professional/Technical TDS ({computed_rate}%) for {nature_of_payment or 'Professional services'}"
-            elif "RENT" in sec_str or "194I" in sec_str:
-                computed_rate = 2.0 if is_subcontractor else 10.0
-                reason = f"Rent TDS ({computed_rate}%)"
-            elif "COMMISSION" in sec_str or "194H" in sec_str:
-                computed_rate = 2.0
-                reason = "Commission / Brokerage TDS (2%)"
-            elif "PURCHASE" in sec_str or "194Q" in sec_str:
+            elif is_purchase_goods:
                 computed_rate = 0.1
                 reason = "Purchase of Goods TDS (0.1%)"
+            elif is_ecommerce:
+                computed_rate = 0.1
+                reason = "E-commerce Participant Supply TDS (0.1%)"
+            elif "DIVIDEND" in sec_str or "SL 7" in sec_str or " 194 " in f" {sec_str} ":
+                computed_rate = 10.0
+                reason = "Dividend TDS (10%)"
+            elif "RENT" in sec_str or "194I" in sec_str or "SL 2" in sec_str:
+                computed_rate = 2.0 if is_subcontractor else 10.0
+                reason = f"Rent TDS ({computed_rate}%)"
+            elif "COMMISSION" in sec_str or "194H" in sec_str or "SL 1 II" in sec_str or "BROKER" in sec_str:
+                computed_rate = 2.0
+                reason = "Commission / Brokerage TDS (2%)"
+            elif "PROFESSIONAL" in sec_str or "194J" in sec_str or "SL 6 III" in sec_str or "TECHNICAL" in sec_str or "FTS" in sec_str:
+                is_explicit_fts = any(k in sec_str for k in ("TECHNICAL", "FTS", "CLOUD", "SOFTWARE", "IT SERVICE", "D A"))
+                is_explicit_prof = any(k in sec_str for k in ("PROFESSIONAL", "LEGAL", "CONSULT", "ARCHITECT", "MEDICAL", "ROYALTY", "AUDIT", "D B"))
+                if is_explicit_prof and not (is_explicit_fts and "TECHNICAL" in sec_str and "PROFESSIONAL" not in sec_str):
+                    computed_rate = 10.0
+                elif is_explicit_fts:
+                    computed_rate = 2.0
+                else:
+                    computed_rate = 2.0 if is_tech_service else 10.0
+                reason = f"Professional/Technical TDS ({computed_rate}%) for {nature_of_payment or 'Professional services'}"
             else:
-                computed_rate = 10.0 if "PROFESSIONAL" in (nature_of_payment or "").upper() else 2.0
-                reason = f"Statutory TDS ({computed_rate}%) for {nature_of_payment or 'Services'}"
+                # UNRESOLVED TDS CATEGORY: NEVER silently default to 2% or 10%!
+                # When category cannot be resolved from provision, section, or nature_of_payment,
+                # return unresolved state requiring review.
+                return {
+                    "applicable": True if applicable is True else False,
+                    "provision": provision,
+                    "section": section,
+                    "nature_of_payment": nature_of_payment or "Classification Unresolved",
+                    "rate": None,
+                    "base_amount": round(base_amount, 2) if base_amount > 0 else 0.0,
+                    "tds_amount": None,
+                    "pan_valid": pan_valid,
+                    "reason": f"TDS classification unresolved for '{provision or section or nature_of_payment or 'Services'}' - manual review required",
+                    "vendor_declared_tds": vendor_declared_tds,
+                    "tds_needs_review": True,
+                    "tds_conflict_code": "TDS_AMBIGUOUS_SAC",
+                    "tds_conflict_reason": f"TDS classification unresolved for '{provision or section or nature_of_payment or 'Services'}' - manual review required",
+                }
 
         # TDS is strictly calculated on base_amount (Subtotal), NEVER on subtotal + GST
         tds_amount = round((base_amount * computed_rate) / 100.0, 2)

@@ -621,8 +621,534 @@ def extract_explicit_place_of_supply(data_obj: Dict[str, Any]) -> Tuple[Optional
     return None, None
 
 
+def classify_entity_constitution(
+    pan: Optional[str] = None,
+    gstin: Optional[str] = None,
+    entity_name: Optional[str] = None,
+) -> str:
+    """
+    Classifies entity constitution as evidence (not forced boolean):
+    - BODY_CORPORATE: Company, Corporation, Ltd, Private Limited
+    - NON_BODY_CORPORATE: Individual / HUF
+    - FIRM: Partnership Firm / LLP
+    - UNKNOWN: Missing/invalid evidence
+    """
+    clean_pan = (pan or "").strip().upper()
+    if not clean_pan and gstin and len(gstin.strip()) >= 12:
+        clean_pan = gstin.strip()[2:12].upper()
+
+    if clean_pan and len(clean_pan) >= 4:
+        fourth_char = clean_pan[3]
+        if fourth_char == "C":
+            return "BODY_CORPORATE"
+        elif fourth_char in ("P", "H"):
+            return "NON_BODY_CORPORATE"
+        elif fourth_char == "F":
+            return "FIRM"
+
+    name_lower = (entity_name or "").lower()
+    if any(k in name_lower for k in ("pvt ltd", "private limited", "ltd", "limited", "corp", "corporation", "inc", "gmbh", "b.v.")):
+        if "llp" not in name_lower and "proprietor" not in name_lower:
+            return "BODY_CORPORATE"
+    elif "llp" in name_lower or "partnership" in name_lower:
+        return "FIRM"
+    elif any(k in name_lower for k in ("proprietor", "proprietorship", "individual", "mr.", "ms.", "mrs.")):
+        return "NON_BODY_CORPORATE"
+
+    return "UNKNOWN"
+
+
+def check_foreign_supplier_evidence(data_obj: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """
+    Deterministically evaluates whether the supplier is located in non-taxable territory (outside India).
+    CRITICAL RULE: Never infer 'supplier outside India' merely from missing Indian GSTIN.
+    Requires explicit foreign country/location evidence.
+    Missing location/GSTIN alone = UNKNOWN, not foreign.
+    """
+    if not isinstance(data_obj, dict):
+        return False, None
+
+    vendor_country = str(data_obj.get("vendor_country") or data_obj.get("supplier_country") or "").strip().upper()
+    if vendor_country and vendor_country not in ("IN", "IND", "INDIA"):
+        return True, f"Explicit vendor country '{vendor_country}' outside India"
+
+    v_addr = str(data_obj.get("vendor_address") or data_obj.get("supplier_address") or "")
+    if v_addr:
+        foreign_country_patterns = [
+            r"\b(usa|united states|united kingdom|uk|singapore|germany|ireland|australia|canada|netherlands|france|japan|china|hong kong|switzerland|uae|dubai)\b",
+            r"\b(california|delaware|new york|texas|washington|london|dublin|singapore)\b",
+        ]
+        for pat in foreign_country_patterns:
+            m = re.search(pat, v_addr, re.IGNORECASE)
+            if m:
+                # Ensure it doesn't also mention India
+                if not re.search(r"\b(india|pin\s*-\s*\d{6}|\b\d{6}\b)\b", v_addr, re.IGNORECASE):
+                    return True, f"Vendor address indicates overseas location: '{m.group(0)}'"
+
+    return False, None
+
+
 class GSTEngine:
     """Deterministic GST Rule & Validation Engine."""
+
+    def _evaluate_rcm(
+        self,
+        data_obj: Dict[str, Any],
+        vendor_gstin: Optional[str],
+        buyer_gstin: Optional[str],
+        supplier_state_code: Optional[str],
+        pos_state_code: Optional[str],
+        supply_type: str,
+    ) -> Dict[str, Any]:
+        """
+        Deterministic statutory evaluation of Reverse Charge Mechanism (RCM) applicability.
+        Authority:
+          - Notification No. 13/2017-Central Tax (Rate) as amended (including 29/2018, 05/2019, 22/2019, 05/2022, 09/2024, 07/2025)
+          - Notification No. 10/2017-Integrated Tax (Rate) as amended
+        """
+        af = data_obj.get("additional_fields") or {}
+        explicit_rc_raw = str(
+            af.get("Whether tax is payable under Reverse Charge?")
+            or af.get("reverse_charge")
+            or data_obj.get("reverse_charge")
+            or ""
+        ).strip().lower()
+
+        explicit_rcm_flag: Optional[bool] = None
+        if explicit_rc_raw in ("yes", "true", "1", "y"):
+            explicit_rcm_flag = True
+        elif explicit_rc_raw in ("no", "false", "0", "n"):
+            explicit_rcm_flag = False
+
+        vendor_name = str(data_obj.get("vendor_name") or data_obj.get("supplier_name") or "")
+        buyer_name = str(data_obj.get("customer_name") or data_obj.get("buyer_name") or "")
+        vendor_pan = str(data_obj.get("vendor_pan") or data_obj.get("supplier_pan") or "")
+        buyer_pan = str(data_obj.get("customer_pan") or data_obj.get("buyer_pan") or "")
+
+        supplier_entity = classify_entity_constitution(vendor_pan, vendor_gstin, vendor_name)
+        recipient_entity = classify_entity_constitution(buyer_pan, buyer_gstin, buyer_name)
+        is_recipient_registered = bool(buyer_gstin and len(buyer_gstin.strip()) == 15)
+
+        line_items = data_obj.get("line_items") or []
+        descriptions = []
+        sac_codes = []
+        for it in line_items:
+            if isinstance(it, dict):
+                d = str(it.get("description") or "")
+                if d:
+                    descriptions.append(d)
+                s = str(it.get("sac") or it.get("sac_code") or it.get("hsn") or it.get("hsn_code") or "")
+                if s:
+                    sac_codes.append(s)
+
+        header_desc = str(data_obj.get("description") or data_obj.get("notes") or "")
+        if header_desc:
+            descriptions.append(header_desc)
+
+        all_desc_text = " ".join(descriptions).lower()
+        all_sac_text = " ".join(sac_codes)
+
+        # -------------------------------------------------------------
+        # 1. IMPORT OF SERVICES (IGST Act Sec 5(3) / Notif 10/2017-IT(R) Entry 1)
+        # -------------------------------------------------------------
+        is_foreign, foreign_reason = check_foreign_supplier_evidence(data_obj)
+        if is_foreign:
+            # Check doc type - Goods import (Bill of Entry) is Customs, not service RCM
+            doc_type = str(data_obj.get("document_type") or "").upper()
+            if "BILL_OF_ENTRY" in doc_type or "CUSTOMS" in doc_type:
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": None,
+                    "rcm_reason": "Bill of entry / Goods import is subject to Customs duty, not Service RCM under Notif 10/2017-IT(R)",
+                    "rcm_notification": None,
+                    "rcm_conflict": None,
+                    "rcm_requires_review": False,
+                }
+
+            if is_recipient_registered or recipient_entity in ("BODY_CORPORATE", "FIRM"):
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "IMPORT_OF_SERVICES",
+                    "rcm_reason": f"Import of services from overseas supplier ({foreign_reason}) to taxable recipient in India.",
+                    "rcm_notification": "IGST Act Sec 5(3) / Notif 10/2017-IT(R) Entry 1",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+            else:
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "IMPORT_OF_SERVICES",
+                    "rcm_reason": "Overseas supplier identified, but recipient registration/business status in India is unverified (potential OIDAR non-taxable online recipient).",
+                    "rcm_notification": "IGST Act Sec 5(3) / Notif 10/2017-IT(R) Entry 1",
+                    "rcm_conflict": None,
+                    "rcm_requires_review": True,
+                }
+
+        # -------------------------------------------------------------
+        # 2. GOODS TRANSPORT AGENCY (GTA) (Notif 13/2017-CT(R) Entry 1 / Notif 10/2017-IT(R) Entry 2)
+        # -------------------------------------------------------------
+        has_gta_sac = any(s.startswith("996511") or s.startswith("996791") for s in sac_codes)
+        gta_terms = ["goods transport agency", "gta", "consignment note", "bilty", "lr no", "l/r no", "lorry receipt"]
+        has_gta_terms = any(t in all_desc_text for t in gta_terms)
+
+        # False positive shields for transport
+        non_gta_terms = [
+            "cab", "taxi", "passenger", "bus", "flight", "air ticket", "courier",
+            "car purchase", "vehicle purchase", "loading charges", "delivery boy"
+        ]
+        is_ordinary_non_gta = any(nt in all_desc_text for nt in non_gta_terms) and not has_gta_terms and not has_gta_sac
+
+        if (has_gta_sac or has_gta_terms) and not is_ordinary_non_gta:
+            # Check forward charge declaration (Annexure V / opted forward charge at 5% or 12%)
+            forward_charge_opted = any(k in all_desc_text for k in ("annexure v", "forward charge", "opted to pay gst under forward charge", "declaration under gta forward charge"))
+            if forward_charge_opted:
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "GTA",
+                    "rcm_reason": "GTA service supplier has explicitly declared payment under Forward Charge (Annexure V option).",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 1 as amended by Notif 05/2022-CT(R)",
+                    "rcm_conflict": "EXPLICIT_RCM_CONTRADICTS_FACTS" if explicit_rcm_flag is True else None,
+                    "rcm_requires_review": bool(explicit_rcm_flag is True),
+                }
+
+            # Statutory recipient condition: Registered entity, body corporate, factory, society, firm
+            if is_recipient_registered or recipient_entity in ("BODY_CORPORATE", "FIRM"):
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "GTA",
+                    "rcm_reason": "Goods Transport Agency (GTA) services supplied to registered entity without forward charge declaration.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 1 / Notif 10/2017-IT(R) Entry 2",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+            else:
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "GTA",
+                    "rcm_reason": "GTA services identified, but recipient registered/specified entity status could not be established.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 1",
+                    "rcm_conflict": None,
+                    "rcm_requires_review": True,
+                }
+
+        # -------------------------------------------------------------
+        # 3. LEGAL SERVICES (Notif 13/2017-CT(R) Entry 2 / Notif 10/2017-IT(R) Entry 3)
+        # -------------------------------------------------------------
+        has_legal_sac = any(s.startswith("99821") for s in sac_codes)
+        legal_terms = ["advocate", "senior advocate", "firm of advocates", "legal advisory", "legal consultation", "legal services", "court representation", "arbitration"]
+        has_legal_terms = any(t in all_desc_text for t in legal_terms)
+
+        # Strict false-positive filters for Legal
+        legal_false_positives = ["legal software", "software license", "subscription", "scc online", "manupatra", "compliance software", "lexisnexis", "law book", "legal journal"]
+        is_legal_software_or_goods = any(fp in all_desc_text for fp in legal_false_positives)
+
+        if (has_legal_sac or has_legal_terms) and not is_legal_software_or_goods:
+            # Under Notif 13/2017-CT(R) Entry 2, recipient must be a business entity located in taxable territory.
+            # In an enterprise accounts payable / purchase billing system, an inward purchase bill or explicit RCM declaration
+            # indicates business entity recipient unless recipient is explicitly personal / non-business.
+            has_business_context = is_recipient_registered or recipient_entity in ("BODY_CORPORATE", "FIRM") or explicit_rcm_flag is True or not buyer_name
+            if has_business_context:
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "LEGAL_SERVICES",
+                    "rcm_reason": "Legal services provided by an advocate / firm of advocates to a business entity in taxable territory.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 2 / Notif 10/2017-IT(R) Entry 3",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+            else:
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "LEGAL_SERVICES",
+                    "rcm_reason": "Legal services identified, but recipient business entity status could not be established (possible individual/non-business recipient).",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 2",
+                    "rcm_conflict": None,
+                    "rcm_requires_review": True,
+                }
+
+        # -------------------------------------------------------------
+        # 4. SECURITY SERVICES (MANPOWER) (Notif 13/2017-CT(R) Entry 14 w.e.f. 01.01.2019)
+        # -------------------------------------------------------------
+        has_sec_sac = any(s.startswith("998525") or s.startswith("998529") for s in sac_codes)
+        sec_manpower_terms = ["security guard", "security personnel", "manned guarding", "security manpower", "guarding services", "patrol service"]
+        has_sec_manpower_terms = any(t in all_desc_text for t in sec_manpower_terms)
+
+        # False-positive filters for Security
+        sec_false_positives = [
+            "cctv", "camera", "security camera", "security system", "security software",
+            "antivirus", "firewall", "biometric", "alarm system", "hardware", "access control machine"
+        ]
+        is_sec_goods_or_tech = any(fp in all_desc_text for fp in sec_false_positives)
+
+        if (has_sec_sac or has_sec_manpower_terms) and not is_sec_goods_or_tech:
+            if supplier_entity == "BODY_CORPORATE":
+                # Statutoriily excluded: Body corporate suppliers charge GST under Forward Charge
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "SECURITY_SERVICES",
+                    "rcm_reason": "Security services provided by a Body Corporate (Company); falls under Forward Charge per Notif 29/2018-CT(R).",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 14 as amended by Notif 29/2018-CT(R)",
+                    "rcm_conflict": "EXPLICIT_RCM_CONTRADICTS_FACTS" if explicit_rcm_flag is True else None,
+                    "rcm_requires_review": bool(explicit_rcm_flag is True),
+                }
+            elif supplier_entity in ("NON_BODY_CORPORATE", "FIRM") and is_recipient_registered:
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "SECURITY_SERVICES",
+                    "rcm_reason": "Security personnel / manned guarding services provided by a non-body corporate supplier to a registered person.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 14 as amended by Notif 29/2018-CT(R)",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+            elif supplier_entity == "UNKNOWN":
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "SECURITY_SERVICES",
+                    "rcm_reason": "Security services detected, but supplier entity constitution (Body Corporate vs Non-Body Corporate) is unknown.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 14",
+                    "rcm_conflict": "EXPLICIT_RCM_CONTRADICTS_FACTS" if explicit_rcm_flag is True else None,
+                    "rcm_requires_review": True,
+                }
+
+        # -------------------------------------------------------------
+        # 5. DIRECTOR SERVICES (Notif 13/2017-CT(R) Entry 6 / Notif 10/2017-IT(R) Entry 7)
+        # -------------------------------------------------------------
+        director_terms = ["director fee", "director sitting fee", "director commission", "directorship services", "sitting fee for attending board"]
+        has_director_terms = any(t in all_desc_text for t in director_terms)
+
+        # Strict exclusions: Employee salary / payroll is not supply under Schedule III
+        salary_terms = ["salary", "payroll", "wages", "monthly compensation", "remuneration u/s 192", "employee salary"]
+        is_employee_salary = any(st in all_desc_text for st in salary_terms)
+
+        if has_director_terms and not is_employee_salary:
+            if recipient_entity == "BODY_CORPORATE" or is_recipient_registered:
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "DIRECTOR_SERVICES",
+                    "rcm_reason": "Services supplied by a director to the company or body corporate in capacity of director.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 6 / Notif 10/2017-IT(R) Entry 7",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+            else:
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "DIRECTOR_SERVICES",
+                    "rcm_reason": "Director services detected, but recipient body corporate status is not verified.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 6",
+                    "rcm_conflict": None,
+                    "rcm_requires_review": True,
+                }
+
+        # -------------------------------------------------------------
+        # 6. RENTING OF MOTOR VEHICLE (Notif 13/2017-CT(R) Entry 15 / Notif 22/2019-CT(R))
+        # -------------------------------------------------------------
+        has_cab_sac = any(s.startswith("996601") or s.startswith("9966") for s in sac_codes)
+        mv_rent_terms = ["renting of motor vehicle", "cab rental", "car hire", "vehicle rental with fuel", "cab hire services"]
+        has_mv_rent_terms = any(t in all_desc_text for t in mv_rent_terms)
+
+        # False-positive shields
+        mv_false_positives = ["car purchase", "vehicle purchase", "car repair", "vehicle maintenance", "spare parts", "fuel expense", "vehicle insurance"]
+        is_mv_purchase_or_repair = any(fp in all_desc_text for fp in mv_false_positives)
+
+        if (has_cab_sac or has_mv_rent_terms) and not is_mv_purchase_or_repair:
+            if supplier_entity == "BODY_CORPORATE":
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "RENTING_OF_MOTOR_VEHICLE",
+                    "rcm_reason": "Renting of motor vehicle supplied by a Body Corporate; falls under Forward Charge per Notif 22/2019-CT(R).",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 15 as amended by Notif 22/2019-CT(R)",
+                    "rcm_conflict": "EXPLICIT_RCM_CONTRADICTS_FACTS" if explicit_rcm_flag is True else None,
+                    "rcm_requires_review": bool(explicit_rcm_flag is True),
+                }
+            elif supplier_entity in ("NON_BODY_CORPORATE", "FIRM") and recipient_entity == "BODY_CORPORATE":
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "RENTING_OF_MOTOR_VEHICLE",
+                    "rcm_reason": "Renting of motor vehicle designed to carry passengers with fuel supplied by non-body corporate to body corporate.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 15 as amended by Notif 22/2019-CT(R)",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+            elif supplier_entity == "UNKNOWN" or recipient_entity != "BODY_CORPORATE":
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "RENTING_OF_MOTOR_VEHICLE",
+                    "rcm_reason": "Motor vehicle renting detected, but statutory supplier (non-body corporate) or recipient (body corporate) conditions cannot be verified.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 15",
+                    "rcm_conflict": "EXPLICIT_RCM_CONTRADICTS_FACTS" if explicit_rcm_flag is True else None,
+                    "rcm_requires_review": True,
+                }
+
+        # -------------------------------------------------------------
+        # 7. RENTING OF IMMOVABLE PROPERTY OTHER THAN RESIDENTIAL DWELLING
+        #    (Notif 13/2017-CT(R) Entry 5AB inserted via Notif 09/2024-CT(R), corrigendum 22-Oct-2024, amended via Notif 07/2025-CT(R))
+        # -------------------------------------------------------------
+        immovable_rent_terms = ["commercial rent", "office rent", "shop rent", "renting of immovable property", "rent of commercial building", "warehouse rent", "factory rent", "office lease"]
+        has_immovable_rent_terms = any(t in all_desc_text for t in immovable_rent_terms)
+        is_residential = "residential" in all_desc_text or "dwelling" in all_desc_text
+
+        if has_immovable_rent_terms and not is_residential:
+            # Supplier condition: UNREGISTERED person (landlord)
+            # Recipient condition: REGISTERED person (excluding composition levy per Notif 07/2025-CT(R))
+            supplier_is_unregistered = not vendor_gstin or len(vendor_gstin.strip()) < 15
+            recipient_is_composition = any(k in str(af.get("composition") or "").lower() for k in ("yes", "true"))
+
+            if supplier_is_unregistered and is_recipient_registered and not recipient_is_composition:
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "RENTING_IMMOVABLE_PROPERTY_NON_RESIDENTIAL",
+                    "rcm_reason": "Renting of immovable property other than residential dwelling by an unregistered supplier to a registered recipient.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 5AB (Notif 09/2024-CT(R) / Notif 07/2025-CT(R))",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+            elif not supplier_is_unregistered:
+                # Registered landlord -> Forward Charge
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": "RENTING_IMMOVABLE_PROPERTY_NON_RESIDENTIAL",
+                    "rcm_reason": "Renting of immovable property supplied by a registered person; falls under Forward Charge.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 5AB",
+                    "rcm_conflict": "EXPLICIT_RCM_CONTRADICTS_FACTS" if explicit_rcm_flag is True else None,
+                    "rcm_requires_review": bool(explicit_rcm_flag is True),
+                }
+
+        # -------------------------------------------------------------
+        # 8. RENTING OF RESIDENTIAL DWELLING TO REGISTERED PERSON (Notif 13/2017-CT(R) Entry 5AA)
+        # -------------------------------------------------------------
+        if is_residential and any(r in all_desc_text for r in ("rent", "lease", "tenancy")):
+            if is_recipient_registered:
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "RENTING_RESIDENTIAL_DWELLING",
+                    "rcm_reason": "Services by way of renting of residential dwelling to a registered person for business / corporate purpose.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 5AA as inserted by Notif 05/2022-CT(R)",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+
+        # -------------------------------------------------------------
+        # 9. SPONSORSHIP SERVICES (Notif 13/2017-CT(R) Entry 4 / Notif 10/2017-IT(R) Entry 5)
+        # -------------------------------------------------------------
+        has_sponsorship_sac = any(s.startswith("998397") for s in sac_codes)
+        has_sponsorship_terms = any(t in all_desc_text for t in ("sponsorship service", "event sponsorship", "title sponsor"))
+        if (has_sponsorship_sac or has_sponsorship_terms) and not any(k in all_desc_text for k in ("software", "hardware", "gift")):
+            if recipient_entity in ("BODY_CORPORATE", "FIRM"):
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "SPONSORSHIP_SERVICES",
+                    "rcm_reason": "Sponsorship services provided to a body corporate or partnership firm.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 4 / Notif 10/2017-IT(R) Entry 5",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+
+        # -------------------------------------------------------------
+        # 10. SERVICES OF ARBITRAL TRIBUNAL (Notif 13/2017-CT(R) Entry 3)
+        # -------------------------------------------------------------
+        if "arbitral tribunal" in all_desc_text or any(s == "998215" for s in sac_codes):
+            if is_recipient_registered or recipient_entity in ("BODY_CORPORATE", "FIRM"):
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "ARBITRAL_TRIBUNAL",
+                    "rcm_reason": "Services supplied by an arbitral tribunal to a business entity in taxable territory.",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 3",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+
+        # -------------------------------------------------------------
+        # 11. GOVERNMENT / LOCAL AUTHORITY SERVICES (Notif 13/2017-CT(R) Entry 5)
+        # -------------------------------------------------------------
+        govt_terms = ["government of", "ministry of", "municipal corporation", "gram panchayat", "department of revenue"]
+        is_govt_supplier = any(gt in vendor_name.lower() for gt in govt_terms) or any(gt in all_desc_text for gt in govt_terms)
+        govt_exclusions = ["speed post", "express parcel", "passenger transport", "aircraft", "vessel in port", "airport"]
+        is_govt_forward_charge = any(ge in all_desc_text for ge in govt_exclusions)
+
+        if is_govt_supplier and not is_govt_forward_charge:
+            if is_recipient_registered or recipient_entity in ("BODY_CORPORATE", "FIRM"):
+                return {
+                    "is_reverse_charge": True,
+                    "rcm_category": "GOVERNMENT_SERVICES",
+                    "rcm_reason": "Services supplied by Central/State Government, UT, or local authority to a business entity (excluding speed post, passenger transport, port/airport services).",
+                    "rcm_notification": "Notif 13/2017-CT(R) Entry 5",
+                    "rcm_conflict": "STATUTORY_RCM_OVERRIDES_INVOICE" if explicit_rcm_flag is False else None,
+                    "rcm_requires_review": False,
+                }
+
+        # -------------------------------------------------------------
+        # 12. CONDITIONAL GOODS RCM: METAL SCRAP (Notif 04/2017-CT(R) / Notif 06/2024-CT(R))
+        # -------------------------------------------------------------
+        has_scrap_hsn = any(s.startswith(("72", "73", "74", "75", "76", "77", "78", "79", "80", "81")) for s in sac_codes)
+        has_scrap_terms = any(t in all_desc_text for t in ("metal scrap", "iron scrap", "steel scrap", "copper scrap", "aluminum scrap"))
+        if (has_scrap_hsn or has_scrap_terms) and not vendor_gstin and is_recipient_registered:
+            return {
+                "is_reverse_charge": False,
+                "rcm_category": "METAL_SCRAP",
+                "rcm_reason": "Potential Metal Scrap RCM under Notif 06/2024-CT(R) from unregistered supplier; requires manual verification of scrap classification.",
+                "rcm_notification": "Notif 04/2017-CT(R) as amended by Notif 06/2024-CT(R)",
+                "rcm_conflict": None,
+                "rcm_requires_review": True,
+            }
+
+        # -------------------------------------------------------------
+        # 13. SPECIALIZED / UNSUPPORTED RCM CATEGORIES
+        #     (Recovery Agent, Insurance Agent, DSA)
+        # -------------------------------------------------------------
+        if any(t in all_desc_text for t in ("recovery agent", "direct selling agent", "dsa commission")):
+            return {
+                "is_reverse_charge": False,
+                "rcm_category": "SPECIALIZED_FINANCIAL_RCM",
+                "rcm_reason": "Specialized RCM service (Recovery Agent/DSA); applicable only when recipient is a Bank/NBFC.",
+                "rcm_notification": "Notif 13/2017-CT(R) Entry 8, 9",
+                "rcm_conflict": None,
+                "rcm_requires_review": True,
+            }
+
+        # -------------------------------------------------------------
+        # 14. AMBIGUOUS RCM CANDIDATE SIGNALS
+        # -------------------------------------------------------------
+        # Note: If a term was already matched as a false positive (e.g. CCTV equipment, legal software, car purchase),
+        # it is NOT an ambiguous RCM candidate; it is clean Forward Charge.
+        is_known_false_positive = is_sec_goods_or_tech or is_legal_software_or_goods or is_mv_purchase_or_repair or is_employee_salary
+        if not is_known_false_positive:
+            ambiguous_rcm_signals = ["transport", "freight", "cartage", "security personnel", "security guard", "manned guarding", "director fee", "renting of motor vehicle"]
+            matched_ambiguous = [sig for sig in ambiguous_rcm_signals if sig in all_desc_text]
+            if matched_ambiguous and not is_ordinary_non_gta:
+                # We had an RCM-adjacent term, but failed to establish statutory conditions definitively
+                return {
+                    "is_reverse_charge": False,
+                    "rcm_category": None,
+                    "rcm_reason": f"Ambiguous transaction facts for potential RCM term(s): {', '.join(matched_ambiguous)}. Unable to establish statutory RCM conditions deterministically.",
+                    "rcm_notification": None,
+                    "rcm_conflict": "AMBIGUOUS_RCM_FACTS" if explicit_rcm_flag is True else None,
+                    "rcm_requires_review": True,
+                }
+
+        # -------------------------------------------------------------
+        # 15. EXPLICIT INVOICE CONFLICT OR UNRESOLVED STATUTORY CHECK
+        # -------------------------------------------------------------
+        if explicit_rcm_flag is True:
+            # Invoice explicitly declares RCM, but no statutory notified category conditions were satisfied
+            return {
+                "is_reverse_charge": False,
+                "rcm_category": None,
+                "rcm_reason": "Invoice declares Reverse Charge (RCM=YES), but transaction facts do not satisfy any notified statutory RCM category.",
+                "rcm_notification": None,
+                "rcm_conflict": "EXPLICIT_RCM_CONTRADICTS_FACTS",
+                "rcm_requires_review": True,
+            }
+
+        # Clean Forward Charge default
+        return {
+            "is_reverse_charge": False,
+            "rcm_category": None,
+            "rcm_reason": "Standard Forward Charge supply (no statutory RCM category identified).",
+            "rcm_notification": None,
+            "rcm_conflict": None,
+            "rcm_requires_review": False,
+        }
 
     def evaluate_gst(self, invoice_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -683,18 +1209,6 @@ class GSTEngine:
 
         # 4. Supply Type Determination
         supply_type: str = "REVIEW_REQUIRED"
-        is_reverse_charge: bool = False
-
-        # Check explicit reverse charge indicators
-        af = data_obj.get("additional_fields") or {}
-        rc_text = str(
-            af.get("Whether tax is payable under Reverse Charge?")
-            or af.get("reverse_charge")
-            or data_obj.get("reverse_charge")
-            or ""
-        ).lower()
-        if "yes" in rc_text or rc_text == "true":
-            is_reverse_charge = True
 
         if supplier_state_code and pos_state_code:
             if supplier_state_code == pos_state_code:
@@ -704,6 +1218,27 @@ class GSTEngine:
         else:
             supply_type = "REVIEW_REQUIRED"
 
+        # 4b. Deterministic Reverse Charge Mechanism (RCM) Evaluation
+        rcm_eval = self._evaluate_rcm(
+            data_obj=data_obj,
+            vendor_gstin=vendor_gstin,
+            buyer_gstin=buyer_gstin,
+            supplier_state_code=supplier_state_code,
+            pos_state_code=pos_state_code,
+            supply_type=supply_type,
+        )
+        is_reverse_charge: bool = rcm_eval.get("is_reverse_charge", False)
+        rcm_category: Optional[str] = rcm_eval.get("rcm_category")
+        rcm_reason: str = rcm_eval.get("rcm_reason") or "Forward charge supply"
+        rcm_notification: Optional[str] = rcm_eval.get("rcm_notification")
+        rcm_conflict: Optional[str] = rcm_eval.get("rcm_conflict")
+        rcm_requires_review: bool = rcm_eval.get("rcm_requires_review", False)
+
+        if rcm_conflict:
+            warnings.append(f"RCM Conflict: {rcm_conflict} - {rcm_reason}")
+        elif rcm_requires_review:
+            warnings.append(f"RCM Notice: {rcm_reason}")
+
         # Supporting cross-check: buyer GSTIN vs supplier GSTIN
         if supplier_state_code and buyer_state_code:
             if (supplier_state_code == buyer_state_code) and supply_type == "INTER_STATE" and pos_source == "explicit_invoice":
@@ -712,6 +1247,7 @@ class GSTEngine:
                 )
 
         # 5. Extract Stored Values (Zero Data Loss & Provenance)
+        af = data_obj.get("additional_fields") or {}
         ext_cgst = extract_tax_value(data_obj, "cgst")
         ext_sgst = extract_tax_value(data_obj, "sgst")
         ext_igst = extract_tax_value(data_obj, "igst")
@@ -837,6 +1373,10 @@ class GSTEngine:
             if diff > 2.0:  # Rounding tolerance threshold
                 warnings.append(f"Discrepancy of ₹{diff:,.2f} between extracted Tax Total (₹{ext_tax_total:,.2f}) and line-level GST sum (₹{calculated_gst_total:,.2f}).")
 
+        # RCM Review Gate: If RCM determination requires review or has conflict, flag validation_status
+        if rcm_requires_review and validation_status == "PASSED":
+            validation_status = "REVIEW_REQUIRED"
+
         return {
             "supplier_state_code": supplier_state_code,
             "supplier_state_name": supplier_state_name,
@@ -847,6 +1387,11 @@ class GSTEngine:
             "place_of_supply_source": pos_source,
             "supply_type": supply_type,
             "is_reverse_charge": is_reverse_charge,
+            "rcm_category": rcm_category,
+            "rcm_reason": rcm_reason,
+            "rcm_notification": rcm_notification,
+            "rcm_conflict": rcm_conflict,
+            "rcm_requires_review": rcm_requires_review,
             "extracted": {
                 "cgst_amount": ext_cgst,
                 "sgst_amount": ext_sgst,

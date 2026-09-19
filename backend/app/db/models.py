@@ -7,8 +7,10 @@ from sqlalchemy import (
     Float,
     Text,
     DateTime,
+    Date,
     Boolean,
     ForeignKey,
+    Index,
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship

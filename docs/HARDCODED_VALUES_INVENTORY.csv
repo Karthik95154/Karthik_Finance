@@ -1,0 +1,63 @@
+File,Line,Value,Meaning,Statutory?,Policy?,Fallback?,Should be config/rule table?,Risk,Class
+backend/app/services/financial_validator.py,10,1.0,DEFAULT_TOLERANCE for monetary difference validation (INR),No,Yes,Yes,Yes,Medium - Rounding discrepancy tolerance hardcoded,B
+backend/app/services/journal_generator.py,84,1.0,DEFAULT_TOLERANCE for journal balancing (INR),No,Yes,Yes,Yes,Medium - Duplicated tolerance across services,E
+backend/app/services/gst_engine.py,810,1.0,GST line vs header reconciliation tolerance (INR),No,Yes,Yes,Yes,Medium - Duplicated tolerance,E
+backend/app/services/gst_engine.py,815,2.0,GST total rounding tolerance (INR),No,Yes,Yes,Yes,Medium - Arbitrary ₹2 threshold,D
+backend/app/services/gst_engine.py,460,0.05,Tax value deduplication tolerance (INR),No,Yes,Yes,Yes,Low - Float deduplication,B
+backend/app/services/master_data_service.py,731,0.05,TDS rate match tolerance percentage (0.05%),No,Yes,Yes,Yes,Low - Float comparison epsilon,B
+backend/app/services/tds_engine.py,577,0.05,Vendor declared TDS rate mismatch tolerance (0.05%),No,Yes,Yes,Yes,Low - Float comparison,B
+backend/app/services/tds_engine.py,574,1.0,Vendor declared TDS amount mismatch threshold (₹1.00),No,Yes,Yes,Yes,Low - Dispute noise filter,B
+backend/app/services/export_service.py,103,0.05,Invoice vs Journal total mismatch check tolerance (INR),No,Yes,Yes,Yes,Medium - Inconsistent with ₹1 tolerance,E
+backend/app/services/export_service.py,267,0.05,Journal input tax vs ITC check tolerance (INR),No,Yes,Yes,Yes,Medium - Stricter than ₹1 journal tolerance,E
+backend/app/services/tds_engine.py,193,2.0,Section 393(1) Sl. 6(i) / 194C Corporate contractor statutory rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,194,1.0,Section 393(1) Sl. 6(i) / 194C Individual contractor statutory rate (1%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,210,2.0,Section 393(1) Sl. 6(iii)(D)(a) / 194J(1)(b) Technical Services FTS statutory rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,218,10.0,Section 393(1) Sl. 6(iii)(D)(b) / 194J(1)(a) Professional Services statutory rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,177,2.0,Section 393(1) Sl. 2(ii) / 194-I(a) Rent plant/machinery statutory rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,185,10.0,Section 393(1) Sl. 2(ii) / 194-I(b) Rent land/building statutory rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,169,2.0,Section 393(1) Sl. 1(ii) / 194H Commission/brokerage statutory rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,243,0.10,Section 393(1) Sl. 8(ii) / 194Q Purchase of goods statutory rate (0.1%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,259,0.10,Section 393(1) Sl. 8(v) / 194-O E-commerce participant statutory rate (0.1%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,267,1.0,Section 393(1) Sl. 8(vi) / 194S Virtual Digital Asset statutory rate (1%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,251,10.0,Section 393(1) Sl. 8(iv) / 194R Benefit or perquisite statutory rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,153,10.0,Section 393(1) Sl. 7 / 194 Dividends statutory rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,137,10.0,Section 393(1) Sl. 5(i) / 193 Interest on securities statutory rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,145,10.0,Section 393(1) Sl. 5(ii) / 194A Interest other statutory rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,235,10.0,Section 393(1) Sl. 4(i) / 194K Mutual fund units income statutory rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,275,2.0,Section 393(3) Sl. 5 / 194N Cash withdrawal base statutory rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,283,10.0,Section 393(3) Sl. 7 / 194T Partner remuneration statutory rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,291,20.0,Section 393(2) / 195 Non-resident base rate (20%),Yes,No,No,Yes,Medium - DTAA rate variation omitted,A
+backend/app/services/tds_engine.py,927,5.0,Section 397(2) Higher deduction rate for Purchase of Goods without PAN (5%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,930,5.0,Section 397(2) Higher deduction rate for E-commerce without PAN (5%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,932,20.0,Section 397(2) General higher deduction rate without PAN (20%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/tds_engine.py,557,2.0,Fallback TDS rate when category unclassified (2.0%),No,No,Yes,Yes,High - Unsafe 2% fallback masking missing classifications,D
+backend/app/services/tds_engine.py,966,2.0,Fallback TDS rate in calculate_tds when not professional (2.0%),No,No,Yes,Yes,High - Unsafe default rate 2.0%,D
+backend/app/services/tds_engine.py,966,10.0,Fallback TDS rate in calculate_tds when professional in name (10.0%),No,No,Yes,Yes,High - Heuristic keyword fallback,D
+backend/app/services/tds_engine.py,950,2.0,Rent rate for subcontractor in calculate_tds (2.0%),No,No,Yes,Yes,High - Conflates contractor with rent,D
+backend/app/services/model_response_adapter.py,735,2.0,SAC 9983 FTS rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,738,10.0,SAC 9982 Professional rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,776,2.0,Plant & Machinery lease rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,781,10.0,Immovable property rent rate (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,795,1.0,Contractor individual rate (1%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,795,2.0,Contractor company rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,801,2.0,Commission / brokerage rate (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,873,1.0,Contractor individual rate fallback (1%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,873,2.0,Contractor corporate rate fallback (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,884,0.1,Purchase of goods rate fallback (0.1%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,895,2.0,Technical services rate fallback (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,895,10.0,Professional services rate fallback (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,906,10.0,Rent immovable rate fallback (10%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/model_response_adapter.py,917,2.0,Commission rate fallback (2%),Yes,No,No,Yes,Low - Statutory constant,A
+backend/app/services/itc_engine.py,386,0.05,Rule 42 non-business common credit reversal factor D2 (5%),Yes,No,No,Yes,Low - Statutory formula constant,A
+backend/app/services/itc_engine.py,417,60,Rule 43 Capital Goods useful life in months (60 months),Yes,No,No,Yes,Low - Statutory formula constant,A
+backend/app/services/itc_engine.py,224,11,Section 16(4) subsequent FY deadline month November (11),Yes,No,No,Yes,Low - Statutory formula constant,A
+backend/app/services/itc_engine.py,224,30,Section 16(4) subsequent FY deadline day (30th),Yes,No,No,Yes,Low - Statutory formula constant,A
+backend/app/services/itc_engine.py,1108,180,Rule 37 payment aging threshold in days (180 days),Yes,No,No,Yes,Low - Statutory condition constant,A
+backend/app/services/itc_engine.py,564,13,Section 17(5)(a) Motor vehicle seating capacity limit (13 persons),Yes,No,No,Yes,Low - Statutory exception limit,A
+backend/app/services/master_data_service.py,229,0.70,COA fuzzy string matching similarity cutoff (70%),No,Yes,No,Yes,Medium - Algorithmic tuning parameter,B
+backend/app/services/model_response_adapter.py,588,0.70,COA fuzzy matching threshold in adapter (70%),No,Yes,No,Yes,Medium - Duplicated threshold across modules,E
+backend/app/services/accounting_service.py,26,0.0,Mock GST rate 0%,No,No,No,No,Low - Mock fixture constant,C
+backend/app/services/accounting_service.py,27,5.0,Mock GST rate 5%,No,No,No,No,Low - Mock fixture constant,C
+backend/app/services/accounting_service.py,28,12.0,Mock GST rate 12%,No,No,No,No,Low - Mock fixture constant,C
+backend/app/services/accounting_service.py,29,18.0,Mock GST rate 18%,No,No,No,No,Low - Mock fixture constant,C
+backend/app/services/accounting_service.py,30,28.0,Mock GST rate 28%,No,No,No,No,Low - Mock fixture constant,C
