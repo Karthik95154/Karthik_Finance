@@ -167,6 +167,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 1(ii)] - Commission or Brokerage",
         "nature_of_payment": "Commission & Brokerage Payments",
         "default_rate": 2.0,
+        "threshold_amount": 20000.0,
         "legacy_section": "194H",
         "zoho_section_slug": "commission_or_brokerage",
     },
@@ -175,6 +176,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 2(ii)] - Rent for Plant, Machinery or Equipment",
         "nature_of_payment": "Rent of Plant, Machinery or Equipment",
         "default_rate": 2.0,
+        "threshold_amount": 500000.0,
         "legacy_section": "194-I(a)",
         "zoho_section_slug": "rent_plant_machinery",
     },
@@ -183,6 +185,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 2(ii)] - Rent for Land, Building or Furniture",
         "nature_of_payment": "Rent of Land, Building or Furniture",
         "default_rate": 10.0,
+        "threshold_amount": 500000.0,
         "legacy_section": "194-I(b)",
         "zoho_section_slug": "rent_land_building",
     },
@@ -192,6 +195,8 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Work Contracts & Sub-contractor Services",
         "default_rate": 2.0,
         "individual_rate": 1.0,
+        "threshold_amount": 100000.0,
+        "single_invoice_threshold": 30000.0,
         "legacy_section": "194C",
         "zoho_section_slug": "payment_contractors_and_professionals",
     },
@@ -200,6 +205,8 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 6(i)] - Payments to Contractors (Individual/HUF)",
         "nature_of_payment": "Contractor Services (Individual / HUF)",
         "default_rate": 1.0,
+        "threshold_amount": 100000.0,
+        "single_invoice_threshold": 30000.0,
         "legacy_section": "194C",
         "zoho_section_slug": "contract_payments_individual_or_huf",
     },
@@ -208,6 +215,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services (FTS)",
         "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
         "default_rate": 2.0,
+        "threshold_amount": 50000.0,
         "legacy_section": "194J(1)(b)",
         "zoho_section_slug": "technical_services",
     },
@@ -216,6 +224,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)] - Professional Services & Fees",
         "nature_of_payment": "Professional Services & Consultancy",
         "default_rate": 10.0,
+        "threshold_amount": 50000.0,
         "legacy_section": "194J(1)(a)",
         "zoho_section_slug": "professional_fees",
     },
@@ -225,6 +234,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "nature_of_payment": "Fees for Technical Services (FTS) & Cloud Infrastructure",
         "default_rate": 2.0,
         "professional_rate": 10.0,
+        "threshold_amount": 50000.0,
         "legacy_section": "194J",
         "zoho_section_slug": "technical_services",
     },
@@ -233,6 +243,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 4(i)] - Income from Units (Mutual Funds)",
         "nature_of_payment": "Income from Units",
         "default_rate": 10.0,
+        "threshold_amount": 10000.0,
         "legacy_section": "194K",
         "zoho_section_slug": "income_units",
     },
@@ -241,6 +252,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 8(ii)] - Purchase of Goods",
         "nature_of_payment": "Purchase of Goods",
         "default_rate": 0.10,
+        "threshold_amount": 5000000.0,
         "legacy_section": "194Q",
         "zoho_section_slug": "purchase_of_goods",
     },
@@ -249,6 +261,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 8(iv)] - Benefit or Perquisite",
         "nature_of_payment": "Benefit or Perquisite in respect of Business",
         "default_rate": 10.0,
+        "threshold_amount": 20000.0,
         "legacy_section": "194R",
         "zoho_section_slug": "benefit_or_perquisite",
     },
@@ -257,6 +270,7 @@ STATUTORY_TDS_TABLE_2025 = {
         "provision": "Section 393(1) [Table Sl. No. 8(v)] - E-commerce Participant",
         "nature_of_payment": "E-commerce Participant Supply",
         "default_rate": 0.10,
+        "threshold_amount": 500000.0,
         "legacy_section": "194-O",
         "zoho_section_slug": "e_commerce_operator",
     },
@@ -820,6 +834,94 @@ class TDSEngine:
         return 0.0
 
     @classmethod
+    def evaluate_threshold_state(
+        cls,
+        resolved_category: Optional[str],
+        current_amount: float,
+        previous_ytd: float = 0.0,
+        section_raw: Optional[str] = None,
+        provision_raw: Optional[str] = None,
+        nature_raw: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Evaluates the statutory threshold state machine for TDS withholding.
+        Returns:
+          - threshold_amount: float or None
+          - threshold_status: "BELOW_THRESHOLD" | "THRESHOLD_CROSSED" | "THRESHOLD_ALREADY_CROSSED" | "NOT_APPLICABLE"
+          - tds_applicable: bool
+          - tds_base_amount: float
+          - previous_ytd: float
+          - current_invoice_amount: float
+          - projected_ytd: float
+        """
+        resolved = resolve_tds_tax_details(section_raw, provision_raw, nature_raw)
+        cat_key = resolved_category or resolved.get("category_key")
+        cat_info = STATUTORY_TDS_TABLE_2025.get(cat_key, {}) if cat_key else {}
+        threshold_amount = cat_info.get("threshold_amount")
+
+        prev_ytd = round(max(0.0, float(previous_ytd or 0.0)), 2)
+        curr_amt = round(max(0.0, float(current_amount or 0.0)), 2)
+        proj_ytd = round(prev_ytd + curr_amt, 2)
+
+        if threshold_amount is None or threshold_amount <= 0:
+            return {
+                "threshold_amount": None,
+                "threshold_status": "NOT_APPLICABLE",
+                "tds_applicable": True if curr_amt > 0 else False,
+                "tds_base_amount": curr_amt,
+                "previous_ytd": prev_ytd,
+                "current_invoice_amount": curr_amt,
+                "projected_ytd": proj_ytd,
+            }
+
+        thresh = float(threshold_amount)
+        single_thresh = cat_info.get("single_invoice_threshold")
+
+        # Contractor Section 194C dual threshold rule: Single invoice >= single_invoice_threshold triggers TDS even if YTD < 100k
+        if single_thresh is not None and curr_amt >= single_thresh and prev_ytd < thresh:
+            return {
+                "threshold_amount": thresh,
+                "single_invoice_threshold": float(single_thresh),
+                "threshold_status": "SINGLE_INVOICE_THRESHOLD_EXCEEDED",
+                "tds_applicable": True,
+                "tds_base_amount": curr_amt,
+                "previous_ytd": prev_ytd,
+                "current_invoice_amount": curr_amt,
+                "projected_ytd": proj_ytd,
+            }
+
+        if prev_ytd >= thresh:
+            return {
+                "threshold_amount": thresh,
+                "threshold_status": "THRESHOLD_ALREADY_CROSSED",
+                "tds_applicable": True,
+                "tds_base_amount": curr_amt,
+                "previous_ytd": prev_ytd,
+                "current_invoice_amount": curr_amt,
+                "projected_ytd": proj_ytd,
+            }
+        elif proj_ytd >= thresh:
+            return {
+                "threshold_amount": thresh,
+                "threshold_status": "THRESHOLD_CROSSED",
+                "tds_applicable": True,
+                "tds_base_amount": proj_ytd,
+                "previous_ytd": prev_ytd,
+                "current_invoice_amount": curr_amt,
+                "projected_ytd": proj_ytd,
+            }
+        else:
+            return {
+                "threshold_amount": thresh,
+                "threshold_status": "BELOW_THRESHOLD",
+                "tds_applicable": False,
+                "tds_base_amount": 0.0,
+                "previous_ytd": prev_ytd,
+                "current_invoice_amount": curr_amt,
+                "projected_ytd": proj_ytd,
+            }
+
+    @classmethod
     def calculate_tds(
         cls,
         applicable: Optional[bool] = None,
@@ -832,13 +934,10 @@ class TDSEngine:
         is_subcontractor: bool = False,
         is_tech_service: bool = True,
         vendor_declared_tds: Optional[Dict[str, Any]] = None,
+        previous_ytd: float = 0.0,
     ) -> Dict[str, Any]:
         """
-        Computes statutory TDS amount according to Indian Income Tax rules.
-        If applicable is False, strictly returns TDS not applicable with 0.0 amounts.
-        If applicable is None and no section/rate is specified, defaults to not applicable.
-        Preserves vendor_declared_tds separately and flags conflicts if vendor declaration
-        materially differs from the statutory calculation.
+        Computes statutory TDS amount according to Indian Income Tax rules and Threshold State Machine.
         """
         if applicable is False or base_amount <= 0:
             return {
@@ -849,6 +948,11 @@ class TDSEngine:
                 "rate": 0.0,
                 "base_amount": 0.0,
                 "tds_amount": 0.0,
+                "threshold_amount": None,
+                "threshold_status": "NOT_APPLICABLE",
+                "previous_ytd": round(float(previous_ytd or 0.0), 2),
+                "current_invoice_amount": round(float(base_amount or 0.0), 2),
+                "projected_ytd": round(float(previous_ytd or 0.0) + float(base_amount or 0.0), 2),
                 "reason": "TDS not applicable or zero base amount",
                 "vendor_declared_tds": vendor_declared_tds,
                 "tds_needs_review": False,
@@ -950,8 +1054,9 @@ class TDSEngine:
                 computed_rate = 10.0
                 reason = "Premature EPF Withdrawal TDS (10%) under Section 392"
             elif "CONTRACT" in sec_str or "194C" in sec_str or "SL 6 I" in sec_str:
-                computed_rate = 1.0 if individual else 2.0
-                reason = f"Contractor TDS ({computed_rate}%) for {'Individual/HUF' if individual else 'Company/Firm'}"
+                is_indiv = individual or any(k in sec_str for k in ("INDIVIDUAL", "HUF", "PROPRIETOR"))
+                computed_rate = 1.0 if is_indiv else 2.0
+                reason = f"Contractor TDS ({computed_rate}%) for {'Individual/HUF' if is_indiv else 'Company/Firm'}"
             elif is_purchase_goods:
                 computed_rate = 0.1
                 reason = "Purchase of Goods TDS (0.1%)"
@@ -962,7 +1067,8 @@ class TDSEngine:
                 computed_rate = 10.0
                 reason = "Dividend TDS (10%)"
             elif "RENT" in sec_str or "194I" in sec_str or "SL 2" in sec_str:
-                computed_rate = 2.0 if is_subcontractor else 10.0
+                is_plant_machinery = any(k in sec_str for k in ("PLANT", "MACHINERY", "EQUIPMENT", "CCTV", "VEHICLE", "HARDWARE", "194-I(A)", "2(II)")) and not any(k in sec_str for k in ("LAND", "BUILDING", "OFFICE", "PREMISES", "FURNITURE"))
+                computed_rate = 2.0 if is_plant_machinery else 10.0
                 reason = f"Rent TDS ({computed_rate}%)"
             elif "COMMISSION" in sec_str or "194H" in sec_str or "SL 1 II" in sec_str or "BROKER" in sec_str:
                 computed_rate = 2.0
@@ -997,8 +1103,23 @@ class TDSEngine:
                     "tds_conflict_reason": f"TDS classification unresolved for '{provision or section or nature_of_payment or 'Services'}' - manual review required",
                 }
 
-        # TDS is strictly calculated on base_amount (Subtotal), NEVER on subtotal + GST
-        tds_amount = round((base_amount * computed_rate) / 100.0, 2)
+        # Evaluate statutory threshold state machine
+        resolved_details = resolve_tds_tax_details(section, provision, nature_of_payment)
+        category_key = resolved_details.get("category_key")
+        thresh_eval = cls.evaluate_threshold_state(
+            resolved_category=category_key,
+            current_amount=base_amount,
+            previous_ytd=previous_ytd,
+            section_raw=section,
+            provision_raw=provision,
+            nature_raw=nature_of_payment,
+        )
+
+        is_statutory_applicable = bool(thresh_eval.get("tds_applicable"))
+        effective_base_amount = float(thresh_eval.get("tds_base_amount") or 0.0)
+
+        # TDS is strictly calculated on effective_base_amount (Subtotal or Projected YTD when crossing)
+        tds_amount = round((effective_base_amount * computed_rate) / 100.0, 2) if (is_statutory_applicable and effective_base_amount > 0) else 0.0
 
         tds_needs_review = False
         conflict_code = None
@@ -1022,13 +1143,22 @@ class TDSEngine:
                 )
 
         return {
-            "applicable": True,
+            "applicable": is_statutory_applicable,
+            "tds_applicable": is_statutory_applicable,
             "provision": provision,
             "section": section,
             "nature_of_payment": nature_of_payment,
-            "rate": computed_rate,
-            "base_amount": round(base_amount, 2),
+            "rate": computed_rate if is_statutory_applicable else 0.0,
+            "tds_rate": computed_rate if is_statutory_applicable else 0.0,
+            "base_amount": round(effective_base_amount, 2),
+            "tds_base_amount": round(effective_base_amount, 2),
             "tds_amount": tds_amount,
+            "proposed_tds_amount": tds_amount,
+            "threshold_amount": thresh_eval.get("threshold_amount"),
+            "threshold_status": thresh_eval.get("threshold_status"),
+            "previous_ytd": thresh_eval.get("previous_ytd"),
+            "current_invoice_amount": thresh_eval.get("current_invoice_amount"),
+            "projected_ytd": thresh_eval.get("projected_ytd"),
             "pan_valid": pan_valid,
             "reason": conflict_reason or reason,
             "vendor_declared_tds": vendor_declared_tds,

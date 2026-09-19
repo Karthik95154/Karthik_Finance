@@ -203,6 +203,7 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
     invoice_payload = None
     cached_coa = None
     cached_taxes = None
+    previous_ytd = 0.0
 
     # Step 1: Initial state transition and load cached master data in a short-lived session
     async with AsyncSessionLocal() as session:
@@ -235,6 +236,63 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             normalized_accounting_state = invoice.current_accounting_output or invoice.accounting_output
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
             cached_taxes = await master_data_service.get_cached_taxes(tenant_id, session)
+
+            # Query historical YTD base amount for same vendor in current Indian Financial Year
+            from app.core.date_utils import parse_and_normalize_date, get_indian_financial_year
+            raw_inv_date = invoice_payload.get("invoice_date")
+            inv_dt_str = parse_and_normalize_date(raw_inv_date) if raw_inv_date else None
+            if inv_dt_str:
+                try:
+                    inv_d = datetime.strptime(inv_dt_str, "%Y-%m-%d").date()
+                except ValueError:
+                    inv_d = date.today()
+            else:
+                inv_d = date.today()
+
+            # Format FY boundary date strings YYYY-MM-DD
+            fy_start_str = f"{fy_start_year}-04-01"
+            fy_end_str = f"{fy_end_year}-03-31"
+
+            v_pan = invoice_payload.get("vendor_pan") or invoice_payload.get("supplier_pan")
+            v_gstin = invoice_payload.get("vendor_gstin") or invoice_payload.get("supplier_gstin")
+            v_name = (invoice_payload.get("vendor_name") or invoice_payload.get("supplier_name") or "").strip().lower()
+
+            ytd_conditions = []
+            if v_pan and len(str(v_pan).strip()) == 10:
+                ytd_conditions.append(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_pan') == str(v_pan).strip())
+            if v_gstin and len(str(v_gstin).strip()) == 15:
+                ytd_conditions.append(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_gstin') == str(v_gstin).strip())
+            if v_name:
+                ytd_conditions.append(func.lower(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_name')) == v_name)
+
+                # Pre-tax historical invoice subtotal used for statutory YTD threshold accumulation
+                # Excludes total_amount to prevent GST-inclusive amounts from inflating YTD.
+                subtotal_expr = func.coalesce(
+                    cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'subtotal'), Float),
+                    cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'sub_total'), Float),
+                    cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'taxable_amount'), Float),
+                    0.0
+                )
+                inv_date_expr = func.coalesce(
+                    func.jsonb_extract_path_text(Invoice.current_vlm_output, 'invoice_date'),
+                    func.to_char(Invoice.created_at, 'YYYY-MM-DD')
+                )
+
+                ytd_query = (
+                    select(func.coalesce(func.sum(subtotal_expr), 0.0))
+                    .where(
+                        Invoice.tenant_id == tenant_id,
+                        Invoice.id != invoice_id,
+                        Invoice.status != "REJECTED",
+                        Invoice.approval_status != "REJECTED",
+                        inv_date_expr >= fy_start_str,
+                        inv_date_expr <= fy_end_str,
+                        or_(*ytd_conditions)
+                    )
+                )
+                ytd_res = await session.execute(ytd_query)
+                previous_ytd = float(ytd_res.scalar() or 0.0)
+
         except Exception as exc:
             logger.exception(f"Error initializing Stage 3 processing for invoice {invoice_id}: {exc}")
             try:
@@ -289,24 +347,19 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
         # 2. Call Deterministic Stage 4 GST Engine
         gst_result = gst_engine.evaluate_gst(invoice_payload)
 
-        # 3. Call Deterministic Stage 4 ITC Engine via SSOT
-        from app.services.itc_engine import get_effective_itc_data
-        combined_accounting_context = {
-            "accounting": accounting_lines,
-            "tds_assessment": tds_assessment,
-        }
-        itc_result = get_effective_itc_data(
-            invoice_or_data=invoice_payload,
-            accounting_output=combined_accounting_context,
+        # 3. Call Deterministic Stage 4.5 ITC Engine
+        itc_result = itc_engine.evaluate_itc(
+            invoice_data=invoice_payload,
+            gst_result=gst_result,
+            accounting_output=combined_accounting_context if 'combined_accounting_context' in locals() else {"accounting": accounting_lines, "tds_assessment": tds_assessment},
         )
 
         # 4. Call Deterministic Stage 5 Financial Validator
         financial_validation_result = financial_validator.validate_invoice(invoice_payload, gst_result)
 
-        # 5. Deterministic Final TDS (Authoritative statutory calculation on resolved base amount)
+        # 5. Deterministic Final TDS (Authoritative statutory calculation on resolved base amount with threshold state machine)
         from app.services.tds_engine import get_effective_tds_data
         effective_tds = get_effective_tds_data({"tds_assessment": tds_assessment})
-        tds_applicable = bool(effective_tds.get("applicable"))
 
         tds_base_amt = tds_engine.determine_tds_base_amount(invoice_payload, effective_tds)
         tds_rate = effective_tds.get("rate")
@@ -316,14 +369,16 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
         vendor_pan = invoice_payload.get("vendor_pan")
 
         final_tds_calc = tds_engine.calculate_tds(
-            applicable=tds_applicable,
+            applicable=bool(effective_tds.get("applicable")) if effective_tds.get("applicable") is not None else None,
             section=tds_section,
             provision=tds_provision,
             nature_of_payment=tds_nature,
             base_amount=tds_base_amt,
             rate=float(tds_rate) if tds_rate is not None else None,
             vendor_pan=vendor_pan,
+            previous_ytd=previous_ytd,
         )
+        tds_applicable = bool(final_tds_calc.get("applicable"))
 
         # Build unified accounting output maintaining clear proposal vs final separation
         persisted_accounting_output = {

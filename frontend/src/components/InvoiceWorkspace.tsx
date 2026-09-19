@@ -1555,16 +1555,12 @@ export default function InvoiceWorkspace({
       total_amount: computedTotalAmount,
     }));
 
-    // 3. TDS Calculation
+    // 3. TDS Calculation (Consumes Single Source of Truth backend statutory determination)
     const tdsRaw: any = accountingData.tds_assessment || accountingData.tds || {};
     const tdsApp = Boolean(tdsRaw.tds_applicable ?? tdsRaw.applicable);
     const rawRate = tdsRaw.approved_tds_rate ?? tdsRaw.tds_rate ?? tdsRaw.rate;
-    const secStr = String(tdsRaw.tds_section || tdsRaw.tds_provision || tdsRaw.nature_of_payment || "").toUpperCase();
-    const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
-    const tdsRate = tdsApp
-      ? (rawRate !== null && rawRate !== undefined && parseFloat(String(rawRate)) > 0
-          ? parseFloat(String(rawRate))
-          : fallbackRate)
+    const tdsRate = (tdsApp && rawRate !== null && rawRate !== undefined && !isNaN(parseFloat(String(rawRate))) && parseFloat(String(rawRate)) > 0)
+      ? parseFloat(String(rawRate))
       : 0;
     let tdsAmount = 0;
     if (tdsApp && tdsRate > 0) {
@@ -4605,13 +4601,15 @@ export default function InvoiceWorkspace({
                                 currTds.proposed_tds_amount = 0.0;
                                 currTds.tds_amount = 0.0;
                               } else {
-                                const secStr = String(currTds.tds_section || currTds.section || currTds.tds_provision || currTds.nature_of_payment || "").toUpperCase();
-                                const rateToUse = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
+                                const rawExisting = currTds.approved_tds_rate ?? currTds.tds_rate ?? currTds.rate;
+                                const rateToUse = (rawExisting !== null && rawExisting !== undefined && parseFloat(String(rawExisting)) > 0)
+                                  ? parseFloat(String(rawExisting))
+                                  : null;
                                 currTds.tds_rate = rateToUse;
                                 currTds.rate = rateToUse;
                                 currTds.approved_tds_rate = rateToUse;
                                 const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
-                                if (subtotal > 0) {
+                                if (subtotal > 0 && rateToUse) {
                                   currTds.tds_base_amount = subtotal;
                                   currTds.base_amount = subtotal;
                                   const calcAmt = Math.round((subtotal * rateToUse) / 100 * 100) / 100;
@@ -4648,24 +4646,12 @@ export default function InvoiceWorkspace({
                           TDS Section
                         </label>
                         {(() => {
-                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
-                          const secRaw = tdsResult.tds_section || tdsResult.section;
-                          const provRaw = tdsResult.tds_provision || tdsResult.provision;
-                          const natRaw = tdsResult.nature_of_payment;
-                          const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
-                          let displaySec = secRaw || "";
-                          if (isApp && (!displaySec || displaySec.includes("_"))) {
-                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displaySec = "194J / 393";
-                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displaySec = "194C";
-                            else if (combined.includes("194I") || combined.includes("RENT")) displaySec = "194I";
-                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displaySec = "194H";
-                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displaySec = "194Q";
-                            else displaySec = "194J";
-                          }
+                          const secRaw = tdsResult.tds_section || tdsResult.section || tdsResult.tds_provision || tdsResult.provision;
+                          const displaySec = secRaw || "";
                           return (
                             <input
                               type="text"
-                              placeholder="e.g. 194C, 194J, 194Q, 194I"
+                              placeholder="e.g. Section 393(1) [Table Sl. No. 6(iii)]"
                               value={displaySec}
                               onChange={(e) => {
                                 const val = e.target.value;
@@ -4700,24 +4686,12 @@ export default function InvoiceWorkspace({
                           TDS Statutory Provision
                         </label>
                         {(() => {
-                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
-                          const secRaw = tdsResult.tds_section || tdsResult.section;
-                          const provRaw = tdsResult.tds_provision || tdsResult.provision;
-                          const natRaw = tdsResult.nature_of_payment;
-                          const combined = `${provRaw || ""} ${secRaw || ""} ${natRaw || ""}`.toUpperCase();
-                          let displayProv = provRaw || "";
-                          if (isApp && (!displayProv || displayProv.includes("_"))) {
-                            if (combined.includes("393") || combined.includes("194J") || combined.includes("TECHNICAL") || combined.includes("PROFESSIONAL")) displayProv = "Section 194J / 393 - Fees for Technical Services";
-                            else if (combined.includes("194C") || combined.includes("CONTRACT")) displayProv = "Section 194C - Payments to Contractors and Sub-contractors";
-                            else if (combined.includes("194I") || combined.includes("RENT")) displayProv = "Section 194I - Rent for Property / Equipment";
-                            else if (combined.includes("194H") || combined.includes("COMMISSION")) displayProv = "Section 194H - Commission or Brokerage";
-                            else if (combined.includes("194Q") || combined.includes("PURCHASE") || combined.includes("GOODS")) displayProv = "Section 194Q - Purchase of Goods";
-                            else displayProv = `Section ${secRaw || "194J"} - Statutory Deduction`;
-                          }
+                          const provRaw = tdsResult.tds_provision || tdsResult.provision || tdsResult.tds_section || tdsResult.section;
+                          const displayProv = provRaw || "";
                           return (
                             <input
                               type="text"
-                              placeholder="e.g. Section 194J - Fees for Technical Services"
+                              placeholder="e.g. Section 393(1) [Table Sl. No. 6(iii)(D)(a)] - Fees for Technical Services"
                               value={displayProv}
                               onChange={(e) => {
                                 const val = e.target.value;
@@ -4752,15 +4726,8 @@ export default function InvoiceWorkspace({
                           TDS Rate (%)
                         </label>
                         {(() => {
-                          const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
                           const rawRate = tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate;
-                          const secStr = String(tdsResult.tds_section || tdsResult.tds_provision || tdsResult.nature_of_payment || "").toUpperCase();
-                          const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
-                          const displayRate = isApp
-                            ? (rawRate !== null && rawRate !== undefined && parseFloat(String(rawRate)) > 0
-                                ? rawRate
-                                : fallbackRate)
-                            : (rawRate !== null && rawRate !== undefined ? rawRate : "");
+                          const displayRate = (rawRate !== null && rawRate !== undefined) ? rawRate : "";
                           return (
                             <input
                               type="number"
@@ -4851,8 +4818,6 @@ export default function InvoiceWorkspace({
                             />
                           );
                         })()}
-                      </div>
-
                       {/* Proposed TDS Amount */}
                       <div>
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>
@@ -4862,14 +4827,11 @@ export default function InvoiceWorkspace({
                           const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
                           const rawAmt = tdsResult.proposed_tds_amount ?? tdsResult.tds_amount;
                           const rawRate = parseFloat(String(tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate ?? "0"));
-                          const secStr = String(tdsResult.tds_section || tdsResult.tds_provision || tdsResult.nature_of_payment || "").toUpperCase();
-                          const fallbackRate = (secStr.includes("194Q") || secStr.includes("GOODS")) ? 0.1 : (secStr.includes("194I") || secStr.includes("RENT")) ? 10.0 : 2.0;
-                          const effectiveRate = rawRate > 0 ? rawRate : fallbackRate;
                           const baseVal = (tdsResult.tds_base_amount ?? tdsResult.base_amount) || (formData.subtotal || (formData as any).taxable_amount || formData.total_amount || 0);
                           const rawBase = parseFloat(String(baseVal || "0"));
-                          const computedAmt = (rawBase > 0 && effectiveRate > 0) ? Math.round((rawBase * effectiveRate) / 100 * 100) / 100 : 0;
+                          const computedAmt = (rawBase > 0 && rawRate > 0) ? Math.round((rawBase * rawRate) / 100 * 100) / 100 : 0;
                           const displayAmt = isApp
-                            ? (rawAmt !== null && rawAmt !== undefined && parseFloat(String(rawAmt)) > 0
+                            ? (rawAmt !== null && rawAmt !== undefined && parseFloat(String(rawAmt)) >= 0
                                 ? rawAmt
                                 : computedAmt)
                             : 0;
@@ -4907,6 +4869,96 @@ export default function InvoiceWorkspace({
                           );
                         })()}
                       </div>
+
+                      {/* Vendor YTD & Statutory Threshold Card (BUG-01A) */}
+                      {(() => {
+                        const prevYtd = tdsResult.previous_ytd !== undefined && tdsResult.previous_ytd !== null ? Number(tdsResult.previous_ytd) : null;
+                        const projYtd = tdsResult.projected_ytd !== undefined && tdsResult.projected_ytd !== null ? Number(tdsResult.projected_ytd) : null;
+                        const threshAmt = tdsResult.threshold_amount !== undefined && tdsResult.threshold_amount !== null ? Number(tdsResult.threshold_amount) : null;
+                        const status = tdsResult.threshold_status || null;
+
+                        if (prevYtd === null && projYtd === null && threshAmt === null && !status) return null;
+
+                        let badgeColor = "#6b7280";
+                        let badgeBg = "#f3f4f6";
+                        let statusText = status || "UNKNOWN";
+
+                        if (status === "BELOW_THRESHOLD") {
+                          badgeColor = "#059669";
+                          badgeBg = "#ecfdf5";
+                          statusText = "Below Threshold (No TDS)";
+                        } else if (status === "THRESHOLD_CROSSED") {
+                          badgeColor = "#d97706";
+                          badgeBg = "#fffbeb";
+                          statusText = "Threshold Reached/Crossed";
+                        } else if (status === "THRESHOLD_ALREADY_CROSSED") {
+                          badgeColor = "#2563eb";
+                          badgeBg = "#eff6ff";
+                          statusText = "Threshold Already Crossed";
+                        } else if (status === "NOT_APPLICABLE") {
+                          badgeColor = "#4b5563";
+                          badgeBg = "#f3f4f6";
+                          statusText = "Not Applicable";
+                        }
+
+                        return (
+                          <div
+                            style={{
+                              gridColumn: "1 / -1",
+                              background: "#f8fafc",
+                              border: "1px solid #e2e8f0",
+                              borderRadius: "var(--radius-sm)",
+                              padding: "12px 14px",
+                              marginTop: "4px",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                              <div style={{ fontSize: "11px", fontWeight: "700", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                                Vendor Cumulative YTD & Statutory Threshold
+                              </div>
+                              <span
+                                style={{
+                                  fontSize: "11px",
+                                  fontWeight: "700",
+                                  padding: "2px 8px",
+                                  borderRadius: "4px",
+                                  color: badgeColor,
+                                  backgroundColor: badgeBg,
+                                  border: `1px solid ${badgeColor}33`,
+                                }}
+                              >
+                                {statusText}
+                              </span>
+                            </div>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px" }}>
+                              <div>
+                                <div style={{ fontSize: "10px", color: "#64748b", fontWeight: "600" }}>PREVIOUS FY YTD</div>
+                                <div style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>
+                                  {prevYtd !== null ? `₹${prevYtd.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "N/A"}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: "10px", color: "#64748b", fontWeight: "600" }}>CURRENT INVOICE BASE</div>
+                                <div style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>
+                                  ₹{Number(formData.subtotal || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: "10px", color: "#64748b", fontWeight: "600" }}>PROJECTED FY YTD</div>
+                                <div style={{ fontSize: "13px", fontWeight: "700", color: "#0f766e" }}>
+                                  {projYtd !== null ? `₹${projYtd.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "N/A"}
+                                </div>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: "10px", color: "#64748b", fontWeight: "600" }}>STATUTORY THRESHOLD</div>
+                                <div style={{ fontSize: "13px", fontWeight: "700", color: "#b91c1c" }}>
+                                  {threshAmt !== null ? `₹${threshAmt.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "N/A"}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {(() => {
                         const reason = tdsResult.tds_reasoning ?? tdsResult.reason;

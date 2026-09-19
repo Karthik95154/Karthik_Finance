@@ -866,7 +866,7 @@ class ModelResponseAdapter:
                 if candidate_base > 0:
                     tds_applicable = True
                     if not tds_provision:
-                        tds_provision = "194C"
+                        tds_provision = "Section 393(1) [Table Sl. No. 6(i)]"
                     if not tds_nature:
                         tds_nature = "CONTRACTOR_WORK"
                     if tds_rate is None or tds_rate <= 0:
@@ -877,7 +877,7 @@ class ModelResponseAdapter:
                 if candidate_base > 0:
                     tds_applicable = True
                     if not tds_provision:
-                        tds_provision = "194Q"
+                        tds_provision = "Section 393(1) [Table Sl. No. 8(ii)]"
                     if not tds_nature:
                         tds_nature = "PURCHASE_OF_GOODS"
                     if tds_rate is None or tds_rate <= 0:
@@ -887,30 +887,32 @@ class ModelResponseAdapter:
             elif is_prof_tech:
                 if candidate_base > 0:
                     tds_applicable = True
+                    is_fts = "TECHNICAL" in nature_check or "FTS" in nature_check or "CLOUD" in nature_check or "SOFTWARE" in nature_check
                     if not tds_provision:
-                        tds_provision = "194J"
+                        tds_provision = "Section 393(1) [Table Sl. No. 6(iii)(D)(a)]" if is_fts else "Section 393(1) [Table Sl. No. 6(iii)(D)(b)]"
                     if not tds_nature:
-                        tds_nature = "TECHNICAL_SERVICES" if "TECHNICAL" in nature_check else "PROFESSIONAL_SERVICES"
+                        tds_nature = "TECHNICAL_SERVICES" if is_fts else "PROFESSIONAL_SERVICES"
                     if tds_rate is None or tds_rate <= 0:
-                        tds_rate = 2.0 if "TECHNICAL" in nature_check else 10.0
+                        tds_rate = 2.0 if is_fts else 10.0
                 else:
                     tds_applicable = False
             elif is_rent:
                 if candidate_base > 0:
                     tds_applicable = True
+                    is_equipment = "EQUIPMENT" in nature_check or "PLANT" in nature_check or "MACHINERY" in nature_check
                     if not tds_provision:
-                        tds_provision = "194I"
+                        tds_provision = "Section 393(1) [Table Sl. No. 2(ii)]"
                     if not tds_nature:
-                        tds_nature = "RENT_OF_IMMOVABLE_PROPERTY"
+                        tds_nature = "RENT_PLANT_MACHINERY" if is_equipment else "RENT_LAND_BUILDING"
                     if tds_rate is None or tds_rate <= 0:
-                        tds_rate = 10.0
+                        tds_rate = 2.0 if is_equipment else 10.0
                 else:
                     tds_applicable = False
             elif is_commission:
                 if candidate_base > 0:
                     tds_applicable = True
                     if not tds_provision:
-                        tds_provision = "194H"
+                        tds_provision = "Section 393(1) [Table Sl. No. 1(ii)]"
                     if not tds_nature:
                         tds_nature = "COMMISSION_OR_BROKERAGE"
                     if tds_rate is None or tds_rate <= 0:
