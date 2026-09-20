@@ -725,18 +725,75 @@ class ModelResponseAdapter:
                 )
             )
 
-            # Section 194J / Section 393(1) Sl 6(iii)
-            is_prof_candidate = any(k in combo_text for k in ("PROFESSIONAL", "LEGAL", "CONSULTING", "ARCHITECT", "STATUTORY AUDIT", "TAX AUDIT"))
-            is_tech_candidate = is_software_saas or any(k in combo_text for k in ("9983", "9982", "TECHNICAL", "IT SERVICE", "IT_SERVICE", "DEVELOPMENT", "CLOUD", "INFRASTRUCTURE", "SECURITY AUDIT", "VULNERABILITY"))
-            if is_prof_candidate or is_tech_candidate:
-                l_sec = "194J"
-                if is_tech_candidate and not (is_prof_candidate and "LEGAL" in combo_text):
-                    l_prov = "Section 194J - Fees for Technical Services"
-                    l_rate = 2.0
+            # Section 194J / Section 393(1) Sl 6(iii) (Professional vs Technical Services)
+            has_sac_9982 = "9982" in combo_text
+            has_sac_9983 = "9983" in combo_text
+
+            is_prof_candidate = any(
+                k in combo_text
+                for k in (
+                    "PROFESSIONAL",
+                    "LEGAL",
+                    "CONSULTING",
+                    "CONSULTANCY",
+                    "ARCHITECT",
+                    "STATUTORY AUDIT",
+                    "TAX AUDIT",
+                    "INTERNAL AUDIT",
+                    "AUDIT",
+                    "AUDITING",
+                    "CHARTERED",
+                    "ADVOCATE",
+                    "ACCOUNTING",
+                    "ACCOUNTANCY",
+                    "MEDICAL",
+                    "DOCTOR",
+                )
+            )
+            is_tech_candidate = is_software_saas or any(
+                k in combo_text
+                for k in (
+                    "9983",
+                    "TECHNICAL",
+                    "IT SERVICE",
+                    "IT_SERVICE",
+                    "DEVELOPMENT",
+                    "CLOUD",
+                    "INFRASTRUCTURE",
+                    "SECURITY AUDIT",
+                    "VULNERABILITY",
+                )
+            )
+
+            if has_sac_9982 or has_sac_9983 or is_prof_candidate or is_tech_candidate:
+                # If SAC 9982 is present with ambiguous description (no professional or technical keywords):
+                # Do NOT force 2% or 10%. Flag for review via project review semantics.
+                if has_sac_9982 and not is_prof_candidate and not is_tech_candidate:
+                    l_sec = None
+                    l_prov = None
+                    l_rate = None
+                    l_app = (li_taxable > 0)
                 else:
-                    l_prov = "Section 194J - Professional Services"
-                    l_rate = 10.0
-                l_app = (li_taxable > 0)
+                    l_sec = "194J"
+                    is_professional = (
+                        (has_sac_9982 and not is_tech_candidate)
+                        or (
+                            is_prof_candidate
+                            and not (
+                                is_tech_candidate
+                                and has_sac_9983
+                                and not has_sac_9982
+                                and not any(p in combo_text for p in ("LEGAL", "AUDIT", "CHARTERED", "ADVOCATE", "PROFESSIONAL"))
+                            )
+                        )
+                    )
+                    if is_professional:
+                        l_prov = "Section 194J - Professional Services"
+                        l_rate = 10.0
+                    else:
+                        l_prov = "Section 194J - Fees for Technical Services"
+                        l_rate = 2.0
+                    l_app = (li_taxable > 0)
             # Section 194I (Rent / Lease of Equipment vs Immovable Property)
             elif any(k in combo_text for k in ("9972", "9973", "RENT", "RENTAL", "LEASE", "HIRING")):
                 # Check for physical equipment / machinery / vehicles / plant
