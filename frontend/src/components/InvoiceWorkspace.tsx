@@ -1566,9 +1566,22 @@ export default function InvoiceWorkspace({
     if (tdsApp && tdsRate > 0) {
       tdsAmount = Math.round(((computedSubtotal * tdsRate) / 100) * 100) / 100;
     }
-    const accountsPayable = Math.max(0, Math.round((computedTotalAmount - tdsAmount) * 100) / 100);
 
-    // 4. Build Balanced Journal Lines
+    // 4. Reverse Charge (RCM) Determination from Authoritative Backend GST Result
+    const isReverseCharge = Boolean(
+      gstResult?.is_reverse_charge ||
+      (accountingData as any)?.gst?.is_reverse_charge ||
+      (accountingData as any)?.gst_result?.is_reverse_charge ||
+      (invoice as any)?.gst_result?.is_reverse_charge ||
+      (invoice as any)?.current_accounting_output?.gst?.is_reverse_charge
+    );
+
+    // Under RCM, Vendor Payable represents only the pre-tax supplier obligation minus TDS (excluding recipient RCM GST liability)
+    const preTaxSupplierObligation = Math.round((computedSubtotal - discount + shipping + other + roundOff) * 100) / 100;
+    const grossInvoiceObligation = isReverseCharge ? preTaxSupplierObligation : computedTotalAmount;
+    const accountsPayable = Math.max(0, Math.round((grossInvoiceObligation - tdsAmount) * 100) / 100);
+
+    // 5. Build Balanced Journal Lines
     const newJournalLines: any[] = [];
     if (updatedItems.length > 0) {
       updatedItems.forEach((item, idx) => {
@@ -1636,37 +1649,49 @@ export default function InvoiceWorkspace({
     // Input Tax Debits
     if (computedCgst > 0) {
       newJournalLines.push({
-        account_id: "TAX_INPUT_CGST",
-        account_name: "Input CGST",
+        account_id: isReverseCharge ? "TAX_RCM_PENDING" : "TAX_INPUT_CGST",
+        account_name: isReverseCharge ? "Input GST Pending Cash Discharge (RCM)" : "Input CGST",
         line_type: "INPUT_TAX",
         debit: computedCgst,
         credit: 0,
         source_line_index: null,
-        description: `Input CGST (9%)`,
+        description: isReverseCharge ? "Input CGST under RCM (Pending Cash Discharge)" : `Input CGST (9%)`,
         provenance: "DETERMINISTIC",
       });
     }
     if (computedSgst > 0) {
       newJournalLines.push({
-        account_id: "TAX_INPUT_SGST",
-        account_name: "Input SGST",
+        account_id: isReverseCharge ? "TAX_RCM_PENDING" : "TAX_INPUT_SGST",
+        account_name: isReverseCharge ? "Input GST Pending Cash Discharge (RCM)" : "Input SGST",
         line_type: "INPUT_TAX",
         debit: computedSgst,
         credit: 0,
         source_line_index: null,
-        description: `Input SGST (9%)`,
+        description: isReverseCharge ? "Input SGST under RCM (Pending Cash Discharge)" : `Input SGST (9%)`,
         provenance: "DETERMINISTIC",
       });
     }
     if (computedIgst > 0) {
       newJournalLines.push({
-        account_id: "TAX_INPUT_IGST",
-        account_name: "Input IGST",
+        account_id: isReverseCharge ? "TAX_RCM_PENDING" : "TAX_INPUT_IGST",
+        account_name: isReverseCharge ? "Input GST Pending Cash Discharge (RCM)" : "Input IGST",
         line_type: "INPUT_TAX",
         debit: computedIgst,
         credit: 0,
         source_line_index: null,
-        description: `Input IGST`,
+        description: isReverseCharge ? "Input IGST under RCM (Pending Cash Discharge)" : `Input IGST`,
+        provenance: "DETERMINISTIC",
+      });
+    }
+    if (computedCess > 0) {
+      newJournalLines.push({
+        account_id: isReverseCharge ? "TAX_RCM_PENDING" : "TAX_INPUT_CESS",
+        account_name: isReverseCharge ? "Input GST Pending Cash Discharge (RCM)" : "Input Cess",
+        line_type: "INPUT_TAX",
+        debit: computedCess,
+        credit: 0,
+        source_line_index: null,
+        description: isReverseCharge ? "Input Cess under RCM (Pending Cash Discharge)" : `Input Cess`,
         provenance: "DETERMINISTIC",
       });
     }
@@ -1699,7 +1724,7 @@ export default function InvoiceWorkspace({
       });
     }
 
-    // Accounts Payable Credit
+    // Accounts Payable Credit (Excluded RCM GST for RCM invoices)
     const vendorName = formData.vendor_name || "Vendor";
     newJournalLines.push({
       account_id: "LIAB_AP",
@@ -1708,9 +1733,61 @@ export default function InvoiceWorkspace({
       debit: 0,
       credit: accountsPayable,
       source_line_index: null,
-      description: `Net Payable to ${vendorName}`,
+      description: isReverseCharge ? `Net Payable to ${vendorName} (RCM Tax Excluded)` : `Net Payable to ${vendorName}`,
       provenance: "DETERMINISTIC",
     });
+
+    // Recipient RCM GST Tax Liability Credits (Recipient obligation under CGST Sec 9(3))
+    if (isReverseCharge) {
+      if (computedCgst > 0) {
+        newJournalLines.push({
+          account_id: "LIAB_RCM_CGST",
+          account_name: "RCM CGST Payable (Recipient Liability)",
+          line_type: "RCM_TAX_LIABILITY",
+          debit: 0,
+          credit: computedCgst,
+          source_line_index: null,
+          description: "RCM CGST Payable (Recipient Liability)",
+          provenance: "DETERMINISTIC",
+        });
+      }
+      if (computedSgst > 0) {
+        newJournalLines.push({
+          account_id: "LIAB_RCM_SGST",
+          account_name: "RCM SGST / UTGST Payable (Recipient Liability)",
+          line_type: "RCM_TAX_LIABILITY",
+          debit: 0,
+          credit: computedSgst,
+          source_line_index: null,
+          description: "RCM SGST / UTGST Payable (Recipient Liability)",
+          provenance: "DETERMINISTIC",
+        });
+      }
+      if (computedIgst > 0) {
+        newJournalLines.push({
+          account_id: "LIAB_RCM_IGST",
+          account_name: "RCM IGST Payable (Recipient Liability)",
+          line_type: "RCM_TAX_LIABILITY",
+          debit: 0,
+          credit: computedIgst,
+          source_line_index: null,
+          description: "RCM IGST Payable (Recipient Liability)",
+          provenance: "DETERMINISTIC",
+        });
+      }
+      if (computedCess > 0) {
+        newJournalLines.push({
+          account_id: "LIAB_RCM_CESS",
+          account_name: "RCM Cess Payable (Recipient Liability)",
+          line_type: "RCM_TAX_LIABILITY",
+          debit: 0,
+          credit: computedCess,
+          source_line_index: null,
+          description: "RCM Cess Payable (Recipient Liability)",
+          provenance: "DETERMINISTIC",
+        });
+      }
+    }
 
     let totDr = 0;
     let totCr = 0;
@@ -4818,6 +4895,8 @@ export default function InvoiceWorkspace({
                             />
                           );
                         })()}
+                      </div>
+
                       {/* Proposed TDS Amount */}
                       <div>
                         <label style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "4px", display: "block" }}>

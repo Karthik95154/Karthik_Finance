@@ -170,6 +170,12 @@ export interface TdsResult {
   tds_needs_review?: boolean | null;
   tds_conflict_code?: string | null;
   tds_conflict_reason?: string | null;
+  previous_ytd?: number | null;
+  projected_ytd?: number | null;
+  threshold_amount?: number | null;
+  threshold_status?: string | null;
+  single_invoice_threshold?: number | null;
+  current_invoice_amount?: number | null;
 }
 
 export interface AccountingOutput {
