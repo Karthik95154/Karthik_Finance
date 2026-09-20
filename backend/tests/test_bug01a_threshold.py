@@ -719,6 +719,47 @@ class TestBug08StatutoryRatePreservationBelowThreshold(unittest.TestCase):
         self.assertEqual(res_crossed["tds_base_amount"], 53000.0)
         self.assertEqual(res_crossed["tds_amount"], 10600.0) # 20% of 53,000
 
+    def test_08_tds_assessment_ytd_serialization(self):
+        """8. Verify tds_assessment dict includes previous_ytd, projected_ytd, threshold_amount, and threshold_status."""
+        final_tds_calc = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+            provision="Professional Services",
+            nature_of_payment="Legal Consultation",
+            base_amount=90000.0,
+            previous_ytd=48000.0,
+            vendor_pan="ABCDE1234F",
+        )
+        tds_applicable = bool(final_tds_calc.get("applicable"))
+
+        # Simulate persisted_accounting_output['tds_assessment'] construction in invoice_processing.py
+        tds_assessment_persisted = {
+            "applicable": tds_applicable,
+            "tds_applicable": tds_applicable,
+            "section": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+            "tds_section": "Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+            "provision": "Professional Services",
+            "tds_provision": "Professional Services",
+            "nature_of_payment": "Legal Consultation",
+            "tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+            "rate": final_tds_calc.get("rate") if tds_applicable else None,
+            "approved_tds_rate": final_tds_calc.get("rate") if tds_applicable else None,
+            "tds_base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+            "base_amount": final_tds_calc.get("base_amount") if tds_applicable else None,
+            "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+            "tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
+            "tds_reasoning": final_tds_calc.get("reason"),
+            "previous_ytd": final_tds_calc.get("previous_ytd"),
+            "projected_ytd": final_tds_calc.get("projected_ytd"),
+            "threshold_amount": final_tds_calc.get("threshold_amount"),
+            "threshold_status": final_tds_calc.get("threshold_status"),
+        }
+
+        self.assertEqual(tds_assessment_persisted["previous_ytd"], 48000.0)
+        self.assertEqual(tds_assessment_persisted["projected_ytd"], 138000.0)
+        self.assertEqual(tds_assessment_persisted["threshold_amount"], 50000.0)
+        self.assertEqual(tds_assessment_persisted["threshold_status"], "THRESHOLD_CROSSED")
+
 
 if __name__ == "__main__":
     unittest.main()

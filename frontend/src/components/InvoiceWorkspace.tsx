@@ -2334,6 +2334,23 @@ export default function InvoiceWorkspace({
       ? tdsResultRaw
       : defaultTdsResult;
 
+  const finalTdsResultRaw =
+    (accountingData as any).tds_final ||
+    accountingData.tds ||
+    (invoice?.current_accounting_output as any)?.tds_final ||
+    invoice?.current_accounting_output?.tds ||
+    (invoice?.accounting_output as any)?.tds_final ||
+    invoice?.accounting_output?.tds ||
+    accountingData.tds_assessment ||
+    invoice?.current_accounting_output?.tds_assessment ||
+    invoice?.accounting_output?.tds_assessment ||
+    undefined;
+
+  const finalTdsResult: TdsResult =
+    finalTdsResultRaw && Object.keys(finalTdsResultRaw).length > 0
+      ? finalTdsResultRaw
+      : tdsResult;
+
   const isVlmFailed = Boolean(invoice?.error_message?.startsWith("[VLM_FAILED]"));
 
   return (
@@ -4950,10 +4967,10 @@ export default function InvoiceWorkspace({
 
                       {/* Vendor YTD & Statutory Threshold Card (BUG-01A) */}
                       {(() => {
-                        const prevYtd = tdsResult.previous_ytd !== undefined && tdsResult.previous_ytd !== null ? Number(tdsResult.previous_ytd) : null;
-                        const projYtd = tdsResult.projected_ytd !== undefined && tdsResult.projected_ytd !== null ? Number(tdsResult.projected_ytd) : null;
-                        const threshAmt = tdsResult.threshold_amount !== undefined && tdsResult.threshold_amount !== null ? Number(tdsResult.threshold_amount) : null;
-                        const status = tdsResult.threshold_status || null;
+                        const prevYtd = finalTdsResult.previous_ytd !== undefined && finalTdsResult.previous_ytd !== null ? Number(finalTdsResult.previous_ytd) : null;
+                        const projYtd = finalTdsResult.projected_ytd !== undefined && finalTdsResult.projected_ytd !== null ? Number(finalTdsResult.projected_ytd) : null;
+                        const threshAmt = finalTdsResult.threshold_amount !== undefined && finalTdsResult.threshold_amount !== null ? Number(finalTdsResult.threshold_amount) : null;
+                        const status = finalTdsResult.threshold_status || null;
 
                         if (prevYtd === null && projYtd === null && threshAmt === null && !status) return null;
 
@@ -5010,7 +5027,7 @@ export default function InvoiceWorkspace({
                             </div>
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: "10px" }}>
                               <div>
-                                <div style={{ fontSize: "10px", color: "#64748b", fontWeight: "600" }}>PREVIOUS FY YTD</div>
+                                <div style={{ fontSize: "10px", color: "#64748b", fontWeight: "600" }}>PREVIOUS YTD</div>
                                 <div style={{ fontSize: "13px", fontWeight: "700", color: "#1e293b" }}>
                                   {prevYtd !== null ? `₹${prevYtd.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "N/A"}
                                 </div>

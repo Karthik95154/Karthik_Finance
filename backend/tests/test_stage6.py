@@ -554,3 +554,90 @@ def test_23_ai_vs_finance_account_provenance_preserved():
 
     assert res["lines"][1]["account_id"] == "ACC_3"
     assert res["lines"][1]["provenance"] == "AI_PREDICTED"
+
+
+def test_24_null_tds_amount_handling():
+    """
+    Verifies that when tds_applicable is True, but rate is None and tds_amount is None
+    (e.g., PURCHASE_OF_GOODS invoice), generate_journal does not raise TypeError (None > 0),
+    safely uses 0.0 for TDS journal arithmetic, and preserves rate as None.
+    """
+    invoice_data = {
+        "subtotal": 3150.0,
+        "tax_total": 567.0,
+        "total_amount": 3717.0,
+        "line_items": [
+            {"description": "Conveyor Belt PVC", "taxable_amount": 3150.0, "hsn_sac": "39269010"}
+        ],
+    }
+    accounting = {
+        "accounting": [
+            {"line_index": 1, "account_name": "Raw Materials", "ai_account_name": "Raw Materials"}
+        ]
+    }
+    gst_result = {
+        "supply_type": "INTER_STATE",
+        "calculated": {"cgst_amount": 0.0, "sgst_amount": 0.0, "igst_amount": 567.0, "gst_total": 567.0},
+    }
+    itc_result = {"status": "ELIGIBLE", "eligible_amount": 567.0, "input_tax": {"igst": 567.0}}
+    tds_result = {
+        "applicable": True,
+        "tds_applicable": True,
+        "nature_of_payment": "PURCHASE_OF_GOODS",
+        "rate": None,
+        "tds_rate": None,
+        "tds_amount": None,
+        "proposed_tds_amount": None,
+    }
+
+    res = journal_generator.generate_journal(
+        invoice_data=invoice_data,
+        accounting_classification=accounting,
+        gst_result=gst_result,
+        itc_result=itc_result,
+        tds_result=tds_result,
+    )
+
+    assert res is not None
+    # No TDS payable line should be generated when tds_amount is None (treated as 0.0)
+    tds_lines = [l for l in res["lines"] if l.get("line_type") == "TDS_PAYABLE"]
+    assert len(tds_lines) == 0
+    assert res.get("status") in ("DRAFT_PREVIEW", "APPROVED", "REVIEW_REQUIRED")
+    # Verify warning added for unresolved TDS
+    assert any("TDS is marked applicable but withholding amount is unresolved" in w for w in res.get("validation", {}).get("warnings", []))
+
+
+def test_25_positive_tds_amount_handling():
+    """
+    Verifies that when tds_applicable is True and tds_amount is positive (e.g. 100.0),
+    generate_journal includes the TDS_PAYABLE line correctly.
+    """
+    invoice_data = {
+        "subtotal": 5000.0,
+        "tax_total": 0.0,
+        "total_amount": 5000.0,
+        "line_items": [{"description": "Legal Services", "taxable_amount": 5000.0}],
+    }
+    accounting = {
+        "accounting": [{"line_index": 1, "account_name": "Legal Fees", "ai_account_name": "Legal Fees"}]
+    }
+    tds_result = {
+        "applicable": True,
+        "tds_applicable": True,
+        "nature_of_payment": "Professional Services",
+        "rate": 2.0,
+        "tds_rate": 2.0,
+        "tds_amount": 100.0,
+        "proposed_tds_amount": 100.0,
+    }
+
+    res = journal_generator.generate_journal(
+        invoice_data=invoice_data,
+        accounting_classification=accounting,
+        tds_result=tds_result,
+    )
+
+    tds_lines = [l for l in res["lines"] if l.get("line_type") == "TDS_PAYABLE"]
+    assert len(tds_lines) == 1
+    assert tds_lines[0]["credit"] == 100.0
+

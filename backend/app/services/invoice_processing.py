@@ -2,7 +2,7 @@ import logging
 import uuid
 import asyncio
 from datetime import datetime, timezone
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func, or_, cast, Float
 from app.db.database import AsyncSessionLocal
 from app.db.models import Invoice, JournalEntry, JournalLine
 from app.storage.supabase_storage import storage_service
@@ -249,6 +249,8 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             else:
                 inv_d = date.today()
 
+            fy_start_year, fy_end_year = get_indian_financial_year(inv_d)
+
             # Format FY boundary date strings YYYY-MM-DD
             fy_start_str = f"{fy_start_year}-04-01"
             fy_end_str = f"{fy_end_year}-03-31"
@@ -401,6 +403,10 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
                 "proposed_tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
                 "tds_amount": final_tds_calc.get("tds_amount") if tds_applicable else None,
                 "tds_reasoning": final_tds_calc.get("reason"),
+                "previous_ytd": final_tds_calc.get("previous_ytd"),
+                "projected_ytd": final_tds_calc.get("projected_ytd"),
+                "threshold_amount": final_tds_calc.get("threshold_amount"),
+                "threshold_status": final_tds_calc.get("threshold_status"),
             },
             "tds_final": final_tds_calc,
             "tds": final_tds_calc,

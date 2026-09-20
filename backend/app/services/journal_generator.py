@@ -843,27 +843,36 @@ class JournalGenerator:
         from app.services.tds_engine import get_effective_tds_data, tds_engine
 
         if isinstance(tds_result, dict) and bool(tds_result):
-            raw_app = tds_result.get("tds_applicable") if "tds_applicable" in tds_result else tds_result.get("applicable")
-            tds_applicable = bool(raw_app) if raw_app is not None else False
             tds_data = tds_result
         else:
             tds_data = get_effective_tds_data(accounting_classification)
-            tds_applicable = bool(tds_data.get("applicable"))
+
+        raw_app = tds_data.get("tds_applicable") if "tds_applicable" in tds_data else tds_data.get("applicable")
+        tds_applicable = bool(raw_app) if raw_app is not None else False
 
         tds_provision = tds_data.get("approved_tds_provision") or tds_data.get("tds_provision") or tds_data.get("provision")
         tds_section = tds_data.get("approved_tds_section") or tds_data.get("tds_section") or tds_data.get("section")
         tds_nature = tds_data.get("approved_nature_of_payment") or tds_data.get("nature_of_payment") or tds_data.get("nature")
-        tds_rate = self._clean_num(
+        raw_tds_rate = (
             tds_data.get("approved_tds_rate")
-            or tds_data.get("tds_rate")
-            or tds_data.get("rate")
+            if tds_data.get("approved_tds_rate") is not None
+            else tds_data.get("tds_rate")
+            if tds_data.get("tds_rate") is not None
+            else tds_data.get("rate")
         )
-        tds_amount = self._clean_num(
+        tds_rate = self._clean_num(raw_tds_rate)
+
+        raw_tds_amt = (
             tds_data.get("final_tds_amount")
-            or tds_data.get("calculated_tds_amount")
-            or tds_data.get("tds_amount")
-            or tds_data.get("amount")
-        ) or 0.0
+            if tds_data.get("final_tds_amount") is not None
+            else tds_data.get("calculated_tds_amount")
+            if tds_data.get("calculated_tds_amount") is not None
+            else tds_data.get("tds_amount")
+            if tds_data.get("tds_amount") is not None
+            else tds_data.get("amount")
+        )
+        cleaned_amt = self._clean_num(raw_tds_amt)
+        tds_amount = float(cleaned_amt) if cleaned_amt is not None else 0.0
         is_approved = tds_data.get("is_approved")
         if is_approved is None:
             is_approved = tds_data.get("approved")
@@ -873,19 +882,22 @@ class JournalGenerator:
             tds_amount = 0.0
             tds_rate = 0.0
         else:
-            if tds_rate is not None and tds_rate > 0:
-                tds_amount = round((tds_base_amount * float(tds_rate)) / 100.0, 2)
-            elif tds_amount <= 0:
-                calc = tds_engine.calculate_tds(
-                    applicable=True,
-                    section=tds_section,
-                    provision=tds_provision,
-                    nature_of_payment=tds_nature,
-                    base_amount=tds_base_amount,
-                    rate=tds_rate,
-                )
-                tds_amount = calc.get("tds_amount", 0.0)
-                tds_rate = calc.get("rate", tds_rate)
+            if tds_amount <= 0:
+                if tds_rate is not None and tds_rate > 0:
+                    tds_amount = round((tds_base_amount * float(tds_rate)) / 100.0, 2)
+                else:
+                    calc = tds_engine.calculate_tds(
+                        applicable=True,
+                        section=tds_section,
+                        provision=tds_provision,
+                        nature_of_payment=tds_nature,
+                        base_amount=tds_base_amount,
+                        rate=tds_rate,
+                    )
+                    calc_amt = calc.get("tds_amount")
+                    tds_amount = float(calc_amt) if calc_amt is not None else 0.0
+                    calc_rate = calc.get("rate")
+                    tds_rate = calc_rate if calc_rate is not None else tds_rate
 
         if tds_applicable and tds_amount > 0:
             if is_approved is not True:
