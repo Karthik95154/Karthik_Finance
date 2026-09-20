@@ -1566,7 +1566,6 @@ export default function InvoiceWorkspace({
     if (tdsApp && tdsRate > 0) {
       tdsAmount = Math.round(((computedSubtotal * tdsRate) / 100) * 100) / 100;
     }
-
     // 4. Reverse Charge (RCM) Determination from Authoritative Backend GST Result
     const isReverseCharge = Boolean(
       gstResult?.is_reverse_charge ||
