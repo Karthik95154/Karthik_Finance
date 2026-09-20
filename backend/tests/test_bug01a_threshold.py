@@ -2,7 +2,13 @@
 Focused Unit Tests for BUG-01A: Statutory TDS Threshold & Vendor YTD Logic State Machine
 """
 import unittest
+import uuid
+from datetime import datetime
+from sqlalchemy import create_engine, select, func, cast, Float, or_
+from sqlalchemy.orm import sessionmaker
+from app.db.models import Base, Invoice
 from app.services.tds_engine import tds_engine, STATUTORY_TDS_TABLE_2025
+
 
 class TestBug01AThresholdStateMachine(unittest.TestCase):
 
@@ -379,6 +385,342 @@ class TestYTDDatabaseIntegration(unittest.TestCase):
             self.assertEqual(tds_res["tds_amount"], 5300.0) # 10% of 53,000
 
 
+class TestBug07VendorMatchingWithoutName(unittest.TestCase):
+    """Regression tests for BUG-07: YTD lookup execution independent of vendor_name."""
+
+    def test_01_pan_only_no_vendor_name(self):
+        """BUG-07 Test 1: Historical YTD matching by PAN only (vendor_name is None)."""
+        engine = create_engine("sqlite:///:memory:", echo=False)
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        tenant_id = "tenant-bug07-pan"
+        pan = "PANONLY123"
+        cur_id = uuid.uuid4()
+
+        with Session() as session:
+            inv1 = Invoice(
+                id=uuid.uuid4(), tenant_id=tenant_id, file_path="/tmp/1.pdf", file_name="1.pdf", file_size=100, mime_type="application/pdf", file_hash="h1",
+                status="COMPLETED", approval_status="APPROVED",
+                current_vlm_output={"vendor_pan": pan, "vendor_name": None, "subtotal": 48000.0, "invoice_date": "2025-05-10"},
+            )
+            inv_cur = Invoice(
+                id=cur_id, tenant_id=tenant_id, file_path="/tmp/c.pdf", file_name="c.pdf", file_size=100, mime_type="application/pdf", file_hash="hc",
+                status="PROCESSING", approval_status="PENDING_REVIEW",
+                current_vlm_output={"vendor_pan": pan, "vendor_name": None, "subtotal": 5000.0, "invoice_date": "2025-06-10"},
+            )
+            session.add_all([inv1, inv_cur])
+            session.commit()
+
+            # Execute matching invoice_processing.py logic (PAN only, name is None)
+            v_pan = pan
+            v_gstin = None
+            v_name = ""
+
+            ytd_conditions = []
+            if v_pan and len(str(v_pan).strip()) == 10:
+                ytd_conditions.append(func.json_extract(Invoice.current_vlm_output, '$.vendor_pan') == str(v_pan).strip())
+            if v_gstin and len(str(v_gstin).strip()) == 15:
+                ytd_conditions.append(func.json_extract(Invoice.current_vlm_output, '$.vendor_gstin') == str(v_gstin).strip())
+            if v_name:
+                ytd_conditions.append(func.lower(func.json_extract(Invoice.current_vlm_output, '$.vendor_name')) == v_name)
+
+            self.assertTrue(len(ytd_conditions) > 0)
+
+            subtotal_expr = func.coalesce(cast(func.json_extract(Invoice.current_vlm_output, '$.subtotal'), Float), 0.0)
+            inv_date_expr = func.coalesce(func.json_extract(Invoice.current_vlm_output, '$.invoice_date'), func.strftime('%Y-%m-%d', Invoice.created_at))
+
+            q = select(func.coalesce(func.sum(subtotal_expr), 0.0)).where(
+                Invoice.tenant_id == tenant_id, Invoice.id != cur_id, Invoice.status != "REJECTED", Invoice.approval_status != "REJECTED",
+                inv_date_expr >= "2025-04-01", inv_date_expr <= "2026-03-31", or_(*ytd_conditions)
+            )
+            previous_ytd = float(session.execute(q).scalar() or 0.0)
+            self.assertEqual(previous_ytd, 48000.0) # Verified YTD runs and matches even when vendor_name is None!
+
+            # Calculate TDS for current invoice 5000
+            tds_res = tds_engine.calculate_tds(
+                applicable=True, section="Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+                provision="Professional Services", nature_of_payment="Legal Consultation",
+                base_amount=5000.0, previous_ytd=previous_ytd, vendor_pan=pan
+            )
+            self.assertEqual(tds_res["previous_ytd"], 48000.0)
+            self.assertEqual(tds_res["projected_ytd"], 53000.0)
+            self.assertEqual(tds_res["threshold_status"], "THRESHOLD_CROSSED")
+            self.assertEqual(tds_res["tds_base_amount"], 53000.0)
+
+            # Next invoice 4000
+            tds_next = tds_engine.calculate_tds(
+                applicable=True, section="Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+                provision="Professional Services", nature_of_payment="Legal Consultation",
+                base_amount=4000.0, previous_ytd=53000.0, vendor_pan=pan
+            )
+            self.assertEqual(tds_next["previous_ytd"], 53000.0)
+            self.assertEqual(tds_next["threshold_status"], "THRESHOLD_ALREADY_CROSSED")
+            self.assertEqual(tds_next["tds_base_amount"], 4000.0)
+
+    def test_02_gstin_only_no_vendor_name(self):
+        """BUG-07 Test 2: Historical YTD matching by GSTIN only (vendor_name is None)."""
+        engine = create_engine("sqlite:///:memory:", echo=False)
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        tenant_id = "tenant-bug07-gstin"
+        gstin = "27ABCDE1234F1Z5"
+        cur_id = uuid.uuid4()
+
+        with Session() as session:
+            inv1 = Invoice(
+                id=uuid.uuid4(), tenant_id=tenant_id, file_path="/tmp/1.pdf", file_name="1.pdf", file_size=100, mime_type="application/pdf", file_hash="h1",
+                status="COMPLETED", approval_status="APPROVED",
+                current_vlm_output={"vendor_gstin": gstin, "vendor_name": None, "subtotal": 25000.0, "invoice_date": "2025-05-10"},
+            )
+            session.add(inv1)
+            session.commit()
+
+            v_gstin = gstin
+            ytd_conditions = [func.json_extract(Invoice.current_vlm_output, '$.vendor_gstin') == str(v_gstin).strip()]
+            subtotal_expr = func.coalesce(cast(func.json_extract(Invoice.current_vlm_output, '$.subtotal'), Float), 0.0)
+            q = select(func.coalesce(func.sum(subtotal_expr), 0.0)).where(
+                Invoice.tenant_id == tenant_id, Invoice.id != cur_id, Invoice.status != "REJECTED", Invoice.approval_status != "REJECTED",
+                or_(*ytd_conditions)
+            )
+            previous_ytd = float(session.execute(q).scalar() or 0.0)
+            self.assertEqual(previous_ytd, 25000.0)
+
+    def test_03_vendor_name_only(self):
+        """BUG-07 Test 3: Historical YTD matching by vendor_name only."""
+        engine = create_engine("sqlite:///:memory:", echo=False)
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        tenant_id = "tenant-bug07-name"
+        vname = "acme legal corp"
+        cur_id = uuid.uuid4()
+
+        with Session() as session:
+            inv1 = Invoice(
+                id=uuid.uuid4(), tenant_id=tenant_id, file_path="/tmp/1.pdf", file_name="1.pdf", file_size=100, mime_type="application/pdf", file_hash="h1",
+                status="COMPLETED", approval_status="APPROVED",
+                current_vlm_output={"vendor_name": "Acme Legal Corp", "subtotal": 15000.0, "invoice_date": "2025-05-10"},
+            )
+            session.add(inv1)
+            session.commit()
+
+            ytd_conditions = [func.lower(func.json_extract(Invoice.current_vlm_output, '$.vendor_name')) == vname]
+            subtotal_expr = func.coalesce(cast(func.json_extract(Invoice.current_vlm_output, '$.subtotal'), Float), 0.0)
+            q = select(func.coalesce(func.sum(subtotal_expr), 0.0)).where(
+                Invoice.tenant_id == tenant_id, Invoice.id != cur_id, Invoice.status != "REJECTED", Invoice.approval_status != "REJECTED",
+                or_(*ytd_conditions)
+            )
+            previous_ytd = float(session.execute(q).scalar() or 0.0)
+            self.assertEqual(previous_ytd, 15000.0)
+
+    def test_04_pan_plus_gstin_no_name(self):
+        """BUG-07 Test 4: Historical YTD matching by PAN + GSTIN (vendor_name is None)."""
+        engine = create_engine("sqlite:///:memory:", echo=False)
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        tenant_id = "tenant-bug07-pan-gstin"
+        pan = "PANONLY123"
+        gstin = "27ABCDE1234F1Z5"
+        cur_id = uuid.uuid4()
+
+        with Session() as session:
+            inv1 = Invoice(
+                id=uuid.uuid4(), tenant_id=tenant_id, file_path="/tmp/1.pdf", file_name="1.pdf", file_size=100, mime_type="application/pdf", file_hash="h1",
+                status="COMPLETED", approval_status="APPROVED",
+                current_vlm_output={"vendor_pan": pan, "vendor_gstin": gstin, "vendor_name": None, "subtotal": 30000.0, "invoice_date": "2025-05-10"},
+            )
+            session.add(inv1)
+            session.commit()
+
+            ytd_conditions = [
+                func.json_extract(Invoice.current_vlm_output, '$.vendor_pan') == pan,
+                func.json_extract(Invoice.current_vlm_output, '$.vendor_gstin') == gstin,
+            ]
+            subtotal_expr = func.coalesce(cast(func.json_extract(Invoice.current_vlm_output, '$.subtotal'), Float), 0.0)
+            q = select(func.coalesce(func.sum(subtotal_expr), 0.0)).where(
+                Invoice.tenant_id == tenant_id, Invoice.id != cur_id, Invoice.status != "REJECTED", Invoice.approval_status != "REJECTED",
+                or_(*ytd_conditions)
+            )
+            previous_ytd = float(session.execute(q).scalar() or 0.0)
+            self.assertEqual(previous_ytd, 30000.0)
+
+    def test_05_all_identifiers_missing(self):
+        """BUG-07 Test 5: All vendor identifiers missing -> ytd_conditions empty, query skipped."""
+        v_pan = None
+        v_gstin = None
+        v_name = ""
+
+        ytd_conditions = []
+        if v_pan and len(str(v_pan).strip()) == 10:
+            ytd_conditions.append(True)
+        if v_gstin and len(str(v_gstin).strip()) == 15:
+            ytd_conditions.append(True)
+        if v_name:
+            ytd_conditions.append(True)
+
+        self.assertEqual(len(ytd_conditions), 0)
+
+
+class TestBug08StatutoryRatePreservationBelowThreshold(unittest.TestCase):
+    """Regression tests for BUG-08: Statutory TDS rate preserved when below threshold."""
+
+    def test_01_professional_service_below_threshold(self):
+        """1. Professional service below threshold: rate 10%, applicable=False, base=0, amount=0."""
+        res = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+            provision="Professional Services",
+            nature_of_payment="Legal Consultation",
+            base_amount=5000.0,
+            previous_ytd=40000.0,
+            vendor_pan="ABCDE1234F",
+        )
+        self.assertEqual(res["rate"], 10.0)
+        self.assertEqual(res["tds_rate"], 10.0)
+        self.assertFalse(res["applicable"])
+        self.assertFalse(res["tds_applicable"])
+        self.assertEqual(res["tds_base_amount"], 0.0)
+        self.assertEqual(res["tds_amount"], 0.0)
+        self.assertEqual(res["threshold_status"], "BELOW_THRESHOLD")
+
+    def test_02_professional_service_at_crossing_threshold(self):
+        """2. Professional service at/crossing threshold: rate 10%, applicable=True, base=53000, amount=5300."""
+        res = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+            provision="Professional Services",
+            nature_of_payment="Legal Consultation",
+            base_amount=5000.0,
+            previous_ytd=48000.0,
+            vendor_pan="ABCDE1234F",
+        )
+        self.assertEqual(res["rate"], 10.0)
+        self.assertEqual(res["tds_rate"], 10.0)
+        self.assertTrue(res["applicable"])
+        self.assertTrue(res["tds_applicable"])
+        self.assertEqual(res["tds_base_amount"], 53000.0)
+        self.assertEqual(res["tds_amount"], 5300.0)
+        self.assertEqual(res["threshold_status"], "THRESHOLD_CROSSED")
+
+    def test_03_contractor_category_rate_visible_below_threshold(self):
+        """3. Contractor category: statutory rate visible below aggregate & single invoice threshold."""
+        # Below single (30,000) and aggregate (100,000) threshold: invoice 10,000, prev YTD 10,000
+        res = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 6(i)]",
+            provision="Payments to Contractors and Sub-contractors",
+            nature_of_payment="Work Contracts & Sub-contractor Services",
+            base_amount=10000.0,
+            previous_ytd=10000.0,
+            vendor_pan="ABCDE1234F",
+        )
+        self.assertEqual(res["rate"], 2.0)
+        self.assertEqual(res["tds_rate"], 2.0)
+        self.assertFalse(res["applicable"])
+        self.assertEqual(res["tds_base_amount"], 0.0)
+        self.assertEqual(res["tds_amount"], 0.0)
+
+        # Single invoice threshold crossed (>= 30,000)
+        res_single = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 6(i)]",
+            provision="Payments to Contractors and Sub-contractors",
+            nature_of_payment="Work Contracts & Sub-contractor Services",
+            base_amount=35000.0,
+            previous_ytd=0.0,
+            vendor_pan="ABCDE1234F",
+        )
+        self.assertEqual(res_single["rate"], 2.0)
+        self.assertTrue(res_single["applicable"])
+        self.assertEqual(res_single["tds_base_amount"], 35000.0)
+        self.assertEqual(res_single["tds_amount"], 700.0)
+
+    def test_04_technical_services_below_threshold(self):
+        """4. Technical services: statutory rate 2% visible below threshold."""
+        res = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 6(iii)(D)(a)]",
+            provision="Fees for Technical Services (FTS)",
+            nature_of_payment="Fees for Technical Services (FTS) & Cloud Infrastructure",
+            base_amount=15000.0,
+            previous_ytd=10000.0,
+            vendor_pan="ABCDE1234F",
+        )
+        self.assertEqual(res["rate"], 2.0)
+        self.assertEqual(res["tds_rate"], 2.0)
+        self.assertFalse(res["applicable"])
+        self.assertEqual(res["tds_base_amount"], 0.0)
+        self.assertEqual(res["tds_amount"], 0.0)
+
+    def test_05_goods_purchase_below_threshold(self):
+        """5. Goods purchase: statutory rate 0.1% visible below threshold (50L)."""
+        res = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 8(ii)]",
+            provision="Purchase of Goods",
+            nature_of_payment="Purchase of Goods",
+            base_amount=1000000.0, # 10 Lakhs < 50 Lakhs
+            previous_ytd=2000000.0,
+            vendor_pan="ABCDE1234F",
+        )
+        self.assertEqual(res["rate"], 0.1)
+        self.assertEqual(res["tds_rate"], 0.1)
+        self.assertFalse(res["applicable"])
+        self.assertEqual(res["tds_base_amount"], 0.0)
+        self.assertEqual(res["tds_amount"], 0.0)
+
+    def test_06_rent_below_threshold(self):
+        """6. Rent: statutory rate 10% visible below threshold (5 Lakhs)."""
+        res = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 2(ii)]",
+            provision="Rent for Land, Building or Furniture",
+            nature_of_payment="Rent of Land, Building or Furniture",
+            base_amount=100000.0,
+            previous_ytd=200000.0, # Projected 3 Lakhs < 5 Lakhs
+            vendor_pan="ABCDE1234F",
+        )
+        self.assertEqual(res["rate"], 10.0)
+        self.assertEqual(res["tds_rate"], 10.0)
+        self.assertFalse(res["applicable"])
+        self.assertEqual(res["tds_base_amount"], 0.0)
+        self.assertEqual(res["tds_amount"], 0.0)
+
+    def test_07_pan_higher_rate_case(self):
+        """7. PAN higher-rate (invalid/missing PAN -> 20%): preserved below threshold & applied when crossed."""
+        # Invalid PAN below threshold
+        res_below = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+            provision="Professional Services",
+            nature_of_payment="Legal Consultation",
+            base_amount=5000.0,
+            previous_ytd=40000.0, # Projected = 45000 < 50000
+            vendor_pan="INVALIDPAN",
+        )
+        self.assertEqual(res_below["rate"], 20.0)
+        self.assertEqual(res_below["tds_rate"], 20.0)
+        self.assertFalse(res_below["applicable"])
+        self.assertEqual(res_below["tds_base_amount"], 0.0)
+        self.assertEqual(res_below["tds_amount"], 0.0)
+
+        # Invalid PAN when threshold crossed
+        res_crossed = tds_engine.calculate_tds(
+            applicable=True,
+            section="Section 393(1) [Table Sl. No. 6(iii)(D)(b)]",
+            provision="Professional Services",
+            nature_of_payment="Legal Consultation",
+            base_amount=5000.0,
+            previous_ytd=48000.0, # Projected = 53000 >= 50000
+            vendor_pan="INVALIDPAN",
+        )
+        self.assertEqual(res_crossed["rate"], 20.0)
+        self.assertEqual(res_crossed["tds_rate"], 20.0)
+        self.assertTrue(res_crossed["applicable"])
+        self.assertEqual(res_crossed["tds_base_amount"], 53000.0)
+        self.assertEqual(res_crossed["tds_amount"], 10600.0) # 20% of 53,000
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

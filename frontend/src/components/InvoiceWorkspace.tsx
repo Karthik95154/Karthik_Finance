@@ -1566,7 +1566,12 @@ export default function InvoiceWorkspace({
     if (tdsApp && tdsRate > 0) {
       tdsAmount = Math.round(((computedSubtotal * tdsRate) / 100) * 100) / 100;
     }
-    const accountsPayable = Math.max(0, Math.round((computedTotalAmount - tdsAmount) * 100) / 100);
+    // RCM Determination
+    const isRcm = Boolean(gstResult?.is_reverse_charge);
+    const vendorObligation = isRcm
+      ? Math.round((computedSubtotal - discount + shipping + other + roundOff) * 100) / 100
+      : computedTotalAmount;
+    const accountsPayable = Math.max(0, Math.round((vendorObligation - tdsAmount) * 100) / 100);
 
     // 4. Build Balanced Journal Lines
     const newJournalLines: any[] = [];

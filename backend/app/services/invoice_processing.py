@@ -265,6 +265,7 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             if v_name:
                 ytd_conditions.append(func.lower(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_name')) == v_name)
 
+            if ytd_conditions:
                 # Pre-tax historical invoice subtotal used for statutory YTD threshold accumulation
                 # Excludes total_amount to prevent GST-inclusive amounts from inflating YTD.
                 subtotal_expr = func.coalesce(
