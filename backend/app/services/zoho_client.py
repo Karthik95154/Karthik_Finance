@@ -572,6 +572,79 @@ class ZohoClientService:
         )
         return res.get("bill", {})
 
+    async def get_vendor_bills(
+        self,
+        connection: ZohoConnection,
+        db: AsyncSession,
+        vendor_id: str,
+        date_start: Optional[str] = None,
+        date_end: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetches all vendor bills (`GET /bills`) from Zoho Books for a given vendor_id and optional date range.
+        Supports pagination to retrieve all pages of historical bills.
+        """
+        if not vendor_id:
+            return []
+
+        all_bills: List[Dict[str, Any]] = []
+        page = 1
+        has_more_page = True
+
+        while has_more_page:
+            params: Dict[str, Any] = {
+                "vendor_id": str(vendor_id),
+                "page": page,
+                "per_page": 200,
+            }
+            if date_start:
+                params["date_start"] = date_start
+            if date_end:
+                params["date_end"] = date_end
+
+            try:
+                res = await self._make_authorized_request(
+                    connection=connection,
+                    db=db,
+                    method="GET",
+                    endpoint_path="bills",
+                    params=params,
+                )
+                bills = res.get("bills", [])
+                all_bills.extend(bills)
+
+                page_context = res.get("page_context", {})
+                has_more_page = page_context.get("has_more_page", False)
+                page += 1
+                if not bills or page > 50:  # Safety circuit breaker
+                    break
+            except Exception as e:
+                logger.warning(f"Error fetching Zoho vendor bills (page {page}) for vendor '{vendor_id}': {e}")
+                break
+
+        return all_bills
+
+    async def get_bill_detail(
+        self,
+        connection: ZohoConnection,
+        db: AsyncSession,
+        bill_id: str,
+    ) -> Dict[str, Any]:
+        """Fetches individual bill detail (`GET /bills/{bill_id}`) containing full sub_total and tax_total."""
+        if not bill_id:
+            return {}
+        try:
+            res = await self._make_authorized_request(
+                connection=connection,
+                db=db,
+                method="GET",
+                endpoint_path=f"bills/{bill_id}",
+            )
+            return res.get("bill", {})
+        except Exception as e:
+            logger.warning(f"Error fetching Zoho bill detail for bill '{bill_id}': {e}")
+            return {}
+
     async def attach_file_to_bill(
         self,
         connection: ZohoConnection,

@@ -15,6 +15,7 @@ from app.services.itc_engine import itc_engine
 from app.services.financial_validator import financial_validator
 from app.services.journal_generator import journal_generator, sync_relational_journal
 from app.services.master_data_service import master_data_service
+from app.services.zoho_client import zoho_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -257,44 +258,112 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
 
             v_pan = invoice_payload.get("vendor_pan") or invoice_payload.get("supplier_pan")
             v_gstin = invoice_payload.get("vendor_gstin") or invoice_payload.get("supplier_gstin")
-            v_name = (invoice_payload.get("vendor_name") or invoice_payload.get("supplier_name") or "").strip().lower()
+            v_name = (invoice_payload.get("vendor_name") or invoice_payload.get("supplier_name") or "").strip()
 
-            ytd_conditions = []
-            if v_pan and len(str(v_pan).strip()) == 10:
-                ytd_conditions.append(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_pan') == str(v_pan).strip())
-            if v_gstin and len(str(v_gstin).strip()) == 15:
-                ytd_conditions.append(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_gstin') == str(v_gstin).strip())
-            if v_name:
-                ytd_conditions.append(func.lower(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_name')) == v_name)
+            # Attempt Zoho Books YTD retrieval first
+            zoho_ytd_success = False
+            try:
+                from app.db.models import Vendor
+                vendor_query = select(Vendor).where(Vendor.tenant_id == tenant_id)
+                v_clauses = []
+                if v_pan and len(str(v_pan).strip()) == 10:
+                    v_clauses.append(func.lower(Vendor.pan) == str(v_pan).strip().lower())
+                if v_gstin and len(str(v_gstin).strip()) == 15:
+                    v_clauses.append(func.lower(Vendor.gstin) == str(v_gstin).strip().lower())
+                if v_name:
+                    v_clauses.append(func.lower(Vendor.vendor_name) == v_name.lower())
 
-            if ytd_conditions:
-                # Pre-tax historical invoice subtotal used for statutory YTD threshold accumulation
-                # Excludes total_amount to prevent GST-inclusive amounts from inflating YTD.
-                subtotal_expr = func.coalesce(
-                    cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'subtotal'), Float),
-                    cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'sub_total'), Float),
-                    cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'taxable_amount'), Float),
-                    0.0
-                )
-                inv_date_expr = func.coalesce(
-                    func.jsonb_extract_path_text(Invoice.current_vlm_output, 'invoice_date'),
-                    func.to_char(Invoice.created_at, 'YYYY-MM-DD')
-                )
+                zoho_contact_id = None
+                if v_clauses:
+                    # Strict priority matching: 1. PAN, 2. GSTIN, 3. Name
+                    for clause in v_clauses:
+                        v_res = await session.execute(vendor_query.where(clause))
+                        matched_v = v_res.scalars().first()
+                        if matched_v and matched_v.zoho_contact_id:
+                            zoho_contact_id = matched_v.zoho_contact_id
+                            break
 
-                ytd_query = (
-                    select(func.coalesce(func.sum(subtotal_expr), 0.0))
-                    .where(
-                        Invoice.tenant_id == tenant_id,
-                        Invoice.id != invoice_id,
-                        Invoice.status != "REJECTED",
-                        Invoice.approval_status != "REJECTED",
-                        inv_date_expr >= fy_start_str,
-                        inv_date_expr <= fy_end_str,
-                        or_(*ytd_conditions)
+                if zoho_contact_id:
+                    connection = await master_data_service.get_or_create_zoho_connection(tenant_id, session, user_id=invoice.user_id)
+                    if connection and connection.status == "CONNECTED" and connection.organization_id:
+                        zoho_bills = await zoho_client_service.get_vendor_bills(
+                            connection=connection,
+                            db=session,
+                            vendor_id=zoho_contact_id,
+                            date_start=fy_start_str,
+                            date_end=fy_end_str,
+                        )
+                        zoho_sum = 0.0
+                        for bill in zoho_bills:
+                            b_status = str(bill.get("status") or "").lower()
+                            if b_status in ("void", "cancelled", "deleted"):
+                                continue
+
+                            # Fetch individual bill detail to get exact pre-tax sub_total
+                            # (Summary objects in GET /bills list endpoint omit sub_total and tax_total)
+                            b_id = bill.get("bill_id") or bill.get("id")
+                            sub_t = bill.get("sub_total")
+                            if sub_t is None and b_id:
+                                detail = await zoho_client_service.get_bill_detail(
+                                    connection=connection,
+                                    db=session,
+                                    bill_id=str(b_id),
+                                )
+                                sub_t = detail.get("sub_total")
+                                if sub_t is None:
+                                    b_tot = detail.get("total")
+                                    b_tax = detail.get("tax_total")
+                                    if b_tot is not None and b_tax is not None:
+                                        sub_t = float(b_tot) - float(b_tax)
+
+                            if sub_t is not None:
+                                zoho_sum += float(sub_t)
+                            else:
+                                logger.warning(f"Could not resolve pre-tax subtotal for Zoho bill '{b_id}'. Skipping from YTD sum.")
+
+                        previous_ytd = float(zoho_sum)
+                        zoho_ytd_success = True
+                        logger.info(f"Successfully calculated YTD from Zoho vendor bills for vendor '{zoho_contact_id}': ₹{previous_ytd:.2f}")
+            except Exception as zoho_exc:
+                logger.warning(f"Zoho YTD calculation fallback triggered for invoice {invoice_id}: {zoho_exc}")
+                zoho_ytd_success = False
+
+            if not zoho_ytd_success:
+                # Fallback to local SAKSHI invoice YTD calculation
+                ytd_conditions = []
+                if v_pan and len(str(v_pan).strip()) == 10:
+                    ytd_conditions.append(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_pan') == str(v_pan).strip())
+                if v_gstin and len(str(v_gstin).strip()) == 15:
+                    ytd_conditions.append(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_gstin') == str(v_gstin).strip())
+                if v_name:
+                    ytd_conditions.append(func.lower(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'vendor_name')) == v_name.lower())
+
+                if ytd_conditions:
+                    subtotal_expr = func.coalesce(
+                        cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'subtotal'), Float),
+                        cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'sub_total'), Float),
+                        cast(func.jsonb_extract_path_text(Invoice.current_vlm_output, 'taxable_amount'), Float),
+                        0.0
                     )
-                )
-                ytd_res = await session.execute(ytd_query)
-                previous_ytd = float(ytd_res.scalar() or 0.0)
+                    inv_date_expr = func.coalesce(
+                        func.jsonb_extract_path_text(Invoice.current_vlm_output, 'invoice_date'),
+                        func.to_char(Invoice.created_at, 'YYYY-MM-DD')
+                    )
+
+                    ytd_query = (
+                        select(func.coalesce(func.sum(subtotal_expr), 0.0))
+                        .where(
+                            Invoice.tenant_id == tenant_id,
+                            Invoice.id != invoice_id,
+                            Invoice.status != "REJECTED",
+                            Invoice.approval_status != "REJECTED",
+                            inv_date_expr >= fy_start_str,
+                            inv_date_expr <= fy_end_str,
+                            or_(*ytd_conditions)
+                        )
+                    )
+                    ytd_res = await session.execute(ytd_query)
+                    previous_ytd = float(ytd_res.scalar() or 0.0)
 
         except Exception as exc:
             logger.exception(f"Error initializing Stage 3 processing for invoice {invoice_id}: {exc}")
