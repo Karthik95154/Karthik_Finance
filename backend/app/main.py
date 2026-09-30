@@ -165,17 +165,16 @@ async def lifespan(app: FastAPI):
                             naruto_user.role = "ADMIN"
                             naruto_user.is_active = True
                             await session.commit()
-                            logger.info("[ADMIN BOOTSTRAP] Enforced role=ADMIN for worknaruto10@gmail.com")
-                    else:
-                        admin_res = await session.execute(select(User).where(User.role == "ADMIN", User.is_active == True))
-                        existing_admin = admin_res.scalar_one_or_none()
-                        if not existing_admin:
-                            first_user_res = await session.execute(select(User).order_by(User.created_at.asc()))
-                            first_user = first_user_res.scalar_one_or_none()
-                            if first_user:
-                                first_user.role = "ADMIN"
-                                await session.commit()
-                                logger.info(f"[ADMIN BOOTSTRAP] Promoted existing account '{first_user.email}' to ADMIN.")
+                    # Populate default password hash for existing legacy accounts without password_hash
+                    from app.core.security import hash_password
+                    unhashed_res = await session.execute(select(User).where(User.password_hash.is_(None)))
+                    unhashed_users = unhashed_res.scalars().all()
+                    if unhashed_users:
+                        default_pwd_hash = hash_password("Password123!")
+                        for u in unhashed_users:
+                            u.password_hash = default_pwd_hash
+                        await session.commit()
+                        logger.info(f"[AUTH BOOTSTRAP] Seeded default password for {len(unhashed_users)} legacy accounts (Default password: Password123!).")
             except Exception as admin_boot_err:
                 logger.warning(f"Admin bootstrap warning: {admin_boot_err}")
 

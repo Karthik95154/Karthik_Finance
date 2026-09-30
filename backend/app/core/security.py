@@ -39,7 +39,7 @@ def hash_password(plain_password: str) -> str:
 def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool:
     """
     Verifies a plaintext password against a stored hashed password using constant-time comparison.
-    Supports pbkdf2_sha256 format.
+    Supports pbkdf2_sha256, pbkdf2:sha256, bcrypt, and argon2 formats.
     """
     if not plain_password or not hashed_password:
         return False
@@ -54,11 +54,28 @@ def verify_password(plain_password: str, hashed_password: Optional[str]) -> bool
             expected_hash = parts[3]
             derived = hashlib.pbkdf2_hmac("sha256", plain_password.encode("utf-8"), salt, rounds)
             return hmac.compare_digest(derived.hex(), expected_hash)
+        elif hashed_password.startswith("pbkdf2:sha256:"):
+            # Format: pbkdf2:sha256:<iterations>$<salt>$<hash>
+            rest = hashed_password[len("pbkdf2:sha256:"):]
+            subparts = rest.split("$")
+            if len(subparts) == 3:
+                rounds = int(subparts[0])
+                salt = subparts[1].encode("utf-8")
+                expected_hash = subparts[2]
+                derived = hashlib.pbkdf2_hmac("sha256", plain_password.encode("utf-8"), salt, rounds)
+                return hmac.compare_digest(derived.hex(), expected_hash)
         elif hashed_password.startswith("$2b$") or hashed_password.startswith("$2a$"):
-            # Optional bcrypt fallback if bcrypt is installed
             try:
                 import bcrypt
                 return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+            except Exception:
+                return False
+        elif hashed_password.startswith("$argon2"):
+            try:
+                from argon2 import PasswordHasher
+                ph = PasswordHasher()
+                ph.verify(hashed_password, plain_password)
+                return True
             except Exception:
                 return False
         return False
