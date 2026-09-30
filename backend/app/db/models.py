@@ -57,7 +57,7 @@ class User(Base):
     )
     email = Column(String(255), nullable=False, unique=True, index=True)
     password_hash = Column(String(255), nullable=True)
-    hashed_password = synonym("password_hash")
+    hashed_password = Column(Text, nullable=True)
     full_name = Column(String(255), nullable=True)
     role = Column(String(50), nullable=False, default="FINANCE")  # ADMIN, FINANCE_ADMIN, FINANCE, FINANCE_USER, FINANCE_MANAGER, FINANCE_REVIEWER, DATA_REVIEWER, VIEWER, CUSTOMER
     is_active = Column(Boolean, nullable=False, default=True)

@@ -119,6 +119,7 @@ async def signup_user(
         tenant_id=tenant_id,
         email=clean_email,
         password_hash=pwd_hash,
+        hashed_password=pwd_hash,
         full_name=payload.full_name.strip(),
         role=assigned_role,
         is_active=True,
@@ -181,11 +182,12 @@ async def login_user(
             detail="User account is deactivated. Please contact your administrator.",
         )
 
-    if not user.password_hash or not verify_password(payload.password, user.password_hash):
-        logger.warning(f"[AUTH LOGIN FAILED] Password mismatch for '{clean_email}' (has_hash={bool(user.password_hash)})")
+    user_pwd_hash = user.password_hash or user.hashed_password
+    if not user_pwd_hash or not verify_password(payload.password, user_pwd_hash):
+        logger.warning(f"[AUTH LOGIN FAILED] Password mismatch for '{clean_email}' (has_hash={bool(user_pwd_hash)})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect password. For existing default accounts, use 'Password123!'.",
+            detail="Invalid email or password. For existing default accounts, use 'Password123!'.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -552,8 +554,10 @@ async def accept_invitation(
     user_res = await db.execute(user_query)
     user = user_res.scalar_one_or_none()
 
+    new_pwd_hash = hash_password(payload.password)
     if user:
-        user.password_hash = hash_password(payload.password)
+        user.password_hash = new_pwd_hash
+        user.hashed_password = new_pwd_hash
         user.is_active = True
         user.role = invitation.role
         if payload.full_name and payload.full_name.strip():
@@ -563,7 +567,8 @@ async def accept_invitation(
             id=uuid.uuid4(),
             tenant_id=invitation.tenant_id,
             email=invitation.email,
-            password_hash=hash_password(payload.password),
+            password_hash=new_pwd_hash,
+            hashed_password=new_pwd_hash,
             full_name=payload.full_name.strip() if payload.full_name else invitation.email.split("@")[0],
             role=invitation.role,
             is_active=True,
@@ -618,13 +623,16 @@ async def change_user_password(
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
-    if not user.password_hash or not verify_password(payload.old_password, user.password_hash):
+    user_pwd_hash = user.password_hash or user.hashed_password
+    if not user_pwd_hash or not verify_password(payload.old_password, user_pwd_hash):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password does not match.")
 
     if not payload.new_password or len(payload.new_password) < 6:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="New password must be at least 6 characters.")
 
-    user.password_hash = hash_password(payload.new_password)
+    new_hash = hash_password(payload.new_password)
+    user.password_hash = new_hash
+    user.hashed_password = new_hash
     user.must_change_password = False
     await db.commit()
 

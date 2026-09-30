@@ -138,6 +138,7 @@ async def create_user_account(
         id=uuid.uuid4(),
         tenant_id=admin.tenant_id,
         email=clean_email,
+        password_hash=hashed_pwd,
         hashed_password=hashed_pwd,
         full_name=payload.full_name.strip() if payload.full_name else clean_email.split("@")[0].capitalize(),
         role=role_to_assign,
