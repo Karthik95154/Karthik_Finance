@@ -161,15 +161,17 @@ async def login_user(
     Authenticates a user with email and password, issuing a signed JWT access token.
     """
     clean_email = payload.email.strip().lower()
+    logger.info(f"[AUTH LOGIN] Attempting login for email: '{clean_email}'")
 
     query = select(User).where(User.email == clean_email)
     res = await db.execute(query)
     user = res.scalar_one_or_none()
 
     if not user:
+        logger.warning(f"[AUTH LOGIN FAILED] No account found with email: '{clean_email}'")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password.",
+            detail="Account not found. Please create an account on Sign Up.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -180,9 +182,10 @@ async def login_user(
         )
 
     if not user.password_hash or not verify_password(payload.password, user.password_hash):
+        logger.warning(f"[AUTH LOGIN FAILED] Password mismatch for '{clean_email}' (has_hash={bool(user.password_hash)})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password.",
+            detail="Incorrect password. For existing default accounts, use 'Password123!'.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
