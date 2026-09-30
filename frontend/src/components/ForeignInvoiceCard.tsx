@@ -82,13 +82,23 @@ export default function ForeignInvoiceCard({
   const origCurr = String(
     invoice?.original_currency ||
     ext.original_currency ||
-    (ext.currency && ext.currency !== "INR" ? ext.currency : "") ||
     (invoice?.currency && invoice?.currency !== "INR" ? invoice?.currency : "") ||
-    "USD"
+    (ext.currency && ext.currency !== "INR" ? ext.currency : "") ||
+    "INR"
   ).toUpperCase();
 
-  const isForeignCurrency = origCurr !== "INR" || Boolean(invoice?.original_currency) || Boolean(ext.original_currency);
-  const isForeign = isForeignService || isUnsupportedGoods || isForeignCurrency || Boolean(invoice?.exchange_rate && invoice.exchange_rate > 1.0);
+  const isForeignCurrency =
+    (origCurr !== "INR" && origCurr !== "") ||
+    Boolean(invoice?.original_currency && invoice.original_currency !== "INR") ||
+    Boolean(ext.original_currency && ext.original_currency !== "INR") ||
+    Boolean(invoice?.currency && invoice.currency !== "INR") ||
+    Boolean(ext.currency && ext.currency !== "INR");
+
+  const isForeign =
+    isForeignService ||
+    isUnsupportedGoods ||
+    isForeignCurrency ||
+    Boolean(invoice?.exchange_rate && invoice.exchange_rate > 1.0 && isForeignCurrency);
 
   // Forex rate states
   const activeRate = safeNum(invoice?.exchange_rate || ext.exchange_rate, 95.2408);
