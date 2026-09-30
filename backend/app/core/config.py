@@ -112,6 +112,14 @@ class Settings(BaseSettings):
             if not self.TOKEN_ENCRYPTION_KEY:
                 self.TOKEN_ENCRYPTION_KEY = "sakshi-dev-token-encryption-key-32b-local"
 
+    # Outbound Transactional Email / SMTP Configuration
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = ""
+    SMTP_USE_TLS: bool = True
+
     # Zoho Books Integration
     ZOHO_CLIENT_ID: str = ""
     ZOHO_CLIENT_SECRET: str = ""
@@ -137,6 +145,16 @@ class Settings(BaseSettings):
     @property
     def kimi_k3_url(self) -> str:
         return (self.KIMI_K3_SERVICE_URL or "").strip().rstrip("/")
+
+    # Forex & Foreign Currency Configuration
+    FOREX_PROVIDER: str = "RBI"  # "RBI" (Reserve Bank of India Archive) | "EXCHANGE_RATE_API" | "FRANKFURTER" | "FALLBACK"
+    EXCHANGE_RATE_API_KEY: str = ""
+    FX_DATE_SOURCE: str = "INVOICE_DATE"  # "INVOICE_DATE" (default for foreign service) | "PROCESSING_DATE"
+    FX_REQUEST_TIMEOUT: float = 10.0
+    FX_CACHE_TTL_SECONDS: int = 86400  # 24 hours
+    FX_CROSS_VALIDATION_TOLERANCE_BPS: int = 50
+    DEFAULT_FOREIGN_SERVICE_SAC: str = "998315"  # Configurable default SAC for foreign cloud/SaaS services
+    DEFAULT_IMPORT_SERVICES_GST_RATE: float = 18.0  # Configurable default IGST rate (%) under RCM Import of Services
 
     # File Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB

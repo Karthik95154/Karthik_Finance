@@ -377,6 +377,12 @@ class FinancialValidator:
 
         raw_line_items = data_obj.get("line_items") or []
 
+        is_rcm = bool(
+            data_obj.get("is_reverse_charge") is True
+            or data_obj.get("invoice_origin") == "FOREIGN_SERVICE"
+            or (gst_result and isinstance(gst_result, dict) and gst_result.get("is_reverse_charge") is True)
+        )
+
         checks: List[Dict[str, Any]] = []
         errors: List[str] = []
         warnings: List[str] = []
@@ -710,21 +716,46 @@ class FinancialValidator:
                     l_check["status"] = "PASSED"
                 elif has_explicit_line_tax:
                     # CASE B: Line taxes are available
-                    expected_tot = round(resolved_taxable + effective_line_tax, 2)
-                    l_check["expected_total"] = expected_tot
-                    tot_diff = round(abs(ext_total - expected_tot), 2)
-                    l_check["total_difference"] = tot_diff
-                    if tot_diff <= tol:
-                        l_check["status"] = "PASSED"
-                        l_check["line_total_treatment"] = "EXPLICIT_LINE_TAXES_MATCH"
+                    if is_rcm:
+                        # Under Reverse Charge (RCM / Foreign Service), vendor line total equals taxable base
+                        # since GST is discharged by the recipient directly to the government, not billed by the vendor.
+                        expected_tot = resolved_taxable
+                        tot_diff = round(abs(ext_total - expected_tot), 2)
+                        l_check["expected_total"] = expected_tot
+                        l_check["total_difference"] = tot_diff
+                        if tot_diff <= tol:
+                            l_check["status"] = "PASSED"
+                            l_check["line_total_treatment"] = "RCM_LINE_TOTAL_MATCH"
+                        elif round(abs(ext_total - round(resolved_taxable + effective_line_tax, 2)), 2) <= tol:
+                            expected_tot = round(resolved_taxable + effective_line_tax, 2)
+                            l_check["expected_total"] = expected_tot
+                            l_check["total_difference"] = 0.0
+                            l_check["status"] = "PASSED"
+                            l_check["line_total_treatment"] = "EXPLICIT_LINE_TAXES_MATCH"
+                        else:
+                            l_check["status"] = "MISMATCH"
+                            all_lines_valid = False
+                            has_mismatch = True
+                            l_check["line_total_treatment"] = "EXPLICIT_LINE_TOTAL_MISMATCH"
+                            errors.append(
+                                f"Line {idx} total mismatch: Taxable ₹{resolved_taxable:,.2f} (RCM), but line total is ₹{ext_total:,.2f} (diff: ₹{tot_diff:,.2f})."
+                            )
                     else:
-                        l_check["status"] = "MISMATCH"
-                        all_lines_valid = False
-                        has_mismatch = True
-                        l_check["line_total_treatment"] = "EXPLICIT_LINE_TOTAL_MISMATCH"
-                        errors.append(
-                            f"Line {idx} total mismatch: Taxable ₹{resolved_taxable:,.2f} + Taxes ₹{effective_line_tax:,.2f} = ₹{expected_tot:,.2f}, but line total is ₹{ext_total:,.2f} (diff: ₹{tot_diff:,.2f})."
-                        )
+                        expected_tot = round(resolved_taxable + effective_line_tax, 2)
+                        l_check["expected_total"] = expected_tot
+                        tot_diff = round(abs(ext_total - expected_tot), 2)
+                        l_check["total_difference"] = tot_diff
+                        if tot_diff <= tol:
+                            l_check["status"] = "PASSED"
+                            l_check["line_total_treatment"] = "EXPLICIT_LINE_TAXES_MATCH"
+                        else:
+                            l_check["status"] = "MISMATCH"
+                            all_lines_valid = False
+                            has_mismatch = True
+                            l_check["line_total_treatment"] = "EXPLICIT_LINE_TOTAL_MISMATCH"
+                            errors.append(
+                                f"Line {idx} total mismatch: Taxable ₹{resolved_taxable:,.2f} + Taxes ₹{effective_line_tax:,.2f} = ₹{expected_tot:,.2f}, but line total is ₹{ext_total:,.2f} (diff: ₹{tot_diff:,.2f})."
+                            )
                 elif hdr_tax_total_val == 0.0:
                     # CASE C: No line tax AND header tax is zero
                     expected_tot = resolved_taxable
@@ -999,6 +1030,10 @@ class FinancialValidator:
                 if diff_tot_tax > tol:
                     recon_mismatches.append(f"HEADER_LINE_TAX_TOTAL_MISMATCH (Header Tax Total: ₹{src_tax_total:,.2f}, Line Taxes Sum: ₹{total_line_taxes_sum:,.2f}, diff: ₹{diff_tot_tax:,.2f})")
 
+            if is_rcm:
+                # Under RCM / Foreign Service, vendor invoice header does not charge Indian GST (recipient discharges under RCM).
+                recon_mismatches = []
+
             if recon_mismatches:
                 has_mismatch = True
                 for mm in recon_mismatches:
@@ -1019,7 +1054,7 @@ class FinancialValidator:
                     "description": "Reconciliation of line-level GST components vs header tax components",
                     "status": "PASSED",
                     "details": recon_details,
-                    "note": "Line-level tax components agree with header tax components within tolerance.",
+                    "note": "RCM Import of Services / Reverse Charge: Tax discharged under RCM by recipient." if is_rcm else "Line-level tax components agree with header tax components within tolerance.",
                 })
         else:
             # Header only or zero tax lines -> valid, do not force line taxes
@@ -1027,7 +1062,7 @@ class FinancialValidator:
                 "name": "header_gst_vs_line_gst_reconciliation",
                 "type": "TAX",
                 "description": "Reconciliation of line-level GST components vs header tax components",
-                "status": "PASSED" if (not raw_line_items or hdr_tax_total_val == 0.0) else "NOT_APPLICABLE",
+                "status": "PASSED" if (not raw_line_items or hdr_tax_total_val == 0.0 or is_rcm) else "NOT_APPLICABLE",
                 "note": "Header tax summary present without explicit line taxes or zero tax invoice." if (raw_line_items and hdr_tax_total_val == 0.0) else ("Header tax summary present without explicit line taxes." if raw_line_items else "No line items to reconcile."),
             })
 
@@ -1125,10 +1160,21 @@ class FinancialValidator:
         if calculated_grand_total is None:
             eff_sub = calculated_subtotal if calculated_subtotal is not None else src_subtotal
             if eff_sub is not None:
-                calculated_grand_total = round(eff_sub - d_header + effective_tax + charges_val, 2)
+                if is_rcm and src_total_amount is not None and abs(src_total_amount - round(eff_sub - d_header + charges_val, 2)) <= tol:
+                    calculated_grand_total = round(eff_sub - d_header + charges_val, 2)
+                    discount_treatment = "RCM_RECIPIENT_TAX_EXCLUDED"
+                else:
+                    calculated_grand_total = round(eff_sub - d_header + effective_tax + charges_val, 2)
 
         if calculated_grand_total is not None and src_total_amount is not None:
             total_diff = round(abs(src_total_amount - calculated_grand_total), 2)
+            if is_rcm and total_diff > tol:
+                eff_sub = calculated_subtotal if calculated_subtotal is not None else src_subtotal
+                if eff_sub is not None and abs(src_total_amount - round(eff_sub - d_header + charges_val, 2)) <= tol:
+                    calculated_grand_total = round(eff_sub - d_header + charges_val, 2)
+                    total_diff = 0.0
+                    discount_treatment = "RCM_RECIPIENT_TAX_EXCLUDED"
+
             if discount_reconcile_issue:
                 total_status = "REVIEW_REQUIRED"
                 check_note = f"Discount reconciliation requires manual review: {discount_reconcile_issue}."

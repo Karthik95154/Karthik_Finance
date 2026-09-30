@@ -1,7 +1,9 @@
 import logging
 import uuid
 import asyncio
+from decimal import Decimal
 from datetime import datetime, timezone
+from typing import Dict, Any, Optional, List, Tuple
 from sqlalchemy import select, delete, func, or_, cast, Float
 from app.db.database import AsyncSessionLocal
 from app.db.models import Invoice, JournalEntry, JournalLine
@@ -16,15 +18,127 @@ from app.services.financial_validator import financial_validator
 from app.services.journal_generator import journal_generator, sync_relational_journal
 from app.services.master_data_service import master_data_service
 from app.services.zoho_client import zoho_client_service
+from app.services.invoice_classifier import invoice_classifier, InvoiceClassification
+from app.services.forex_service import forex_service
 
 logger = logging.getLogger(__name__)
 
 
-def get_effective_invoice_data(invoice: Invoice) -> dict:
+def convert_foreign_payload_to_inr(payload: Dict[str, Any], exchange_rate: Decimal) -> Dict[str, Any]:
+    """
+    Converts a foreign service invoice payload into its canonical INR financial representation.
+    
+    CRITICAL ARCHITECTURAL BOUNDARY:
+    - Currency is converted exactly once here.
+    - All downstream accounting engines (TDS, GST/RCM, ITC, Financial Validator, Journal)
+      receive pure INR numbers from this canonical representation.
+    - Original foreign values (currency, total, taxable, line amounts) are preserved.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    if not isinstance(exchange_rate, Decimal):
+        exchange_rate = Decimal(str(exchange_rate))
+
+    if exchange_rate <= Decimal("0.000000"):
+        raise ValueError(f"Exchange rate must be positive Decimal, got: {exchange_rate}")
+
+    converted = dict(payload)
+    orig_curr = payload.get("original_currency") or payload.get("currency") or "USD"
+    converted["original_currency"] = orig_curr
+    converted["currency"] = "INR"
+    converted["exchange_rate"] = float(exchange_rate)
+
+    # Convert totals using ForexService Decimal math
+    raw_total = payload.get("original_total_amount") if payload.get("original_total_amount") is not None else payload.get("total_amount")
+    if raw_total is not None:
+        dec_total = Decimal(str(raw_total))
+        inr_total = forex_service.convert_to_inr(dec_total, exchange_rate)
+        converted["total_amount"] = float(inr_total)
+        converted["original_total_amount"] = float(dec_total)
+        converted["converted_total_inr"] = float(inr_total)
+
+    raw_taxable = payload.get("original_taxable_amount") if payload.get("original_taxable_amount") is not None else (payload.get("taxable_amount") if payload.get("taxable_amount") is not None else payload.get("subtotal"))
+    if raw_taxable is not None:
+        dec_taxable = Decimal(str(raw_taxable))
+        inr_taxable = forex_service.convert_to_inr(dec_taxable, exchange_rate)
+        converted["taxable_amount"] = float(inr_taxable)
+        converted["subtotal"] = float(inr_taxable)
+        converted["sub_total"] = float(inr_taxable)
+        converted["original_taxable_amount"] = float(dec_taxable)
+        converted["converted_taxable_inr"] = float(inr_taxable)
+        converted["igst_amount"] = round(float(inr_taxable) * 0.18, 2)
+        converted["tax_total"] = round(float(inr_taxable) * 0.18, 2)
+        converted["cgst_amount"] = 0.0
+        converted["sgst_amount"] = 0.0
+
+    # Convert line items
+    line_items = payload.get("line_items") or []
+    converted_items = []
+    for item in line_items:
+        if not isinstance(item, dict):
+            converted_items.append(item)
+            continue
+        c_item = dict(item)
+
+        l_taxable = item.get("original_taxable_amount") if item.get("original_taxable_amount") is not None else (item.get("original_line_amount") if item.get("original_line_amount") is not None else (item.get("taxable_amount") if item.get("taxable_amount") is not None else item.get("line_amount")))
+        if l_taxable is not None:
+            dec_l_taxable = Decimal(str(l_taxable))
+            inr_l_taxable = forex_service.convert_to_inr(dec_l_taxable, exchange_rate)
+            c_item["taxable_amount"] = float(inr_l_taxable)
+            c_item["line_amount"] = float(inr_l_taxable)
+            c_item["original_taxable_amount"] = float(dec_l_taxable)
+            c_item["original_line_amount"] = float(dec_l_taxable)
+
+        l_unit = item.get("original_unit_price") if item.get("original_unit_price") is not None else (item.get("original_rate") if item.get("original_rate") is not None else (item.get("unit_price") if item.get("unit_price") is not None else item.get("rate")))
+        if l_unit is not None:
+            dec_l_unit = Decimal(str(l_unit))
+            inr_l_unit = forex_service.convert_to_inr(dec_l_unit, exchange_rate)
+            c_item["unit_price"] = float(inr_l_unit)
+            c_item["rate"] = float(inr_l_unit)
+            c_item["original_unit_price"] = float(dec_l_unit)
+            c_item["original_rate"] = float(dec_l_unit)
+
+        l_total = item.get("original_total") if item.get("original_total") is not None else item.get("total")
+        if l_total is not None:
+            dec_l_total = Decimal(str(l_total))
+            inr_l_total = forex_service.convert_to_inr(dec_l_total, exchange_rate)
+            c_item["total"] = float(inr_l_total)
+            c_item["original_total"] = float(dec_l_total)
+
+        # Ensure statutory 18% IGST RCM rate is populated on foreign service line items
+        curr_rate = c_item.get("gst_rate") or c_item.get("igst_rate")
+        if curr_rate is None or float(curr_rate) == 0.0:
+            c_item["gst_rate"] = 18.0
+            c_item["igst_rate"] = 18.0
+            if c_item.get("taxable_amount") is not None:
+                c_item["igst_amount"] = round(float(c_item["taxable_amount"]) * 0.18, 2)
+
+        # Add GST amount into line item total (Taxable + GST)
+        if c_item.get("taxable_amount") is not None:
+            l_taxable_val = float(c_item["taxable_amount"])
+            l_tax_val = float(c_item.get("igst_amount") or 0.0) + float(c_item.get("cgst_amount") or 0.0) + float(c_item.get("sgst_amount") or 0.0) + float(c_item.get("cess_amount") or 0.0)
+            c_item["total"] = round(l_taxable_val + l_tax_val, 2)
+            if c_item.get("original_taxable_amount") is not None:
+                l_orig_taxable = float(c_item["original_taxable_amount"])
+                l_orig_tax_rate = float(c_item.get("gst_rate") or c_item.get("igst_rate") or 18.0)
+                c_item["original_total"] = round(l_orig_taxable * (1.0 + (l_orig_tax_rate / 100.0)), 2)
+
+        c_item["original_currency"] = orig_curr
+        converted_items.append(c_item)
+
+    converted["line_items"] = converted_items
+    return converted
+
+
+def get_effective_invoice_data(invoice: Invoice, convert_fx: bool = False) -> dict:
     """
     Returns complete invoice JSON data for Stage 3 & Stage 4, ensuring base VLM extraction
     fields (line items, totals, vendor/customer, taxes, raw_fields) are fully resolved and preserved.
+    If convert_fx=True and invoice is FOREIGN_SERVICE with an active exchange rate,
+    converts financial amounts to INR at the single canonical FX boundary.
     """
+    from typing import Dict, Any
     raw = invoice.raw_vlm_output or {}
     raw_data = raw.get("data") if isinstance(raw, dict) and "data" in raw else raw
     if not isinstance(raw_data, dict):
@@ -78,6 +192,22 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
             merged["vendor_email"] = raw_f.get("vendor_email")
         if not merged.get("place_of_supply") and raw_f.get("place_of_supply"):
             merged["place_of_supply"] = raw_f.get("place_of_supply")
+        if not merged.get("invoice_period") and raw_f.get("invoice_period"):
+            merged["invoice_period"] = raw_f.get("invoice_period")
+        if not merged.get("category") and raw_f.get("category"):
+            merged["category"] = raw_f.get("category")
+        if not merged.get("due_date") and raw_f.get("due_date"):
+            merged["due_date"] = raw_f.get("due_date")
+        if not merged.get("vendor_country") and raw_f.get("vendor_country"):
+            merged["vendor_country"] = raw_f.get("vendor_country")
+        if not merged.get("vendor_tax_id") and raw_f.get("vendor_tax_id"):
+            merged["vendor_tax_id"] = raw_f.get("vendor_tax_id")
+        if not merged.get("service_period") and raw_f.get("service_period"):
+            merged["service_period"] = raw_f.get("service_period")
+        if not merged.get("service_description") and raw_f.get("service_description"):
+            merged["service_description"] = raw_f.get("service_description")
+        if not merged.get("bank_details") and raw_f.get("bank_details"):
+            merged["bank_details"] = raw_f.get("bank_details")
 
     # Resolve line items from raw_fields if needed
     items = merged.get("line_items") or []
@@ -167,6 +297,26 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
                         d_amt = d_val
                 it["taxable_amount"] = round(l_amt - d_amt, 2)
 
+        # Normalize salary / wage / manpower / duty invoice lines:
+        # If invoice contains salary, wages, duties, manpower, cost per person breakdown:
+        # Take line item quantity as 1.0 and unit_price as the total taxable amount given.
+        # If invoice contains standard quantity and unit price, take as is.
+        desc_lower = str(it.get("description") or "").lower()
+        unit_lower = str(it.get("unit") or "").lower()
+        inv_cat_lower = str(merged.get("category") or "").lower()
+
+        is_salary_wage_duty = any(kw in desc_lower for kw in [
+            "salary", "wage", "duties", "duty", "manpower", "security guard", "housekeeping",
+            "labour", "labor", "personnel", "guard", "sweeper", "peon", "attendant", "wages",
+            "cleaning service", "driver", "care taker", "supervisor"
+        ]) or any(kw in unit_lower for kw in [
+            "duty", "duties", "day", "days", "shift", "shifts", "person", "persons", "manpower"
+        ]) or any(kw in inv_cat_lower for kw in ["salary", "wage", "manpower", "labor", "labour"])
+
+        if is_salary_wage_duty and it.get("taxable_amount") is not None:
+            it["quantity"] = 1.0
+            it["unit_price"] = float(it["taxable_amount"])
+
         # Reconcile line item total = taxable_amount + applicable taxes
         if it.get("taxable_amount") is not None:
             taxable_val = float(it["taxable_amount"])
@@ -190,6 +340,14 @@ def get_effective_invoice_data(invoice: Invoice) -> dict:
         merged["invoice_date"] = parse_and_normalize_date(merged["invoice_date"])
     if merged.get("due_date"):
         merged["due_date"] = parse_and_normalize_date(merged["due_date"])
+
+    if convert_fx:
+        origin = getattr(invoice, "invoice_origin", None) or "INDIAN"
+        override = getattr(invoice, "classification_override", None)
+        active_origin = override or origin
+        rate = getattr(invoice, "exchange_rate", None)
+        if active_origin == "FOREIGN_SERVICE" and rate:
+            return convert_foreign_payload_to_inr(merged, rate)
 
     return merged
 
@@ -231,8 +389,8 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
             invoice.updated_at = datetime.now(timezone.utc)
             await session.commit()
 
-            # Prepare complete single effective invoice JSON for COA, TDS, GST/ITC
-            invoice_payload = get_effective_invoice_data(invoice)
+            # Prepare complete single effective invoice JSON for COA, TDS, GST/ITC (converts FX if foreign service)
+            invoice_payload = get_effective_invoice_data(invoice, convert_fx=True)
             tenant_id = invoice.tenant_id or "default-tenant-001"
             normalized_accounting_state = invoice.current_accounting_output or invoice.accounting_output
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
@@ -439,6 +597,23 @@ async def process_accounting_only_background(invoice_id: uuid.UUID) -> None:
         tds_provision = effective_tds.get("provision")
         tds_nature = effective_tds.get("nature_of_payment")
         vendor_pan = invoice_payload.get("vendor_pan")
+
+        is_foreign = (
+            getattr(invoice, "invoice_origin", None) == "FOREIGN_SERVICE"
+            or getattr(invoice, "classification_override", None) == "FOREIGN_SERVICE"
+            or invoice_payload.get("invoice_origin") == "FOREIGN_SERVICE"
+            or invoice_payload.get("classification") == "FOREIGN_SERVICE"
+        )
+        if is_foreign and effective_tds.get("applicable") is not False:
+            tds_section = "Section 393"
+            tds_provision = "Section 393(2), Table Sl. No. 17"
+            tds_nature = "Non-Resident Payment / Foreign Remittance"
+            if not effective_tds.get("is_approved") or tds_rate is None or tds_rate == 0:
+                tds_rate = 20.0
+            inr_taxable = invoice_payload.get("converted_taxable_inr") or invoice_payload.get("taxable_amount") or invoice_payload.get("subtotal") or invoice_payload.get("total_amount")
+            if inr_taxable is not None and float(inr_taxable) > 0:
+                tds_base_amt = round(float(inr_taxable), 2)
+            previous_ytd = 0.0
 
         final_tds_calc = tds_engine.calculate_tds(
             applicable=bool(effective_tds.get("applicable")) if effective_tds.get("applicable") is not None else None,
@@ -696,7 +871,66 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
         if period_category == "PREVIOUS_FINANCIAL_YEAR":
             period_decision = "PENDING"
 
-    # 5. Persist extraction result & initial normalized outputs in database
+    # 5. Classify invoice via multi-evidence deterministic classifier (never uses currency alone)
+    classification_result = invoice_classifier.classify(
+        invoice_data=normalized["normalized_data"],
+        raw_document_text=raw_doc_text,
+    )
+    detected_origin = classification_result.classification.value
+    extracted_currency = classification_result.currency
+    
+    raw_total = normalized["normalized_data"].get("total_amount")
+    raw_taxable = normalized["normalized_data"].get("taxable_amount") or normalized["normalized_data"].get("subtotal")
+    
+    orig_total_dec = Decimal(str(raw_total)) if raw_total is not None else None
+    orig_taxable_dec = Decimal(str(raw_taxable)) if raw_taxable is not None else None
+
+    fx_rate_val = None
+    fx_rate_date = None
+    fx_rate_source = None
+    conv_total_inr = None
+    conv_taxable_inr = None
+
+    if classification_result.classification == InvoiceClassification.FOREIGN_SERVICE:
+        from app.core.date_utils import parse_and_normalize_date
+        inv_d_str = normalized["normalized_data"].get("invoice_date")
+        inv_d_parsed = None
+        if inv_d_str:
+            try:
+                norm_d = parse_and_normalize_date(inv_d_str)
+                inv_d_parsed = datetime.strptime(norm_d, "%Y-%m-%d").date() if norm_d else None
+            except Exception:
+                inv_d_parsed = None
+
+        proc_d = datetime.now(timezone.utc).date()
+        target_fx_date = forex_service.resolve_fx_date(
+            invoice_date=inv_d_parsed,
+            processing_date=proc_d,
+        )
+
+        fx_res = await forex_service.get_exchange_rate(
+            currency=extracted_currency,
+            fx_date=target_fx_date,
+        )
+        fx_rate_val = fx_res.rate
+        fx_rate_date = fx_res.rate_date
+        fx_rate_source = fx_res.source
+
+        if orig_total_dec is not None:
+            conv_total_inr = forex_service.convert_to_inr(orig_total_dec, fx_rate_val)
+        if orig_taxable_dec is not None:
+            conv_taxable_inr = forex_service.convert_to_inr(orig_taxable_dec, fx_rate_val)
+
+    # Determine status based on classification outcome
+    if classification_result.classification == InvoiceClassification.INDIAN:
+        next_status = "PROCESSING_ACCOUNTING"
+    elif classification_result.classification == InvoiceClassification.FOREIGN_SERVICE:
+        next_status = "PROCESSING_ACCOUNTING"
+    elif classification_result.classification == InvoiceClassification.UNSUPPORTED_FOREIGN_GOODS:
+        next_status = "UNSUPPORTED"
+    else:  # REVIEW_REQUIRED
+        next_status = "PENDING_REVIEW"
+
     async with AsyncSessionLocal() as session:
         try:
             query = select(Invoice).where(Invoice.id == invoice_id)
@@ -704,15 +938,42 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
             invoice = result.scalar_one_or_none()
             if invoice:
                 invoice.raw_vlm_output = raw_snapshot
-                invoice.current_vlm_output = norm_vlm_dict
+                if classification_result.classification == InvoiceClassification.FOREIGN_SERVICE and fx_rate_val:
+                    inr_vlm_data = convert_foreign_payload_to_inr(normalized["normalized_data"], fx_rate_val)
+                    invoice.current_vlm_output = {"data": inr_vlm_data}
+                else:
+                    invoice.current_vlm_output = norm_vlm_dict
                 invoice.accounting_output = norm_accounting_dict
                 invoice.current_accounting_output = norm_accounting_dict
-                invoice.status = "PROCESSING_ACCOUNTING"
+                invoice.invoice_origin = detected_origin
+                invoice.currency = "INR" if classification_result.classification == InvoiceClassification.FOREIGN_SERVICE else extracted_currency
+                invoice.original_currency = extracted_currency
+                invoice.original_total_amount = orig_total_dec
+                invoice.original_taxable_amount = orig_taxable_dec
+                invoice.exchange_rate = fx_rate_val
+                invoice.fx_original_rate = fx_rate_val
+                invoice.exchange_rate_date = fx_rate_date
+                invoice.exchange_rate_source = fx_rate_source
+                invoice.converted_total_inr = conv_total_inr
+                invoice.converted_taxable_inr = conv_taxable_inr
+                invoice.fx_rate_overridden = False
+                invoice.classification_confidence = classification_result.confidence
+                invoice.classification_reason = classification_result.reason
+                invoice.classification_model = "RULE_ENGINE_V1"
+                invoice.classification_source = "SYSTEM"
+                invoice.classified_at = datetime.now(timezone.utc)
+                invoice.status = next_status
                 invoice.period_category = period_category
                 invoice.period_decision = period_decision
+                if classification_result.classification == InvoiceClassification.UNSUPPORTED_FOREIGN_GOODS:
+                    invoice.error_message = classification_result.reason
                 invoice.updated_at = datetime.now(timezone.utc)
                 await session.commit()
-                logger.info(f"Invoice {invoice_id} extraction complete (period: {period_category}). Executing downstream deterministic engines...")
+                logger.info(
+                    f"Invoice {invoice_id} extraction complete "
+                    f"(origin: {detected_origin}, currency: {extracted_currency}, status: {next_status}, "
+                    f"confidence: {classification_result.confidence}, reason: {classification_result.reason})."
+                )
         except Exception as exc:
             logger.exception(f"Error persisting extraction result for invoice {invoice_id}: {exc}")
             try:
@@ -727,8 +988,10 @@ async def process_invoice_background(invoice_id: uuid.UUID) -> None:
                 logger.error(f"Failed to record FAILED status for invoice {invoice_id}: {commit_exc}")
             return
 
-    # 6. Execute downstream Stage 3-6 Deterministic Engines (GST, ITC, Financial Validator, Journal Generator)
-    await process_accounting_downstream_background(invoice_id)
+    # 6. Execute downstream Stage 3-6 Deterministic Engines for domestic Indian and Foreign Service pipelines
+    # Foreign goods and review-required items are held safely at the classification gate
+    if classification_result.classification in (InvoiceClassification.INDIAN, InvoiceClassification.FOREIGN_SERVICE):
+        await process_accounting_downstream_background(invoice_id)
 
 
 async def process_accounting_downstream_background(invoice_id) -> None:
@@ -737,6 +1000,7 @@ async def process_accounting_downstream_background(invoice_id) -> None:
     extraction_result = None
     cached_coa = None
     cached_taxes = None
+    invoice_payload = None
 
     # Step 1: Read invoice state and cached master data in a short-lived session
     async with AsyncSessionLocal() as session:
@@ -752,6 +1016,10 @@ async def process_accounting_downstream_background(invoice_id) -> None:
             tenant_id = invoice.tenant_id or "default-tenant-001"
             extraction_result = invoice.current_vlm_output
             normalized_accounting_state = invoice.current_accounting_output or invoice.accounting_output
+            raw_vlm_output = invoice.raw_vlm_output or {}
+
+            # Prepare canonical effective invoice payload (converts FX to INR once if foreign service)
+            invoice_payload = get_effective_invoice_data(invoice, convert_fx=True)
 
             # Fetch live tenant Chart of Accounts & Taxes
             cached_coa = await master_data_service.get_cached_chart_of_accounts(tenant_id, session)
@@ -772,7 +1040,8 @@ async def process_accounting_downstream_background(invoice_id) -> None:
 
     # Step 2: External AI Inference & Deterministic Computations (Zero DB connections held)
     try:
-        invoice_payload = extraction_result.get("data") if isinstance(extraction_result, dict) and "data" in extraction_result else extraction_result
+        if not invoice_payload:
+            invoice_payload = extraction_result.get("data") if isinstance(extraction_result, dict) and "data" in extraction_result else (extraction_result or {})
 
         coa_lines = []
         if isinstance(normalized_accounting_state, dict) and isinstance(normalized_accounting_state.get("accounting"), list) and normalized_accounting_state["accounting"]:
@@ -839,6 +1108,22 @@ async def process_accounting_downstream_background(invoice_id) -> None:
         tds_provision = effective_tds.get("provision")
         tds_nature = effective_tds.get("nature_of_payment")
         vendor_pan = invoice_payload.get("vendor_pan")
+
+        is_foreign = (
+            getattr(invoice, "invoice_origin", None) == "FOREIGN_SERVICE"
+            or getattr(invoice, "classification_override", None) == "FOREIGN_SERVICE"
+            or invoice_payload.get("invoice_origin") == "FOREIGN_SERVICE"
+            or invoice_payload.get("classification") == "FOREIGN_SERVICE"
+        )
+        if is_foreign and effective_tds.get("applicable") is not False:
+            tds_section = "Section 393"
+            tds_provision = "Section 393(2), Table Sl. No. 17"
+            tds_nature = "Non-Resident Payment / Foreign Remittance"
+            if not effective_tds.get("is_approved") or tds_rate is None or tds_rate == 0:
+                tds_rate = 20.0
+            inr_taxable = invoice_payload.get("converted_taxable_inr") or invoice_payload.get("taxable_amount") or invoice_payload.get("subtotal") or invoice_payload.get("total_amount")
+            if inr_taxable is not None and float(inr_taxable) > 0:
+                tds_base_amt = round(float(inr_taxable), 2)
 
         vendor_decl_data = (
             tds_assessment.get("vendor_declared_tds")

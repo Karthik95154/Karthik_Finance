@@ -21,6 +21,10 @@ export interface LineItem {
   cess_amount?: number | null;
   account_name?: string | null;
   total?: number | null;
+  original_currency?: string | null;
+  original_unit_price?: number | null;
+  original_taxable_amount?: number | null;
+  original_total_amount?: number | null;
 }
 
 export interface BankDetails {
@@ -84,8 +88,22 @@ export interface ExtractedInvoiceData {
   round_off?: number | null;
   total_amount?: number | null;
   currency?: string | null;
+  vendor_country?: string | null;
+  vendor_tax_id?: string | null;
+  original_currency?: string | null;
+  original_total_amount?: number | null;
+  original_taxable_amount?: number | null;
+  exchange_rate?: number | null;
+  exchange_rate_date?: string | null;
+  exchange_rate_source?: string | null;
+  fx_rate_overridden?: boolean | null;
+  fx_override_reason?: string | null;
+  fx_original_rate?: number | null;
+  converted_total_inr?: number | null;
+  converted_taxable_inr?: number | null;
   notes?: string | null;
   terms_and_conditions?: string | null;
+  invoice_period?: string | null;
 
   additional_fields?: Record<string, any>;
 }
@@ -397,6 +415,23 @@ export interface Invoice {
   error_message?: string | null;
   confidence_score?: number | null;
   accounting_confidence?: number | null;
+  invoice_origin?: "INDIAN" | "FOREIGN_SERVICE" | "REVIEW_REQUIRED" | "UNSUPPORTED_FOREIGN_GOODS" | string | null;
+  classification_override?: string | null;
+  classification_override_reason?: string | null;
+  classified_by?: string | null;
+  classified_at?: string | null;
+  classification_source?: string | null;
+  original_currency?: string | null;
+  original_total_amount?: number | null;
+  original_taxable_amount?: number | null;
+  exchange_rate?: number | null;
+  exchange_rate_date?: string | null;
+  exchange_rate_source?: string | null;
+  fx_rate_overridden?: boolean | null;
+  fx_override_reason?: string | null;
+  fx_original_rate?: number | null;
+  converted_total_inr?: number | null;
+  converted_taxable_inr?: number | null;
   raw_vlm_output?: RawVlmOutput | null;
   current_vlm_output?: RawVlmOutput | null;
   accounting_output?: AccountingOutput | null;
@@ -405,6 +440,9 @@ export interface Invoice {
   itc_result?: ItcResult | null;
   financial_validation_result?: FinancialValidationResult | null;
   journal_entry?: JournalEntry | null;
+  vendor_name?: string | null;
+  currency?: string | null;
+  is_foreign?: boolean | null;
   created_at: string;
   updated_at: string;
 }
@@ -632,17 +670,33 @@ export async function triggerAccountingCategorization(id: string): Promise<Invoi
   return res.json();
 }
 
+export interface InvoiceUpdateRequest {
+  current_vlm_output?: RawVlmOutput | null;
+  current_accounting_output?: AccountingOutput | null;
+  journal_entry?: JournalEntry | null;
+  classification_override?: string | null;
+  classification_override_reason?: string | null;
+  exchange_rate?: number | null;
+  fx_override_reason?: string | null;
+  exchange_rate_date?: string | null;
+  exchange_rate_source?: string | null;
+}
+
 export async function updateInvoiceExtraction(
   id: string,
   currentVlmOutput?: RawVlmOutput | null,
   currentAccountingOutput?: AccountingOutput | null,
-  journalEntry?: JournalEntry | null
+  journalEntry?: JournalEntry | null,
+  extraOverrides?: Partial<InvoiceUpdateRequest>
 ): Promise<Invoice> {
   const authHeaders = await getAuthHeaders();
   const body: Record<string, any> = {};
   if (currentVlmOutput !== undefined) body.current_vlm_output = currentVlmOutput;
   if (currentAccountingOutput !== undefined) body.current_accounting_output = currentAccountingOutput;
   if (journalEntry !== undefined) body.journal_entry = journalEntry;
+  if (extraOverrides) {
+    Object.assign(body, extraOverrides);
+  }
 
   const res = await fetch(`${API_BASE}/invoices/${id}`, {
     method: "PUT",
@@ -658,6 +712,76 @@ export async function updateInvoiceExtraction(
     throw new Error(errorData.detail || `Failed to update invoice ${id}`);
   }
 
+  return res.json();
+}
+
+export interface ForexRateItem {
+  currency: string;
+  target_currency: string;
+  rate: number;
+  rate_formatted: string;
+  rate_date: string;
+  source: string;
+  is_fallback: boolean;
+  status: string;
+}
+
+export interface ForexRatesListResponse {
+  base: string;
+  date: string;
+  last_updated: string;
+  rates: ForexRateItem[];
+  rbi_reference_currencies: string[];
+}
+
+export interface CurrencyConversionResponse {
+  original_amount: number;
+  from_currency: string;
+  to_currency: string;
+  rate: number;
+  converted_amount: number;
+  rate_date: string;
+  source: string;
+}
+
+export async function getForexRates(rateDate?: string): Promise<ForexRatesListResponse> {
+  const authHeaders = await getAuthHeaders();
+  const query = rateDate ? `?rate_date=${encodeURIComponent(rateDate)}` : "";
+  const res = await fetch(`${API_BASE}/forex/rates${query}`, {
+    headers: authHeaders,
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to fetch forex rates");
+  }
+  return res.json();
+}
+
+export async function convertCurrency(
+  amount: number,
+  fromCurrency: string,
+  toCurrency = "INR",
+  date?: string
+): Promise<CurrencyConversionResponse> {
+  const authHeaders = await getAuthHeaders();
+  const res = await fetch(`${API_BASE}/forex/convert`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeaders,
+    },
+    body: JSON.stringify({
+      amount,
+      from_currency: fromCurrency,
+      to_currency: toCurrency,
+      date,
+    }),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Failed to convert currency");
+  }
   return res.json();
 }
 
@@ -1704,3 +1828,277 @@ export async function assignInvoiceCOA(
   if (!res.ok) throw new Error("Failed to assign Chart of Account to invoice");
   return res.json();
 }
+
+// ============================================================================
+// Admin & User Access Management API
+// ============================================================================
+
+export interface UserManagementItem {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  role: string;
+  is_active: boolean;
+  must_change_password?: boolean;
+  created_at: string;
+}
+
+export interface CreateUserRequest {
+  email: string;
+  full_name?: string;
+  role?: string;
+}
+
+export interface CreateUserActionResponse {
+  success: boolean;
+  message: string;
+  user: UserManagementItem;
+  temporary_password: string;
+}
+
+export interface UserInvitationItem {
+  id: string;
+  email: string;
+  role: string;
+  status: "PENDING" | "ACCEPTED" | "EXPIRED" | "REVOKED" | string;
+  expires_at: string;
+  created_at: string;
+  accepted_at?: string | null;
+  invitation_url?: string | null;
+}
+
+export interface InviteUserRequest {
+  email: string;
+  full_name?: string;
+  role?: string;
+}
+
+export interface InviteActionResponse {
+  success: boolean;
+  email_sent: boolean;
+  message: string;
+  invitation: UserInvitationItem;
+  invitation_url: string;
+}
+
+export interface AcceptInviteRequest {
+  token: string;
+  password: string;
+  full_name?: string;
+}
+
+export interface ValidateInviteResponse {
+  email: string;
+  masked_email: string;
+  role: string;
+  tenant_id: string;
+  status: string;
+  otp_verified?: boolean;
+  otp_sent?: boolean;
+}
+
+export interface SendInviteOtpResponse {
+  success: boolean;
+  email_sent: boolean;
+  message: string;
+  masked_email: string;
+}
+
+export interface VerifyInviteOtpResponse {
+  success: boolean;
+  message: string;
+  email_verified: boolean;
+}
+
+export async function getUsers(): Promise<UserManagementItem[]> {
+  const token = localStorage.getItem("token") || localStorage.getItem("dev_auth_token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/admin/users`, { headers });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to load users");
+  }
+  return res.json();
+}
+
+export async function createUser(data: CreateUserRequest): Promise<CreateUserActionResponse> {
+  const token = localStorage.getItem("token") || localStorage.getItem("dev_auth_token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/admin/users`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to create user account");
+  }
+  return res.json();
+}
+
+export async function changePassword(newPassword: string) {
+  const token = localStorage.getItem("token") || localStorage.getItem("dev_auth_token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/auth/change-password`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ new_password: newPassword }),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to update password");
+  }
+  return res.json();
+}
+
+export async function getInvitations(): Promise<UserInvitationItem[]> {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/admin/invitations`, { headers });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to load invitations");
+  }
+  return res.json();
+}
+
+export async function inviteUser(data: InviteUserRequest): Promise<InviteActionResponse> {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/admin/invitations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to send invitation");
+  }
+  return res.json();
+}
+
+export async function resendInvitation(invitationId: string): Promise<InviteActionResponse> {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/admin/invitations/${invitationId}/resend`, {
+    method: "POST",
+    headers,
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to resend invitation");
+  }
+  return res.json();
+}
+
+export async function revokeInvitation(invitationId: string) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/admin/invitations/${invitationId}/revoke`, {
+    method: "POST",
+    headers,
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to revoke invitation");
+  }
+  return res.json();
+}
+
+export async function deactivateUser(userId: string) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/admin/users/${userId}/deactivate`, {
+    method: "PATCH",
+    headers,
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to deactivate user");
+  }
+  return res.json();
+}
+
+export async function reactivateUser(userId: string) {
+  const token = localStorage.getItem("token");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token && token !== "null") headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${API_BASE}/admin/users/${userId}/reactivate`, {
+    method: "PATCH",
+    headers,
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to reactivate user");
+  }
+  return res.json();
+}
+
+export async function validateInvitationToken(invitationToken: string): Promise<ValidateInviteResponse> {
+  const res = await fetch(`${API_BASE}/auth/accept-invite/validate?token=${encodeURIComponent(invitationToken)}`);
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Invalid or expired invitation token");
+  }
+  return res.json();
+}
+
+export async function sendInviteOtp(token: string): Promise<SendInviteOtpResponse> {
+  const res = await fetch(`${API_BASE}/auth/accept-invite/send-otp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to send verification code");
+  }
+  return res.json();
+}
+
+export async function verifyInviteOtp(token: string, otp: string): Promise<VerifyInviteOtpResponse> {
+  const res = await fetch(`${API_BASE}/auth/accept-invite/verify-otp`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, otp }),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Verification failed");
+  }
+  return res.json();
+}
+
+export async function acceptInvitation(data: AcceptInviteRequest) {
+  const res = await fetch(`${API_BASE}/auth/accept-invite`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    const errData = await res.json().catch(() => ({}));
+    throw new Error(errData.detail || "Failed to accept invitation");
+  }
+  return res.json();
+}
+
+
+
+

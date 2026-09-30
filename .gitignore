@@ -22,6 +22,10 @@ lib64/
 !frontend-hitl/src/lib/**
 !hitl_frontend/src/lib/
 !hitl_frontend/src/lib/**
+!frontend_flutter/
+!frontend_flutter/**
+!frontend_flutter/lib/
+!frontend_flutter/lib/**
 parts/
 sdist/
 var/

@@ -2,7 +2,7 @@ import base64
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from cryptography.fernet import Fernet, InvalidToken
 import jwt
 from fastapi import Depends, HTTPException, Security, status
@@ -22,6 +22,35 @@ security_bearer = HTTPBearer(auto_error=False)
 # ============================================================================
 
 import secrets
+
+import re
+
+def validate_password_complexity(password: str) -> Tuple[bool, Optional[str]]:
+    """
+    Validates password complexity:
+    - Minimum 8 characters
+    - At least 1 uppercase letter (A-Z)
+    - At least 1 lowercase letter (a-z)
+    - At least 1 number (0-9)
+    - At least 1 special character (!@#$%^&*...)
+    - No spaces
+    """
+    if not password:
+        return False, "Password cannot be empty."
+    if " " in password:
+        return False, "Password cannot contain spaces."
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters long."
+    if not re.search(r"[A-Z]", password):
+        return False, "Password must contain at least 1 uppercase letter (A-Z)."
+    if not re.search(r"[a-z]", password):
+        return False, "Password must contain at least 1 lowercase letter (a-z)."
+    if not re.search(r"[0-9]", password):
+        return False, "Password must contain at least 1 number (0-9)."
+    if not re.search(r"[!@#$%^&*()_+\-=\[\]{};':\"\\|,.<>/?]", password):
+        return False, "Password must contain at least 1 special character (!@#$%^&*...)."
+    return True, None
+
 
 def hash_password(password: str) -> str:
     """Hashes plain password using PBKDF2-HMAC-SHA256 with a random salt."""
@@ -59,6 +88,7 @@ class AuthenticatedUser(BaseModel):
     tenant_id: str
     role: str  # "ADMIN", "FINANCE", "FINANCE_REVIEWER", "DATA_REVIEWER", "VIEWER", "CUSTOMER"
     full_name: Optional[str] = None
+    must_change_password: bool = False
 
 
 # ============================================================================
@@ -71,6 +101,7 @@ def create_access_token(
     tenant_id: str,
     role: str = "FINANCE",
     full_name: Optional[str] = None,
+    must_change_password: bool = False,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     """
@@ -89,6 +120,7 @@ def create_access_token(
         "tenant_id": tenant_id.strip(),
         "role": role.strip().upper(),
         "full_name": full_name,
+        "must_change_password": bool(must_change_password),
         "iat": int(now.timestamp()),
         "exp": int(expire.timestamp()),
     }
@@ -132,6 +164,52 @@ def decode_access_token(token: str) -> Dict[str, Any]:
             detail=f"Invalid authentication token: {str(err)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+
+def hash_invitation_token(raw_token: str) -> str:
+    """Hashes invitation token using SHA-256 for secure storage."""
+    if not raw_token:
+        raise ValueError("Raw token cannot be empty")
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def generate_otp() -> str:
+    """Generates a cryptographically secure 6-digit numeric OTP."""
+    return f"{secrets.randbelow(900000) + 100000:06d}"
+
+
+def hash_otp(raw_otp: str) -> str:
+    """Hashes raw numeric OTP using SHA-256 with a salt for secure DB storage."""
+    if not raw_otp:
+        raise ValueError("OTP cannot be empty")
+    clean = raw_otp.strip().replace("-", "").replace(" ", "")
+    auth_secret = getattr(settings, "AUTH_SECRET_KEY", "sakshi_otp_secret_key")
+    salt_key = f"sakshi_otp_{auth_secret}"
+    return hashlib.sha256(f"{salt_key}:{clean}".encode("utf-8")).hexdigest()
+
+
+def verify_otp_hash(supplied_otp: str, stored_hash: Optional[str]) -> bool:
+    """Verifies a supplied OTP against a stored SHA-256 OTP hash."""
+    if not supplied_otp or not stored_hash:
+        return False
+    try:
+        calculated = hash_otp(supplied_otp)
+        return secrets.compare_digest(calculated, stored_hash)
+    except Exception:
+        return False
+
+
+def mask_email(email: str) -> str:
+    """Masks an email address for secure display (e.g. p***n@domain.com)."""
+    if not email or "@" not in email:
+        return email or ""
+    parts = email.strip().lower().split("@", 1)
+    username, domain = parts[0], parts[1]
+    if len(username) <= 2:
+        masked_user = username[0] + "***"
+    else:
+        masked_user = username[0] + "***" + username[-1]
+    return f"{masked_user}@{domain}"
 
 
 DEV_ACTIVE_ROLE = "ADMIN"
@@ -184,7 +262,7 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if role not in ("ADMIN", "FINANCE", "FINANCE_REVIEWER", "DATA_REVIEWER", "VIEWER", "CUSTOMER"):
+    if role not in ("ADMIN", "FINANCE_ADMIN", "FINANCE_USER", "FINANCE", "FINANCE_REVIEWER", "DATA_REVIEWER", "VIEWER", "CUSTOMER"):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid role '{role}' in token claims.",
@@ -197,6 +275,7 @@ async def get_current_user(
         tenant_id=str(tenant_id),
         role=role,
         full_name=payload.get("full_name"),
+        must_change_password=bool(payload.get("must_change_password", False)),
     )
 
 
@@ -204,13 +283,21 @@ def require_roles(allowed_roles: List[str]):
     """
     FastAPI dependency factory enforcing Role-Based Access Control (RBAC).
     Rejects unauthorized roles with 403 Forbidden.
+    Automatically treats 'FINANCE' and 'FINANCE_USER' as equivalent roles,
+    and 'ADMIN' and 'FINANCE_ADMIN' as equivalent administrative roles.
     """
-    allowed_upper = [r.upper() for r in allowed_roles]
+    allowed_set = {r.upper() for r in allowed_roles}
+    if "FINANCE" in allowed_set:
+        allowed_set.add("FINANCE_USER")
+    if "FINANCE_USER" in allowed_set:
+        allowed_set.add("FINANCE")
+    if "ADMIN" in allowed_set:
+        allowed_set.add("FINANCE_ADMIN")
 
     async def role_dependency(
         current_user: AuthenticatedUser = Depends(get_current_user),
     ) -> AuthenticatedUser:
-        if current_user.role not in allowed_upper:
+        if current_user.role.upper() not in allowed_set:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access forbidden: Role '{current_user.role}' is not authorized for this operation. Required: {allowed_roles}",

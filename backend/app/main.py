@@ -10,6 +10,8 @@ from app.api.v1.inbox import router as inbox_router
 from app.api.v1.zoho import router as zoho_router
 from app.api.v1.hitl import router as hitl_router
 from app.api.v1.review import router as review_router
+from app.api.v1.admin import router as admin_router
+from app.api.v1.forex import router as forex_router
 from app.core.config import settings
 from app.services.email_scheduler import start_scheduler, stop_scheduler
 
@@ -60,12 +62,75 @@ async def lifespan(app: FastAPI):
                 ("journal_entry", "JSONB"),
                 ("period_category", "VARCHAR(50)"),
                 ("period_decision", "VARCHAR(50) DEFAULT 'NOT_REQUIRED'"),
+                ("invoice_origin", "VARCHAR(50) DEFAULT 'INDIAN'"),
+                ("currency", "VARCHAR(10) DEFAULT 'INR'"),
+                ("classification_source", "VARCHAR(50) DEFAULT 'SYSTEM'"),
+                ("classification_override", "VARCHAR(50)"),
+                ("classification_override_reason", "TEXT"),
+                ("classified_by", "VARCHAR(100)"),
+                ("classified_at", "TIMESTAMP WITH TIME ZONE"),
+                ("original_currency", "VARCHAR(10) DEFAULT 'INR'"),
+                ("original_total_amount", "NUMERIC(15, 2)"),
+                ("original_taxable_amount", "NUMERIC(15, 2)"),
+                ("exchange_rate", "NUMERIC(15, 6) DEFAULT 1.000000"),
+                ("exchange_rate_date", "DATE"),
+                ("exchange_rate_source", "VARCHAR(100) DEFAULT 'SYSTEM_DEFAULT'"),
+                ("converted_total_inr", "NUMERIC(15, 2)"),
+                ("converted_taxable_inr", "NUMERIC(15, 2)"),
+                ("fx_rate_overridden", "BOOLEAN DEFAULT FALSE"),
+                ("fx_override_reason", "TEXT"),
+                ("fx_original_rate", "NUMERIC(15, 6)"),
             ]
             for col, col_type in migration_columns:
                 try:
                     await conn.execute(text(f"ALTER TABLE invoices ADD COLUMN IF NOT EXISTS {col} {col_type};"))
                 except Exception:
                     pass
+
+            invitation_columns = [
+                ("email_delivery_status", "VARCHAR(50) DEFAULT 'PENDING'"),
+                ("otp_hash", "VARCHAR(255)"),
+                ("otp_expires_at", "TIMESTAMP WITH TIME ZONE"),
+                ("otp_attempts", "INTEGER DEFAULT 0"),
+                ("otp_last_sent_at", "TIMESTAMP WITH TIME ZONE"),
+                ("otp_verified_at", "TIMESTAMP WITH TIME ZONE"),
+                ("locked_at", "TIMESTAMP WITH TIME ZONE"),
+            ]
+            for col, col_type in invitation_columns:
+                try:
+                    await conn.execute(text(f"ALTER TABLE user_invitations ADD COLUMN IF NOT EXISTS {col} {col_type};"))
+                except Exception:
+                    pass
+            try:
+                await conn.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;"))
+            except Exception:
+                pass
+
+        # Admin Bootstrap Check & worknaruto10@gmail.com Admin enforcement
+        from app.db.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            from sqlalchemy import select
+            from app.db.models import User
+            
+            naruto_res = await session.execute(select(User).where(User.email == "worknaruto10@gmail.com"))
+            naruto_user = naruto_res.scalar_one_or_none()
+            if naruto_user:
+                if naruto_user.role != "ADMIN" or not naruto_user.is_active:
+                    naruto_user.role = "ADMIN"
+                    naruto_user.is_active = True
+                    await session.commit()
+                    logger.info("[ADMIN BOOTSTRAP] Enforced role=ADMIN for worknaruto10@gmail.com")
+            else:
+                admin_res = await session.execute(select(User).where(User.role == "ADMIN", User.is_active == True))
+                existing_admin = admin_res.scalar_one_or_none()
+                if not existing_admin:
+                    first_user_res = await session.execute(select(User).order_by(User.created_at.asc()))
+                    first_user = first_user_res.scalar_one_or_none()
+                    if first_user:
+                        first_user.role = "ADMIN"
+                        await session.commit()
+                        logger.info(f"[ADMIN BOOTSTRAP] Promoted existing account '{first_user.email}' to ADMIN.")
+
             try:
                 await conn.execute(text("ALTER TABLE integrations ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;"))
             except Exception:
@@ -122,8 +187,8 @@ app = FastAPI(
 # CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_origin_regex=r"https://.*\.github\.dev|https://.*\.devtunnels\.ms",
+    allow_origins=settings.CORS_ORIGINS if isinstance(settings.CORS_ORIGINS, list) else [settings.CORS_ORIGINS],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?/?$|https://.*\.github\.dev|https://.*\.devtunnels\.ms",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -132,10 +197,12 @@ app.add_middleware(
 # API v1 routes
 app.include_router(health_router, prefix=settings.API_V1_STR)
 app.include_router(auth_router, prefix=settings.API_V1_STR)
+app.include_router(admin_router, prefix=settings.API_V1_STR)
 app.include_router(invoices_router, prefix=settings.API_V1_STR)
 app.include_router(settings_router, prefix=settings.API_V1_STR)
 app.include_router(inbox_router, prefix=settings.API_V1_STR)
 app.include_router(zoho_router, prefix=settings.API_V1_STR)
+app.include_router(forex_router, prefix=settings.API_V1_STR)
 app.include_router(hitl_router, prefix=settings.API_V1_STR)
 app.include_router(review_router, prefix=settings.API_V1_STR)
 

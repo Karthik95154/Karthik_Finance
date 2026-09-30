@@ -275,6 +275,18 @@ class ModelResponseAdapter:
         if not v_pan and v_gstin:
             v_pan = cls.extract_pan_from_gstin(v_gstin)
 
+        v_country = cls._clean_optional_string(
+            vendor_details.get("vendor_country") or vendor_details.get("country") or root.get("vendor_country")
+        )
+        v_tax_id = cls._clean_optional_string(
+            vendor_details.get("vendor_tax_id")
+            or vendor_details.get("tax_id")
+            or vendor_details.get("ein")
+            or vendor_details.get("vat_id")
+            or vendor_details.get("vat_number")
+            or vendor_details.get("uen")
+        )
+
         c_name = cls._clean_optional_string(
             customer_details.get("customer_name") or customer_details.get("name")
         )
@@ -300,7 +312,7 @@ class ModelResponseAdapter:
 
         # Bank details parsing: check all structural possibilities (vendor_details.bank_details, payment_details, root.bank_details, root.payment_details, or flat vendor/payment fields)
         raw_bank = vendor_details.get("bank_details") or root.get("bank_details") or root.get("payment_details") or vendor_details.get("payment_details")
-        b_name, b_acc, b_ifsc, b_branch, b_upi = None, None, None, None, None
+        b_name, b_acc, b_ifsc, b_branch, b_upi, b_swift, b_iban = None, None, None, None, None, None, None
 
         if isinstance(raw_bank, dict):
             b_name = cls._clean_optional_string(raw_bank.get("bank_name") or raw_bank.get("name") or raw_bank.get("bank"))
@@ -310,6 +322,8 @@ class ModelResponseAdapter:
             b_ifsc = cls._clean_optional_string(raw_bank.get("ifsc_code") or raw_bank.get("ifsc") or raw_bank.get("ifsc_code_candidate"))
             b_branch = cls._clean_optional_string(raw_bank.get("branch") or raw_bank.get("branch_name") or raw_bank.get("branch_and_address"))
             b_upi = cls._clean_optional_string(raw_bank.get("upi_id") or raw_bank.get("vpa") or raw_bank.get("upi"))
+            b_swift = cls._clean_optional_string(raw_bank.get("swift_bic") or raw_bank.get("swift_code") or raw_bank.get("swift") or raw_bank.get("bic"))
+            b_iban = cls._clean_optional_string(raw_bank.get("iban") or raw_bank.get("iban_number"))
 
         # Fallback to flat vendor_details or root keys if any key is missing
         b_name = b_name or cls._clean_optional_string(vendor_details.get("bank_name") or root.get("bank_name") or invoice_details.get("bank_name"))
@@ -319,14 +333,18 @@ class ModelResponseAdapter:
         b_ifsc = b_ifsc or cls._clean_optional_string(vendor_details.get("ifsc_code") or vendor_details.get("ifsc") or root.get("ifsc_code") or root.get("ifsc"))
         b_branch = b_branch or cls._clean_optional_string(vendor_details.get("branch") or root.get("branch"))
         b_upi = b_upi or cls._clean_optional_string(vendor_details.get("upi_id") or vendor_details.get("vpa") or root.get("upi_id") or root.get("vpa"))
+        b_swift = b_swift or cls._clean_optional_string(vendor_details.get("swift_bic") or vendor_details.get("swift_code") or root.get("swift_code") or root.get("swift"))
+        b_iban = b_iban or cls._clean_optional_string(vendor_details.get("iban") or root.get("iban"))
 
-        if b_name or b_acc or b_ifsc or b_branch or b_upi:
+        if b_name or b_acc or b_ifsc or b_branch or b_upi or b_swift or b_iban:
             bank_details = {
                 "bank_name": b_name,
                 "account_number": b_acc,
                 "ifsc_code": b_ifsc,
                 "branch": b_branch,
                 "upi_id": b_upi,
+                "swift_bic": b_swift,
+                "iban": b_iban,
             }
         elif isinstance(raw_bank, str) and raw_bank.strip():
             bank_details = {"raw_text": raw_bank.strip()}
@@ -415,6 +433,18 @@ class ModelResponseAdapter:
             # -----------------------------------------------------
             # Automatic Bidirectional Math & Tax Calculation Rules
             # -----------------------------------------------------
+            # If line_amount / taxable_amount is printed/extracted but quantity * unit_price differs,
+            # reconcile quantity from (amount / unit_price) if unit_price matches rate and amount matches printed line total.
+            if taxable_amount is not None and taxable_amount > 0:
+                if unit_price is not None and unit_price > 0:
+                    if quantity is None or abs((quantity * unit_price) - taxable_amount) > 0.05:
+                        derived_qty = round(taxable_amount / unit_price, 4)
+                        if derived_qty == round(derived_qty):
+                            quantity = derived_qty
+                elif quantity is not None and quantity > 0:
+                    unit_price = round(taxable_amount / quantity, 2)
+                line_amount = taxable_amount
+
             if line_amount is None and quantity is not None and unit_price is not None:
                 line_amount = round(quantity * unit_price, 2)
 
@@ -765,7 +795,12 @@ class ModelResponseAdapter:
                 )
             )
 
-            if has_sac_9982 or has_sac_9983 or is_prof_candidate or is_tech_candidate:
+            if tds_nature == "NON_RESIDENT_PAYMENT":
+                l_sec = "Section 393"
+                l_prov = "Section 393(2), Table Sl. No. 17"
+                l_rate = 20.0
+                l_app = (li_taxable > 0)
+            elif has_sac_9982 or has_sac_9983 or is_prof_candidate or is_tech_candidate:
                 # If SAC 9982 is present with ambiguous description (no professional or technical keywords):
                 # Do NOT force 2% or 10%. Flag for review via project review semantics.
                 if has_sac_9982 and not is_prof_candidate and not is_tech_candidate:
@@ -1023,7 +1058,7 @@ class ModelResponseAdapter:
                 )
 
         eff_approval_status = "REVIEW_REQUIRED" if tds_needs_review else "PENDING"
-        final_sec = tds_sec_code if (line_tds_deductions and len(unique_sections) <= 1) else tds_provision
+        final_sec = tds_support.get("section") or (tds_sec_code if (line_tds_deductions and len(unique_sections) <= 1) else tds_provision)
 
         normalized_tds = {
             "applicable": tds_applicable,
@@ -1086,16 +1121,22 @@ class ModelResponseAdapter:
             "knowledge_version": root.get("knowledge_version"),
             "invoice_number": invoice_details.get("invoice_number"),
             "invoice_date": invoice_details.get("invoice_date"),
-            "due_date": invoice_details.get("due_date"),
-            "po_number": invoice_details.get("po_number"),
-            "place_of_supply": invoice_details.get("place_of_supply"),
-            "payment_terms": invoice_details.get("payment_terms"),
+            "due_date": invoice_details.get("due_date") or invoice_details.get("payment_due_date"),
+            "po_number": invoice_details.get("po_number") or invoice_details.get("po_no") or invoice_details.get("purchase_order"),
+            "place_of_supply": invoice_details.get("place_of_supply") or invoice_details.get("pos"),
+            "payment_terms": invoice_details.get("payment_terms") or invoice_details.get("terms"),
+            "invoice_period": invoice_details.get("invoice_period") or invoice_details.get("period") or invoice_details.get("billing_period"),
+            "service_period": invoice_details.get("service_period") or invoice_details.get("billing_period") or invoice_details.get("invoice_period"),
+            "service_description": invoice_details.get("service_description") or invoice_details.get("description") or invoice_details.get("category"),
+            "category": invoice_details.get("category") or invoice_details.get("service_category"),
             "currency": invoice_details.get("currency") or "INR",
             "document_type": invoice_details.get("document_type"),
             "vendor_name": v_name,
+            "vendor_country": v_country,
             "vendor_address": v_address,
             "vendor_gstin": v_gstin,
             "vendor_pan": v_pan,
+            "vendor_tax_id": v_tax_id,
             "vendor_phone": v_phone,
             "vendor_email": v_email,
             "customer_name": c_name,

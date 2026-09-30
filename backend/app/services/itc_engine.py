@@ -932,15 +932,35 @@ class ITCEngine:
         # ---------------------------------------------------------------------
         # STAGE F: SECTION 16(1) PROVEN BUSINESS INPUTS & ELIGIBILITY
         # ---------------------------------------------------------------------
+        if tax_amount <= 0.0:
+            return {
+                "itc_status": "ELIGIBLE",
+                "eligible_amount": 0.0,
+                "blocked_amount": 0.0,
+                "reversal_amount": 0.0,
+                "review_amount": 0.0,
+                "net_itc_available": 0.0,
+                "reason": "Zero-tax line item.",
+                "rule_reference": "CGST Act Sec 16(1)",
+                "evidence_used": evidence,
+                "exceptions_evaluated": exceptions_evaluated,
+            }
+
         eligible_patterns = [
-            r"\b(cloud|hosting|infrastructure|software|saas|subscription|hardware|server|data center|machinery|plant and machinery|factory equipment|furniture|fixtures|desk|desks|chair|chairs|table|tables|workstation|workstations|raw material|manufacturing|office supplies|stationery|consulting|professional|legal|audit|accounting fees|marketing|advertising|logistics|freight|courier|transport|telecom|internet|utilities|electricity|maintenance|repairs and maintenance|cleaning chemical|production chemical|packaging material|raw materials|industrial supplies|it equipment|security service|office lease|cable|cables|fittings|wiring|installation|commissioning|erection|electrical|fabrication|labor|labour|subcontractor|cost of goods|cogs|direct expense|works contract)\b"
+            r"\b(cloud|hosting|infrastructure|software|saas|subscription|seat|seats|license|licenses|user|users|plan|plans|api|storage|compute|devops|database|domain|ssl|email|support|maintenance|service|services|consulting|professional|legal|audit|accounting fees|marketing|advertising|logistics|freight|courier|transport|telecom|internet|utilities|electricity|raw material|manufacturing|office supplies|stationery|hardware|server|data center|machinery|plant and machinery|factory equipment|furniture|fixtures|desk|desks|chair|chairs|table|tables|workstation|workstations|it equipment|security service|office lease|cable|cables|fittings|wiring|installation|commissioning|erection|electrical|fabrication|labor|labour|subcontractor|cost of goods|cogs|direct expense|works contract)\b"
         ]
 
         # Check line account name, description, and HSN/SAC chapter
         hsn_sac_str = str(hsn_code or "")
         hsn_sac_eligible = any(hsn_sac_str.startswith(prefix) for prefix in ("84", "85", "9954", "9983", "9985", "9986", "9987", "9988"))
 
-        if any(re.search(p, acc_lower) for p in eligible_patterns) or any(re.search(p, desc_lower) for p in eligible_patterns) or hsn_sac_eligible:
+        if (
+            any(re.search(p, acc_lower) for p in eligible_patterns)
+            or any(re.search(p, desc_lower) for p in eligible_patterns)
+            or hsn_sac_eligible
+            or is_reverse_charge
+            or document_type in ("FOREIGN_SERVICE", "IMPORT_OF_SERVICES")
+        ):
             rc_note = " (Eligible upon recipient discharging RCM liability in cash under Sec 16(2))" if is_reverse_charge else ""
             return {
                 "itc_status": "ELIGIBLE",
@@ -1036,11 +1056,19 @@ class ITCEngine:
             or False
         )
         is_reverse_charge = str(rc_val).lower() in ("yes", "true", "1", "y")
+        if (
+            data_obj.get("invoice_origin") == "FOREIGN_SERVICE"
+            or data_obj.get("classification") == "FOREIGN_SERVICE"
+            or (data_obj.get("original_currency") and data_obj.get("original_currency") != "INR")
+        ):
+            is_reverse_charge = True
 
         # 2. Extract Authoritative GST Components from Stage 4 GST Engine or Header
         from app.services.gst_engine import extract_tax_value, parse_clean_numeric
 
         if gst_result:
+            if "is_reverse_charge" in gst_result:
+                is_reverse_charge = bool(gst_result.get("is_reverse_charge"))
             supply_type = gst_result.get("supply_type") or "INTRA_STATE"
             gst_calc = gst_result.get("calculated") or {}
             gst_ext = gst_result.get("extracted") or {}
@@ -1074,13 +1102,21 @@ class ITCEngine:
         doc_gate_failure = False
         doc_gate_reasons = []
 
+        is_foreign_supply = (
+            is_reverse_charge
+            or data_obj.get("invoice_origin") == "FOREIGN_SERVICE"
+            or data_obj.get("classification") == "FOREIGN_SERVICE"
+            or (data_obj.get("original_currency") and data_obj.get("original_currency") != "INR")
+            or doc_type in ("BILL_OF_ENTRY", "FOREIGN_INVOICE", "FOREIGN_SERVICE")
+        )
+
         if has_explicit_headers:
             if not inv_number:
                 doc_gate_failure = True
                 doc_gate_reasons.append("Document lacks invoice/document number (Mandatory under Section 16(2)(a) / Rule 36(2)).")
                 warnings.append("Missing invoice number - Section 16(2) gate trigger.")
 
-            if not supplier_gstin and not is_reverse_charge and doc_type != "BILL_OF_ENTRY":
+            if not supplier_gstin and not is_foreign_supply:
                 doc_gate_failure = True
                 doc_gate_reasons.append("Supplier GSTIN is absent on inward invoice (Mandatory under Section 16(2)(a) / Rule 36(2)).")
                 warnings.append("Missing supplier GSTIN - Section 16(2) gate trigger.")
@@ -1226,8 +1262,17 @@ class ITCEngine:
             # Check if line tax was omitted but header tax exists
             if tot_line_tax == 0.0 and header_tax > 0.0 and len(line_breakdowns) > 0:
                 tot_line_tax = header_tax
-                if len(line_breakdowns) == 1:
-                    line = line_breakdowns[0]
+                taxable_lines = [
+                    (idx, item, line_breakdowns[idx])
+                    for idx, item in enumerate(line_items)
+                    if float(item.get("taxable_amount") or item.get("taxable") or item.get("total") or 0.0) > 0
+                ]
+                sum_taxable = sum(
+                    float(item.get("taxable_amount") or item.get("taxable") or item.get("total") or 0.0)
+                    for idx, item in enumerate(line_items)
+                )
+                if len(taxable_lines) == 1:
+                    idx, item, line = taxable_lines[0]
                     line["tax_amount"] = header_tax
                     if line["itc_status"] == "ELIGIBLE":
                         line["eligible_amount"] = header_tax
@@ -1239,6 +1284,25 @@ class ITCEngine:
                     elif line["itc_status"] == "REVIEW_REQUIRED":
                         line["review_amount"] = header_tax
                         tot_review = header_tax
+                elif sum_taxable > 0:
+                    tot_eligible = 0.0
+                    tot_blocked = 0.0
+                    tot_reversal = 0.0
+                    tot_review = 0.0
+                    for idx, item, line in taxable_lines:
+                        l_taxable = float(item.get("taxable_amount") or item.get("taxable") or item.get("total") or 0.0)
+                        apportioned_tax = round(header_tax * (l_taxable / sum_taxable), 2)
+                        line["tax_amount"] = apportioned_tax
+                        if line["itc_status"] == "ELIGIBLE":
+                            line["eligible_amount"] = apportioned_tax
+                            tot_eligible += apportioned_tax
+                        elif line["itc_status"] == "INELIGIBLE":
+                            line["blocked_amount"] = apportioned_tax
+                            line["ineligible_amount"] = apportioned_tax
+                            tot_blocked += apportioned_tax
+                        else:
+                            line["review_amount"] = apportioned_tax
+                            tot_review += apportioned_tax
                 else:
                     tot_eligible = 0.0
                     tot_blocked = 0.0
@@ -1448,7 +1512,7 @@ def get_effective_itc_data(
     else:
         # SQLAlchemy Invoice model instance
         from app.services.invoice_processing import get_effective_invoice_data
-        invoice_payload = get_effective_invoice_data(invoice_or_data)
+        invoice_payload = get_effective_invoice_data(invoice_or_data, convert_fx=True)
         stored_acct = (
             accounting_output
             or getattr(invoice_or_data, "current_accounting_output", None)

@@ -8,16 +8,17 @@ logger = logging.getLogger(__name__)
 MAX_PDF_PAGES_TO_RENDER = 3
 
 
-def extract_visual_page_images(file_bytes: bytes, mime_type: str) -> List[str]:
+def extract_visual_page_images_and_text(file_bytes: bytes, mime_type: str) -> tuple[List[str], str]:
     """
-    Extracts Base64 image data URLs (data:image/png;base64,...) from an attachment.
-    - For PDFs: Renders up to MAX_PDF_PAGES_TO_RENDER pages as PNG images.
+    Extracts Base64 image data URLs (data:image/png;base64,...) and raw text from an attachment.
+    - For PDFs: Renders up to MAX_PDF_PAGES_TO_RENDER pages as PNG images and extracts page text.
     - For Images (PNG, JPG, JPEG, TIF): Converts raw bytes directly into a Base64 image data URL.
-    Returns a list of image data URLs.
+    Returns (image_urls, extracted_text).
     """
     image_urls = []
+    text_content = []
     if not file_bytes:
-        return image_urls
+        return image_urls, ""
 
     mime_clean = (mime_type or "").lower().strip()
 
@@ -35,6 +36,11 @@ def extract_visual_page_images(file_bytes: bytes, mime_type: str) -> List[str]:
                 b64_str = base64.b64encode(img_bytes).decode("utf-8")
                 image_urls.append(f"data:image/png;base64,{b64_str}")
                 
+                # Extract text from page
+                page_txt = page.get_text() or ""
+                if page_txt.strip():
+                    text_content.append(page_txt.strip())
+                
             doc.close()
         except ImportError:
             logger.error("PyMuPDF (fitz) is not installed. PDF page rendering failed.")
@@ -51,7 +57,13 @@ def extract_visual_page_images(file_bytes: bytes, mime_type: str) -> List[str]:
         except Exception as e:
             logger.warning(f"Failed to format image bytes as Base64 data URL: {e}")
             
-    return image_urls
+    return image_urls, "\n".join(text_content)
+
+
+def extract_visual_page_images(file_bytes: bytes, mime_type: str) -> List[str]:
+    urls, _ = extract_visual_page_images_and_text(file_bytes, mime_type)
+    return urls
+
 
 def prepare_classification_context(attachment_data: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -61,8 +73,9 @@ def prepare_classification_context(attachment_data: Dict[str, Any]) -> Dict[str,
     file_bytes = attachment_data.get("file_bytes", b"")
     mime_type = attachment_data.get("mime_type", "")
 
-    image_urls = extract_visual_page_images(file_bytes, mime_type)
+    image_urls, doc_text = extract_visual_page_images_and_text(file_bytes, mime_type)
 
     return {
-        "image_urls": image_urls
+        "image_urls": image_urls,
+        "doc_text": doc_text,
     }

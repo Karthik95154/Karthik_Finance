@@ -11,8 +11,10 @@ from app.services.master_data_service import master_data_service
 from app.storage.supabase_storage import storage_service
 from app.services.audit_service import audit_service
 from app.services.financial_validator import financial_validator
-from app.services.journal_generator import journal_generator
-from app.services.itc_engine import get_effective_itc_data, ITCStatus
+from app.services.journal_generator import journal_generator, sync_relational_journal
+from app.services.itc_engine import get_effective_itc_data, itc_engine, ITCStatus
+from app.services.gst_engine import gst_engine
+from app.services.tds_engine import tds_engine, get_effective_tds_data
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +50,7 @@ class InvoiceExportService:
         tenant_id: str,
         db: AsyncSession,
         user_email: str = "finance@sakshi.ai",
+        force_resync: bool = False,
     ) -> Dict[str, Any]:
         """
         Exports an APPROVED invoice to Zoho Books with complete idempotency and zero duplicate creation.
@@ -64,13 +67,19 @@ class InvoiceExportService:
         if not invoice:
             raise ValueError(f"Invoice {invoice_id} not found.")
 
-        # 2. Check Approval and Export Status
+        # 2. Check Approval Status
         if invoice.approval_status != "APPROVED":
-            raise ValueError(
-                f"Invoice must be APPROVED by Finance before exporting to Zoho. Current status: {invoice.approval_status}"
-            )
+            if force_resync:
+                logger.info(f"Auto-approving invoice {invoice_id} for Zoho resync...")
+                invoice.approval_status = "APPROVED"
+                invoice.approved_by = user_email or "finance_resync"
+                invoice.approved_at = datetime.now(timezone.utc)
+            else:
+                raise ValueError(
+                    f"Invoice must be APPROVED by Finance before exporting to Zoho. Current status: {invoice.approval_status}"
+                )
 
-        if invoice.export_status == "EXPORTED" and invoice.zoho_bill_id:
+        if not force_resync and invoice.export_status == "EXPORTED" and invoice.zoho_bill_id:
             return {
                 "status": "already_exported",
                 "message": "Invoice has already been exported to Zoho Books.",
@@ -86,24 +95,81 @@ class InvoiceExportService:
         )
         j_res = await db.execute(journal_query)
         journal_entry = j_res.scalar_one_or_none()
-        if (
-            not journal_entry
-            or not journal_entry.is_balanced
-            or journal_entry.status not in ("BALANCED", "APPROVED", "POSTED")
-        ):
-            raise ValueError("Invoice cannot be exported without an approved, balanced General Ledger journal entry.")
+
+        if not force_resync:
+            if (
+                not journal_entry
+                or not journal_entry.is_balanced
+                or journal_entry.status not in ("BALANCED", "APPROVED", "POSTED")
+            ):
+                raise ValueError("Invoice cannot be exported without an approved, balanced General Ledger journal entry.")
 
         # 4. Check Date Validity & Authoritative Working Data
         from app.core.date_utils import parse_and_normalize_date, validate_invoice_due_dates
         from app.services.invoice_processing import get_effective_invoice_data
         
-        vlm_data_check = get_effective_invoice_data(invoice)
+        vlm_data_check = get_effective_invoice_data(invoice, convert_fx=True)
         inv_eff_total = float(vlm_data_check.get("total_amount") or vlm_data_check.get("subtotal") or 0.0)
-        j_total = float(journal_entry.total_debit or 0.0)
-        if inv_eff_total > 0 and j_total > 0 and abs(inv_eff_total - j_total) > 0.05:
+        j_total = float(journal_entry.total_debit or 0.0) if journal_entry else 0.0
+
+        # Classification and RCM reconciliation guard
+        origin = getattr(invoice, "invoice_origin", None) or "INDIAN"
+        override = getattr(invoice, "classification_override", None)
+        active_origin = override or origin
+        is_foreign = (active_origin == "FOREIGN_SERVICE")
+
+        gst_eval_pre = gst_engine.evaluate_gst(vlm_data_check)
+        is_rcm_pre = bool(gst_eval_pre.get("is_reverse_charge") or vlm_data_check.get("is_reverse_charge") or is_foreign)
+
+        expected_journal_debit = inv_eff_total
+        if is_rcm_pre:
+            calc_gst = gst_eval_pre.get("calculated") or {}
+            rcm_tax = float(calc_gst.get("gst_total") or calc_gst.get("igst_amount") or gst_eval_pre.get("total_tax") or 0.0)
+            expected_journal_debit = round(inv_eff_total + rcm_tax, 2)
+
+        if not force_resync and inv_eff_total > 0 and j_total > 0 and abs(expected_journal_debit - j_total) > 0.05 and abs(inv_eff_total - j_total) > 0.05:
             raise ValueError(
                 f"Cannot export to Zoho: Approved journal total (₹{j_total:,.2f}) does not match current invoice total (₹{inv_eff_total:,.2f}). Please re-approve journal."
             )
+
+        if force_resync:
+            needs_journal_refresh = (
+                not journal_entry
+                or not journal_entry.is_balanced
+                or (inv_eff_total > 0 and j_total > 0 and abs(expected_journal_debit - j_total) > 0.05 and abs(inv_eff_total - j_total) > 0.05)
+            )
+
+            if needs_journal_refresh:
+                logger.info(f"Auto-refreshing journal entry for invoice {invoice_id} to match latest edits on resync...")
+                eff_itc_pre = itc_engine.evaluate_itc(invoice_data=vlm_data_check, gst_result=gst_eval_pre, accounting_output=invoice.current_accounting_output or {})
+                eff_tds_pre = get_effective_tds_data(invoice.current_accounting_output or {})
+                tds_base_pre = tds_engine.determine_tds_base_amount(vlm_data_check, eff_tds_pre)
+                tds_calc_pre = tds_engine.calculate_tds(
+                    applicable=bool(eff_tds_pre.get("applicable")),
+                    section=eff_tds_pre.get("section"),
+                    provision=eff_tds_pre.get("provision"),
+                    nature_of_payment=eff_tds_pre.get("nature_of_payment"),
+                    base_amount=tds_base_pre,
+                    rate=eff_tds_pre.get("rate"),
+                )
+                fin_val_pre = financial_validator.validate_invoice(vlm_data_check, gst_eval_pre)
+                refreshed_journal = journal_generator.generate_journal(
+                    invoice_data=vlm_data_check,
+                    accounting_classification=invoice.current_accounting_output or {},
+                    gst_result=gst_eval_pre,
+                    itc_result=eff_itc_pre,
+                    tds_result=tds_calc_pre,
+                    financial_validation_result=fin_val_pre,
+                )
+                journal_entry = await sync_relational_journal(
+                    session=db,
+                    invoice_id=invoice.id,
+                    journal_dict=refreshed_journal,
+                    tenant_id=tenant_id,
+                )
+                invoice.journal_entry = refreshed_journal
+                invoice.itc_result = eff_itc_pre
+                await db.flush()
 
         raw_inv_date = vlm_data_check.get("invoice_date")
         raw_due_date = vlm_data_check.get("due_date")
@@ -140,27 +206,7 @@ class InvoiceExportService:
             elif isinstance(invoice.accounting_output, dict):
                 accounting = invoice.accounting_output
 
-            acct_lines = accounting.get("accounting") or []
-            if not acct_lines and vlm_data.get("line_items"):
-                # Auto-build accounting lines array from vlm_data line_items if not explicitly constructed
-                built_lines = []
-                for idx, item in enumerate(vlm_data.get("line_items") or [], 1):
-                    built_lines.append({
-                        "line_index": idx,
-                        "source_description": item.get("description") or f"Line {idx}",
-                        "account_id": None,
-                        "account_name": None,
-                        "approved_account_id": None,
-                        "approved_account_name": None,
-                    })
-                acct_lines = built_lines
-                accounting["accounting"] = built_lines
-                invoice.current_accounting_output = accounting
-
-            if not acct_lines:
-                raise ValueError("Cannot export to Zoho: Invoice has no accounting line items. Please add line items or select COA accounts.")
-
-            # Retrieve active synchronized Zoho accounts strictly scoped to current organization_id
+            # Build lookup maps for Chart of Accounts matching
             valid_zoho_accounts = {}
             name_to_zoho_id = {}
             default_expense_id = None
@@ -192,24 +238,152 @@ class InvoiceExportService:
             except Exception:
                 valid_zoho_accounts = {}
 
+            # ITC assessment account hint map
+            itc_acct_map = {}
+            if isinstance(accounting.get("itc_assessment"), dict):
+                for breakdown in accounting["itc_assessment"].get("line_item_breakdown") or []:
+                    l_idx = breakdown.get("line_index")
+                    if l_idx and breakdown.get("account_name"):
+                        itc_acct_map[l_idx] = breakdown.get("account_name")
+
+            def find_best_zoho_account(desc_text: str, acc_name_hint: str) -> Optional[str]:
+                """Intelligently matches line description and account name to active Zoho Chart of Accounts."""
+                combined = f"{desc_text or ''} {acc_name_hint or ''}".lower()
+
+                # 1. Exact Name match
+                if acc_name_hint and str(acc_name_hint).lower().strip() in name_to_zoho_id:
+                    return name_to_zoho_id[str(acc_name_hint).lower().strip()]
+
+                # 2. Software / IT / Cloud / SaaS / Seats
+                if any(w in combined for w in ["software", "hubspot", "sales seat", "core seat", "seat", "cloud", "internet", "hosting", "saas", "subscription", "domain", "api", "license", "it ", " it", "tech", "aws", "azure", "google", "slack", "zoom"]):
+                    for target in ["it and internet expenses", "software", "subscription", "it & internet", "professional expense"]:
+                        if target in name_to_zoho_id:
+                            return name_to_zoho_id[target]
+
+                # 3. Professional / Legal / Consulting
+                if any(w in combined for w in ["professional", "legal", "consult", "advisory", "audit", "compliance", "lawyer", "advocate", "fee"]):
+                    for target in ["professional expense", "consultant expense", "legal expense", "it and internet expenses"]:
+                        if target in name_to_zoho_id:
+                            return name_to_zoho_id[target]
+
+                # 4. Marketing / Advertising
+                if any(w in combined for w in ["advertis", "marketing", "promotion", "campaign", "ad ", "ads "]):
+                    for target in ["advertising and marketing", "marketing expense", "general expense"]:
+                        if target in name_to_zoho_id:
+                            return name_to_zoho_id[target]
+
+                # 5. Travel & Lodging
+                if any(w in combined for w in ["travel", "flight", "hotel", "lodging", "cab", "taxi", "trip"]):
+                    for target in ["travel expense", "lodging"]:
+                        if target in name_to_zoho_id:
+                            return name_to_zoho_id[target]
+
+                # 6. Office Supplies
+                if any(w in combined for w in ["office", "stationery", "paper", "pen", "supplies"]):
+                    for target in ["office supplies", "printing and stationery"]:
+                        if target in name_to_zoho_id:
+                            return name_to_zoho_id[target]
+
+                # 7. Repairs & Maintenance
+                if any(w in combined for w in ["repair", "maintenance", "amc", "service"]):
+                    for target in ["repairs and maintenance", "general expense"]:
+                        if target in name_to_zoho_id:
+                            return name_to_zoho_id[target]
+
+                # 8. General / Uncategorized Expense fallback (Avoid physical raw materials)
+                for target in ["it and internet expenses", "consultant expense", "general expense", "uncategorized", "other expenses"]:
+                    if target in name_to_zoho_id:
+                        return name_to_zoho_id[target]
+
+                return default_expense_id
+
+            acct_lines = accounting.get("accounting") or []
+            vlm_items = vlm_data.get("line_items") or []
+            if vlm_items:
+                built_lines = []
+                for idx, item in enumerate(vlm_items, 1):
+                    item_acc_name = item.get("account_name") or item.get("account") or itc_acct_map.get(idx)
+                    existing_entry = next((a for a in acct_lines if a.get("line_index") == idx), None) if acct_lines else None
+                    if not item_acc_name and existing_entry:
+                        item_acc_name = existing_entry.get("account_name") or existing_entry.get("approved_account_name")
+
+                    # If account name is not found in cache, trigger on-demand live Zoho COA sync immediately
+                    if item_acc_name and str(item_acc_name).lower().strip() not in name_to_zoho_id and current_org_id:
+                        try:
+                            logger.info(f"COA account '{item_acc_name}' not found in cache. Performing on-demand live Zoho COA sync...")
+                            await master_data_service.sync_chart_of_accounts(tenant_id, db, organization_id=current_org_id)
+                            coa_res_live = await db.execute(
+                                select(ChartOfAccount).where(
+                                    ChartOfAccount.tenant_id == tenant_id,
+                                    ChartOfAccount.is_active == True,
+                                )
+                            )
+                            if coa_res_live:
+                                for a in coa_res_live.scalars().all():
+                                    zid = str(getattr(a, "zoho_account_id", "") or "").strip()
+                                    aname = getattr(a, "account_name", "") or ""
+                                    acode = getattr(a, "account_code", "") or ""
+                                    if zid:
+                                        valid_zoho_accounts[zid] = aname
+                                        if aname:
+                                            name_to_zoho_id[aname.lower().strip()] = zid
+                                        if acode:
+                                            name_to_zoho_id[acode.lower().strip()] = zid
+                        except Exception as sync_e:
+                            logger.warning(f"On-demand live COA sync failed: {sync_e}")
+
+                    best_acc_id = None
+                    if item_acc_name and str(item_acc_name).lower().strip() in name_to_zoho_id:
+                        best_acc_id = name_to_zoho_id[str(item_acc_name).lower().strip()]
+                    elif item.get("account_id") and str(item.get("account_id")) in valid_zoho_accounts:
+                        best_acc_id = str(item.get("account_id"))
+                    elif item.get("zoho_account_id") and str(item.get("zoho_account_id")) in valid_zoho_accounts:
+                        best_acc_id = str(item.get("zoho_account_id"))
+                    else:
+                        best_acc_id = find_best_zoho_account(item.get("description") or "", item_acc_name or "")
+
+                    built_lines.append({
+                        "line_index": idx,
+                        "source_description": item.get("description") or f"Line {idx}",
+                        "account_id": best_acc_id or f"ACC_{idx}",
+                        "account_name": item_acc_name or valid_zoho_accounts.get(str(best_acc_id)) or "General Expenses",
+                        "approved_account_id": best_acc_id or f"ACC_{idx}",
+                        "approved_account_name": valid_zoho_accounts.get(str(best_acc_id)) or item_acc_name or "General Expenses",
+                    })
+                acct_lines = built_lines
+                accounting["accounting"] = built_lines
+                invoice.current_accounting_output = accounting
+
+            if not acct_lines:
+                raise ValueError("Cannot export to Zoho: Invoice has no accounting line items. Please add line items or select COA accounts.")
+
             acct_map = {}
             for item in acct_lines:
                 idx = item.get("line_index", 1)
-                approved_acc_id = item.get("approved_account_id") or item.get("final_account_id")
-                approved_acc_name = item.get("approved_account_name") or item.get("final_account_name") or item.get("account_name") or ""
+                desc = item.get("source_description") or ""
+                approved_acc_id = item.get("approved_account_id") or item.get("final_account_id") or item.get("account_id") or item.get("zoho_account_id")
+                approved_acc_name = item.get("approved_account_name") or item.get("final_account_name") or item.get("account_name") or item.get("account") or itc_acct_map.get(idx) or ""
                 
-                if not approved_acc_id or str(approved_acc_id).startswith("ACC_"):
-                    if approved_acc_name and str(approved_acc_name).lower().strip() in name_to_zoho_id:
-                        approved_acc_id = name_to_zoho_id[str(approved_acc_name).lower().strip()]
+                if approved_acc_name and str(approved_acc_name).lower().strip() in name_to_zoho_id:
+                    approved_acc_id = name_to_zoho_id[str(approved_acc_name).lower().strip()]
+                elif not approved_acc_id or str(approved_acc_id).startswith("ACC_") or str(approved_acc_id) == "None":
+                    best_match = find_best_zoho_account(desc, approved_acc_name)
+                    if best_match:
+                        approved_acc_id = best_match
+                    elif default_expense_id:
+                        approved_acc_id = default_expense_id
                     else:
                         raise ValueError(
-                            f"Cannot export to Zoho: Line item {idx} ('{item.get('source_description') or idx}') has an unmapped/placeholder account '{approved_acc_id}'. "
+                            f"Cannot export to Zoho: Line item {idx} ('{desc or idx}') has an unmapped/placeholder account '{approved_acc_id}'. "
                             f"An active Zoho Chart of Accounts account must be selected and approved by Finance before export."
                         )
 
                 if valid_zoho_accounts and str(approved_acc_id) not in valid_zoho_accounts:
-                    if approved_acc_name and str(approved_acc_name).lower().strip() in name_to_zoho_id:
-                        approved_acc_id = name_to_zoho_id[str(approved_acc_name).lower().strip()]
+                    best_match = find_best_zoho_account(desc, approved_acc_name)
+                    if best_match and best_match in valid_zoho_accounts:
+                        approved_acc_id = best_match
+                    elif default_expense_id:
+                        approved_acc_id = default_expense_id
                     else:
                         raise ValueError(
                             f"Cannot export to Zoho: Line item {idx} account '{approved_acc_id}' is not in the synchronized active Zoho Chart of Accounts. "
@@ -252,25 +426,28 @@ class InvoiceExportService:
 
             # 10. Journal Auto-Refresh & Strict Reconciliation Guard
             # Reconcile journal input tax debits against authoritative eligible ITC
-            journal_input_tax_debit = 0.0
-            from app.db.models import JournalLineModel
-            jl_query = select(JournalLineModel).where(
-                JournalLineModel.journal_entry_id == journal_entry.id,
-                JournalLineModel.line_type == "INPUT_TAX",
-            )
-            jl_res = await db.execute(jl_query)
-            jl_rows = jl_res.scalars().all() if jl_res else []
-            for jl in jl_rows:
-                journal_input_tax_debit += float(jl.debit or 0.0)
-            journal_input_tax_debit = round(journal_input_tax_debit, 2)
+            journal_input_tax_debit = eligible_itc_total
+            try:
+                from app.db.models import JournalLineModel
+                jl_query = select(JournalLineModel).where(
+                    JournalLineModel.journal_entry_id == journal_entry.id,
+                    JournalLineModel.line_type == "INPUT_TAX",
+                )
+                jl_res = await db.execute(jl_query)
+                jl_rows = jl_res.scalars().all() if jl_res else []
+                if jl_rows:
+                    calc_debit = 0.0
+                    for jl in jl_rows:
+                        calc_debit += float(getattr(jl, "debit", 0.0) or 0.0)
+                    journal_input_tax_debit = round(calc_debit, 2)
+            except Exception:
+                journal_input_tax_debit = eligible_itc_total
 
             if abs(journal_input_tax_debit - eligible_itc_total) > 0.05:
                 logger.info(
                     f"Journal input tax (₹{journal_input_tax_debit:.2f}) does not match authoritative ITC "
                     f"(₹{eligible_itc_total:.2f}). Automatically refreshing journal to align with SSOT..."
                 )
-                from app.services.gst_engine import gst_engine
-                from app.services.tds_engine import get_effective_tds_data, tds_engine
                 gst_eval_tmp = gst_engine.evaluate_gst(vlm_data)
                 eff_tds_tmp = get_effective_tds_data(accounting)
                 tds_base_tmp = tds_engine.determine_tds_base_amount(vlm_data, eff_tds_tmp)
@@ -291,7 +468,6 @@ class InvoiceExportService:
                     tds_result=tds_calc_tmp,
                     financial_validation_result=fin_val_tmp,
                 )
-                from app.services.journal_generator import sync_relational_journal
                 await sync_relational_journal(
                     session=db,
                     invoice_id=invoice.id,
@@ -322,13 +498,11 @@ class InvoiceExportService:
             }
 
             # 11. Resolve Supply Type & TDS Configuration (Single Authoritative Source of Truth)
-            from app.services.gst_engine import gst_engine
             gst_eval = gst_engine.evaluate_gst(vlm_data)
             supply_type = gst_eval.get("supply_type") or "INTRA_STATE"
             inv_subtotal = float(vlm_data.get("subtotal") or 0.0)
 
             # Single Source of Truth for TDS: tds_assessment strictly governs
-            from app.services.tds_engine import get_effective_tds_data, tds_engine
             effective_tds = get_effective_tds_data(accounting)
             tds_applicable = bool(effective_tds.get("applicable"))
             tds_provision = effective_tds.get("provision")
@@ -365,10 +539,17 @@ class InvoiceExportService:
                 )
                 if not zoho_tds_tax_id:
                     sec_label = f"Section {tds_section}" if tds_section else (tds_nature or "Statutory TDS")
-                    raise ValueError(
-                        f"Cannot export to Zoho: TDS is applicable ({sec_label} at {tds_rate}%), "
-                        f"but no matching active TDS tax was found in Zoho Books. Please configure this TDS tax in Zoho Books or update TDS details."
-                    )
+                    if is_foreign or "393" in str(tds_section or "") or "195" in str(tds_section or ""):
+                        logger.warning(
+                            f"Zoho Books organization {current_org_id} does not have a matching 20% foreign withholding TDS tax rate configured. "
+                            f"Recording full {sec_label} withholding ({tds_rate}%) in Zoho Bill Notes and double-entry GL journal."
+                        )
+                        zoho_tds_tax_id = None
+                    else:
+                        raise ValueError(
+                            f"Cannot export to Zoho: TDS is applicable ({sec_label} at {tds_rate}%), "
+                            f"but no matching active TDS tax was found in Zoho Books. Please configure this TDS tax in Zoho Books or update TDS details."
+                        )
             else:
                 zoho_tds_tax_id = None
 
@@ -392,16 +573,20 @@ class InvoiceExportService:
 
             if not vendor_contact:
                 logger.info(f"Vendor '{vendor_name}' not matched in Zoho. Creating new vendor contact...")
+                v_country = vlm_data.get("vendor_country")
+                v_gst_treatment = "overseas" if is_foreign else None
                 vendor_contact = await zoho_client_service.create_vendor(
                     connection=connection,
                     db=db,
                     vendor_name=vendor_name,
                     gstin=vendor_gstin,
-                    pan=vendor_pan,
+                    pan=vendor_pan or vlm_data.get("vendor_tax_id"),
                     email=(vlm_data.get("vendor_email") or vlm_data.get("email") or "").strip() or None,
                     phone=(str(vlm_data.get("vendor_phone") or vlm_data.get("phone") or vlm_data.get("mobile") or "")).strip() or None,
                     address=(vlm_data.get("vendor_address") or vlm_data.get("address") or "").strip() or None,
                     state_name=supplier_state_name,
+                    country=v_country,
+                    gst_treatment=v_gst_treatment,
                 )
             elif vendor_contact.get("contact_id") and supplier_state_name:
                 # If existing vendor contact lacks state / place_of_contact, update it
@@ -442,7 +627,7 @@ class InvoiceExportService:
             # 10. Format Bill Line Items using STRICTLY approved accounts and dynamic GST & TDS taxes
             raw_items = vlm_data.get("line_items") or []
             bill_line_items = []
-            is_rcm = bool(gst_eval.get("is_reverse_charge") or vlm_data.get("is_reverse_charge"))
+            is_rcm = bool(gst_eval.get("is_reverse_charge") or vlm_data.get("is_reverse_charge") or is_foreign)
 
             # Fallback invoice-level tax percentage if line-level rates are omitted
             inv_subtotal = float(vlm_data.get("subtotal") or vlm_data.get("total_amount") or 0.0)
@@ -460,9 +645,33 @@ class InvoiceExportService:
                 else 0.0
             )
 
-            if raw_items:
-                for idx, item in enumerate(raw_items, 1):
-                    approved_account_id = acct_map.get(idx)
+            # Filter out zero quantity / zero amount / free informational line items (e.g., 0 rate and 0 taxable amount)
+            effective_items = []
+            for item in raw_items:
+                taxable_amt = float(item.get("taxable_amount") or item.get("total") or 0.0)
+                unit_r = float(item.get("unit_price") or item.get("rate") or 0.0)
+                item_qty = float(item.get("quantity") or 0.0)
+                if taxable_amt <= 0.0 and unit_r <= 0.0:
+                    logger.info(f"Skipping zero-cost informational line item: {item.get('description')}")
+                    continue
+                effective_items.append(item)
+
+            if effective_items:
+                for idx, item in enumerate(effective_items, 1):
+                    item_acc_name = item.get("account_name") or item.get("account") or ""
+                    item_acc_id = item.get("account_id") or item.get("zoho_account_id") or item.get("approved_account_id")
+                    
+                    approved_account_id = None
+                    if item_acc_name and str(item_acc_name).lower().strip() in name_to_zoho_id:
+                        approved_account_id = name_to_zoho_id[str(item_acc_name).lower().strip()]
+                    elif item_acc_id and str(item_acc_id) in valid_zoho_accounts:
+                        approved_account_id = str(item_acc_id)
+                    elif item_acc_name:
+                        approved_account_id = find_best_zoho_account(item.get("description") or "", item_acc_name)
+                    
+                    if not approved_account_id:
+                        approved_account_id = acct_map.get(idx) or acct_map.get(1) or default_expense_id
+
                     if not approved_account_id:
                         raise ValueError(f"Line item {idx} lacks an approved Zoho Chart of Accounts ID.")
 
@@ -472,8 +681,37 @@ class InvoiceExportService:
                         item.get("unit_price")
                         or item.get("rate")
                         or (taxable_amount / qty if qty > 0 and taxable_amount > 0 else taxable_amount)
-                        or 1.0
+                        or 0.0
                     )
+
+                    # When pushing to Zoho, for salary/wage/manpower/duty invoices (e.g. security guards, housekeeping,
+                    # duties/days/persons breakdown), enforce quantity = 1.0 and rate = taxable_amount
+                    desc_lower = str(item.get("description") or "").lower()
+                    unit_lower = str(item.get("unit") or "").lower()
+                    inv_cat_lower = str(vlm_data.get("category") or "").lower()
+                    vendor_lower = str(vlm_data.get("vendor_name") or "").lower()
+
+                    is_salary_wage_duty = any(kw in desc_lower for kw in [
+                        "salary", "wage", "duties", "duty", "manpower", "security guard", "housekeeping",
+                        "house keeping", "labour", "labor", "personnel", "guard", "sweeper", "peon",
+                        "attendant", "wages", "cleaning service", "driver", "care taker", "supervisor",
+                        "npgs"
+                    ]) or any(kw in unit_lower for kw in [
+                        "duty", "duties", "day", "days", "shift", "shifts", "person", "persons", "manpower"
+                    ]) or any(kw in inv_cat_lower for kw in [
+                        "salary", "wage", "manpower", "labor", "labour"
+                    ]) or any(kw in vendor_lower for kw in [
+                        "security", "house keeping", "housekeeping", "manpower", "labour", "labor", "facility",
+                        "npgs"
+                    ])
+
+                    if is_salary_wage_duty and taxable_amount > 0:
+                        qty = 1.0
+                        rate = taxable_amount
+                    elif qty == 1.0 and taxable_amount > 0:
+                        rate = taxable_amount
+                    elif qty > 0 and taxable_amount > 0 and abs(qty * rate - taxable_amount) > 0.05:
+                        rate = round(taxable_amount / qty, 2)
 
                     # Extract line-level tax rate
                     cgst_rate = float(item.get("cgst_rate") or 0.0)
@@ -529,7 +767,20 @@ class InvoiceExportService:
                     }
 
                     # Zoho India GST tax requirement: Specify either Tax, Tax Exemption, or Reverse Charge
-                    if tax_id:
+                    if is_rcm or is_foreign:
+                        rcm_tax_id = tax_id
+                        if not rcm_tax_id:
+                            rcm_tax_id = await master_data_service.get_zoho_tax_for_line(
+                                tenant_id=tenant_id,
+                                tax_percentage=line_tax_rate if line_tax_rate > 0 else (inv_default_tax_rate if inv_default_tax_rate > 0 else 18.0),
+                                supply_type="INTER_STATE" if is_foreign else supply_type,
+                                db=db,
+                                organization_id=current_org_id,
+                            )
+                        if rcm_tax_id:
+                            line_dict["reverse_charge_tax_id"] = rcm_tax_id
+                        line_dict["is_reverse_charge_applied"] = True
+                    elif tax_id:
                         line_dict["tax_id"] = tax_id
                     elif line_tax_rate == 0.0:
                         zero_tax_id = await master_data_service.get_zoho_tax_for_line(
@@ -544,9 +795,6 @@ class InvoiceExportService:
                         else:
                             line_dict["tax_exemption_code"] = "NON_GST_SUPPLY"
 
-                    if is_rcm:
-                        line_dict["is_reverse_charge_applied"] = True
-
                     if zoho_tds_tax_id:
                         line_dict["tds_tax_id"] = zoho_tds_tax_id
 
@@ -557,7 +805,7 @@ class InvoiceExportService:
 
                     # Explicit Authoritative ITC SSOT Line Serialization for Zoho Books
                     line_itc_decision = itc_lines_map.get(idx) or "ineligible_others"
-                    if line_tax_rate > 0:
+                    if line_tax_rate > 0 or is_rcm or is_foreign:
                         line_dict["itc_eligibility"] = line_itc_decision
 
                     bill_line_items.append(line_dict)
@@ -574,6 +822,7 @@ class InvoiceExportService:
                         tax_percentage=inv_default_tax_rate,
                         supply_type=supply_type,
                         db=db,
+                        organization_id=current_org_id,
                     )
                     if not tax_id:
                         raise ValueError(
@@ -587,7 +836,20 @@ class InvoiceExportService:
                     "rate": inv_subtotal if inv_subtotal > 0 else total_amt,
                     "quantity": 1.0,
                 }
-                if tax_id:
+                if is_rcm or is_foreign:
+                    rcm_tax_id = tax_id
+                    if not rcm_tax_id:
+                        rcm_tax_id = await master_data_service.get_zoho_tax_for_line(
+                            tenant_id=tenant_id,
+                            tax_percentage=inv_default_tax_rate if inv_default_tax_rate > 0 else 18.0,
+                            supply_type="INTER_STATE" if is_foreign else supply_type,
+                            db=db,
+                            organization_id=current_org_id,
+                        )
+                    if rcm_tax_id:
+                        line_dict["reverse_charge_tax_id"] = rcm_tax_id
+                    line_dict["is_reverse_charge_applied"] = True
+                elif tax_id:
                     line_dict["tax_id"] = tax_id
                 else:
                     zero_tax_id = await master_data_service.get_zoho_tax_for_line(
@@ -595,14 +857,12 @@ class InvoiceExportService:
                         tax_percentage=0.0,
                         supply_type=supply_type,
                         db=db,
+                        organization_id=current_org_id,
                     )
                     if zero_tax_id:
                         line_dict["tax_id"] = zero_tax_id
                     else:
                         line_dict["tax_exemption_code"] = "NON_GST_SUPPLY"
-
-                if is_rcm:
-                    line_dict["is_reverse_charge_applied"] = True
 
                 if zoho_tds_tax_id:
                     line_dict["tds_tax_id"] = zoho_tds_tax_id
@@ -630,15 +890,17 @@ class InvoiceExportService:
             }
 
             # Resolve Dynamic Source and Destination of Supply
-            from app.services.gst_engine import normalize_indian_state
-            sup_st_zoho, _, _ = normalize_indian_state(state_input=gst_eval.get("supplier_state_code") or gst_eval.get("supplier_state_name"))
-            if sup_st_zoho:
-                bill_payload["source_of_supply"] = sup_st_zoho
+            if not is_foreign:
+                from app.services.gst_engine import normalize_indian_state
+                sup_st_zoho, _, _ = normalize_indian_state(state_input=gst_eval.get("supplier_state_code") or gst_eval.get("supplier_state_name"))
+                if sup_st_zoho:
+                    bill_payload["source_of_supply"] = sup_st_zoho
 
             # Dynamic Destination of Supply resolved from branch/organization matching
             if resolved_dest_code:
                 bill_payload["destination_of_supply"] = resolved_dest_code
             else:
+                from app.services.gst_engine import normalize_indian_state
                 pos_st_zoho, _, _ = normalize_indian_state(
                     state_input=gst_eval.get("place_of_supply_state_code") or gst_eval.get("place_of_supply_state_name") or gst_eval.get("buyer_state_code")
                 )
@@ -648,7 +910,9 @@ class InvoiceExportService:
             if resolved_branch_id:
                 bill_payload["branch_id"] = resolved_branch_id
 
-            if vendor_gstin:
+            if is_foreign:
+                bill_payload["gst_treatment"] = "overseas"
+            elif vendor_gstin:
                 from app.services.gst_engine import validate_gstin
                 is_valid_gst, clean_gst = validate_gstin(vendor_gstin)
                 if is_valid_gst and clean_gst:
@@ -659,7 +923,7 @@ class InvoiceExportService:
             else:
                 bill_payload["gst_treatment"] = "business_none"
 
-            if is_rcm:
+            if is_rcm or is_foreign:
                 bill_payload["is_reverse_charge_applied"] = True
                 bill_payload["is_reverse_charge"] = True
 
@@ -683,6 +947,27 @@ class InvoiceExportService:
             if notes:
                 bill_payload["notes"] = str(notes)
 
+            # Preserve foreign currency commercial information in notes for complete auditability
+            if is_foreign and vlm_data.get("original_currency") and vlm_data.get("original_total_amount"):
+                orig_c = vlm_data.get("original_currency")
+                orig_tot = vlm_data.get("original_total_amount")
+                fx_r = vlm_data.get("exchange_rate") or getattr(invoice, "exchange_rate", None) or 1.0
+                fx_trace = f"[Foreign Invoice: {orig_c} {orig_tot:,.2f} @ ₹{fx_r:,.4f}/{orig_c} = ₹{inv_eff_total:,.2f}]"
+                if bill_payload.get("notes"):
+                    bill_payload["notes"] = f"{bill_payload['notes']} | {fx_trace}"
+                else:
+                    bill_payload["notes"] = fx_trace
+
+            if tds_applicable:
+                tds_rate_val = float(effective_tds.get("tds_rate") or effective_tds.get("rate") or 0.0)
+                tds_amt_val = float(effective_tds.get("total_tds_amount") or effective_tds.get("tds_amount") or 0.0)
+                tds_sec = effective_tds.get("section") or effective_tds.get("tds_section") or "Section 393"
+                tds_trace = f"[TDS: {tds_rate_val}% ({tds_sec}) = ₹{tds_amt_val:,.2f}]"
+                if bill_payload.get("notes"):
+                    bill_payload["notes"] = f"{bill_payload['notes']} | {tds_trace}"
+                else:
+                    bill_payload["notes"] = tds_trace
+
             adjustment_val = vlm_data.get("adjustment")
             if adjustment_val is not None:
                 try:
@@ -692,9 +977,10 @@ class InvoiceExportService:
                 except (ValueError, TypeError):
                     pass
 
-            # 10. RECONCILIATION & IDEMPOTENT BILL CREATION
+            # 10. RECONCILIATION & IDEMPOTENT BILL CREATION / UPDATE
             bill_id = invoice.zoho_bill_id
             bill_num = invoice.zoho_bill_number or invoice_num
+            is_existing_bill = bool(bill_id)
 
             # Check if Bill already exists in Zoho (handles timeout retry recovery)
             if not bill_id:
@@ -707,10 +993,28 @@ class InvoiceExportService:
                 if existing_bill:
                     bill_id = existing_bill["bill_id"]
                     bill_num = existing_bill.get("bill_number") or invoice_num
-                    logger.info(f"Reconciled existing Zoho Bill: ID {bill_id}, Number {bill_num}. Skipping creation.")
+                    is_existing_bill = True
+                    logger.info(f"Reconciled existing Zoho Bill: ID {bill_id}, Number {bill_num}.")
 
-            # If still not found, create new Bill in Zoho
-            if not bill_id:
+            if bill_id:
+                # Update existing bill in Zoho Books directly with latest edits (amounts, TDS, line items, accounts)
+                try:
+                    logger.info(
+                        f"Updating existing Zoho Bill {bill_id} [Tenant: {tenant_id}, Invoice: {invoice_num}]: "
+                        f"Vendor ID: {vendor_id}, Date: {invoice_date}, Lines: {len(bill_line_items)}"
+                    )
+                    updated_bill = await zoho_client_service.update_bill(
+                        connection=connection,
+                        db=db,
+                        bill_id=str(bill_id),
+                        bill_payload=bill_payload,
+                    )
+                    bill_num = updated_bill.get("bill_number") or bill_num
+                except Exception as update_err:
+                    logger.warning(f"Could not update existing bill {bill_id} in Zoho Books: {update_err}")
+                    raise update_err
+            else:
+                # Create new Bill in Zoho
                 try:
                     # Safe payload logging (sanitized, no secrets)
                     logger.info(
@@ -750,9 +1054,9 @@ class InvoiceExportService:
             invoice.zoho_bill_number = str(bill_num)
             await db.commit()
 
-            # 11. Download Original File from Supabase and Attach to Zoho Bill
-            attachment_status = "not_attached"
-            if invoice.file_path:
+            # 11. Download Original File from Supabase and Attach to Zoho Bill (Only on initial creation)
+            attachment_status = "already_attached" if is_existing_bill else "not_attached"
+            if invoice.file_path and not is_existing_bill:
                 try:
                     logger.info(f"Downloading original file {invoice.file_path} from Supabase...")
                     file_bytes = await storage_service.download_file(invoice.file_path)
@@ -773,7 +1077,7 @@ class InvoiceExportService:
             # 12. Mark Export Completed
             invoice.export_status = "EXPORTED"
             invoice.exported_at = datetime.now(timezone.utc)
-            invoice.error_message = None if attachment_status == "attached" else f"Attachment warning: {attachment_status}"
+            invoice.error_message = None if attachment_status in ("attached", "already_attached") else f"Attachment warning: {attachment_status}"
             await db.commit()
 
             # 13. Immutable Audit Log
@@ -799,7 +1103,10 @@ class InvoiceExportService:
             if invoice.export_status != "EXPORTED":
                 invoice.export_status = "FAILED"
                 invoice.error_message = f"Zoho Export Error: {str(exc)}"
-                await db.commit()
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
             logger.error(f"Failed to export invoice {invoice_id} to Zoho: {exc}")
             raise RuntimeError(f"Zoho export failed: {str(exc)}") from exc
 

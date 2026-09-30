@@ -33,7 +33,33 @@ class MasterDataService:
         user_uuid: Optional[uuid.UUID] = None
 
         if not user_id:
-            logger.error("get_or_create_zoho_connection called without user_id. Refusing tenant fallback.")
+            logger.warning("get_or_create_zoho_connection called without user_id. Falling back to tenant-scoped lookup.")
+            query = (
+                select(ZohoConnection)
+                .where(ZohoConnection.tenant_id == tenant_id)
+                .order_by(ZohoConnection.created_at.desc())
+            )
+            res = await db.execute(query)
+            conns = []
+            if res:
+                try:
+                    s_all = res.scalars().all()
+                    if s_all:
+                        conns = list(s_all)
+                except Exception:
+                    pass
+                if not conns:
+                    try:
+                        one = res.scalar_one_or_none()
+                        if one:
+                            conns = [one]
+                    except Exception:
+                        pass
+            if conns:
+                for c in conns:
+                    if getattr(c, "status", None) == "CONNECTED":
+                        return c
+                return conns[0]
             return ZohoConnection(tenant_id=tenant_id, user_id=None, status="DISCONNECTED")
 
         try:
@@ -732,6 +758,20 @@ class MasterDataService:
         ]
 
         if not candidate_taxes:
+            # Check if any active TDS tax mentions the exact rate in its name (e.g. "20%", "20.0%")
+            rate_str_pct = f"{int(clean_rate) if clean_rate.is_integer() else clean_rate}%"
+            named_rate_taxes = [
+                t for t in tds_taxes
+                if t.is_active and rate_str_pct in (t.tax_name or "")
+            ]
+            if named_rate_taxes:
+                return named_rate_taxes[0].zoho_tax_id
+
+            logger.warning(
+                f"No Zoho TDS tax rate matching {clean_rate}% found in organization {org_id}. "
+                f"Available TDS rates: {[float(t.tax_percentage or 0.0) for t in tds_taxes if t.is_active]}. "
+                f"Returning None to avoid applying incorrect withholding tax rate."
+            )
             return None
 
         # Normalize incoming inputs

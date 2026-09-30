@@ -227,10 +227,10 @@ def test_8_accounts_payable_reduced_by_tds():
         "total_amount": 11800.0,
         "cgst_amount": 900.0,
         "sgst_amount": 900.0,
-        "line_items": [{"description": "Legal Services", "taxable_amount": 10000.0}],
+        "line_items": [{"description": "Consulting Services", "taxable_amount": 10000.0}],
     }
     accounting = {
-        "accounting": [{"line_index": 0, "ai_account_id": "ACC_4", "ai_account_name": "Professional & Legal Fees"}],
+        "accounting": [{"line_index": 0, "ai_account_id": "ACC_4", "ai_account_name": "Consulting & Professional Fees"}],
         "tds": {
             "tds_applicable": True,
             "final_tds_amount": 1000.0,

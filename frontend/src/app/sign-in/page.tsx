@@ -5,8 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import PublicNavbar from "@/components/PublicNavbar";
 import PublicFooter from "@/components/PublicFooter";
-import { API_BASE, invalidateZohoCache, clearAuthToken } from "@/lib/api";
-import { ShieldCheck, ArrowRight, Lock, Mail, AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
+import { API_BASE, invalidateZohoCache, clearAuthToken, changePassword } from "@/lib/api";
+import { ShieldCheck, ArrowRight, Lock, Mail, AlertCircle, CheckCircle2, Loader2, KeyRound } from "lucide-react";
 
 export default function SignInPage() {
   const router = useRouter();
@@ -15,6 +15,13 @@ export default function SignInPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [forgotNotice, setForgotNotice] = useState<string | null>(null);
+
+  // Forced Password Change Modal States
+  const [showPasswordChangeModal, setShowPasswordChangeModal] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isChangingPassword, setIsChangingPassword] = useState(false);
+  const [changePasswordError, setChangePasswordError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,9 +67,6 @@ export default function SignInPage() {
 
       const data = await res.json();
       if (typeof window !== "undefined" && data.access_token) {
-        // Clear ALL user-scoped caches before writing the new user's token.
-        // This prevents the previous user's Zoho status (and other cached data)
-        // from being returned to the newly logged-in user.
         clearAuthToken();
         invalidateZohoCache();
         sessionStorage.removeItem("sakshi_imap_settings_cache");
@@ -73,11 +77,62 @@ export default function SignInPage() {
         if (data.user) {
           localStorage.setItem("user_info", JSON.stringify(data.user));
         }
+
+        // Check if user must change password on first login
+        if (data.user?.must_change_password) {
+          setIsLoading(false);
+          setShowPasswordChangeModal(true);
+          return;
+        }
       }
       router.push("/dashboard");
     } catch (err: any) {
       setError(err.message || "Network error during authentication.");
       setIsLoading(false);
+    }
+  };
+
+  const validatePasswordRules = (pwd: string): string | null => {
+    if (!pwd) return "Password cannot be empty.";
+    if (pwd.includes(" ")) return "Password cannot contain spaces.";
+    if (pwd.length < 8) return "Password must be at least 8 characters long.";
+    if (!/[A-Z]/.test(pwd)) return "Password must contain at least 1 uppercase letter (A-Z).";
+    if (!/[a-z]/.test(pwd)) return "Password must contain at least 1 lowercase letter (a-z).";
+    if (!/[0-9]/.test(pwd)) return "Password must contain at least 1 number (0-9).";
+    if (!/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(pwd)) return "Password must contain at least 1 special character (!@#$%^&*...).";
+    return null;
+  };
+
+  const handleChangePasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setChangePasswordError(null);
+
+    const ruleError = validatePasswordRules(newPassword);
+    if (ruleError) {
+      setChangePasswordError(ruleError);
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setChangePasswordError("Confirm Password does not match Password.");
+      return;
+    }
+
+    try {
+      setIsChangingPassword(true);
+      const res = await changePassword(newPassword);
+      if (typeof window !== "undefined" && res.access_token) {
+        localStorage.setItem("dev_auth_token", res.access_token);
+        if (res.user) {
+          localStorage.setItem("user_info", JSON.stringify(res.user));
+        }
+      }
+      setShowPasswordChangeModal(false);
+      router.push("/dashboard");
+    } catch (err: any) {
+      setChangePasswordError(err.message || "Failed to update password.");
+    } finally {
+      setIsChangingPassword(false);
     }
   };
 
@@ -365,6 +420,182 @@ export default function SignInPage() {
           </div>
         </div>
       </main>
+
+      {/* Forced Password Change Modal */}
+      {showPasswordChangeModal && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            background: "rgba(15, 23, 42, 0.6)",
+            backdropFilter: "blur(4px)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+          }}
+        >
+          <div
+            style={{
+              background: "#ffffff",
+              borderRadius: "16px",
+              maxWidth: "420px",
+              width: "100%",
+              padding: "28px",
+              boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+              border: "1px solid var(--border-subtle)",
+            }}
+          >
+            <div style={{ textAlign: "center", marginBottom: "20px" }}>
+              <div
+                style={{
+                  width: "48px",
+                  height: "48px",
+                  borderRadius: "12px",
+                  background: "var(--accent-subtle)",
+                  color: "var(--accent)",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  marginBottom: "12px",
+                }}
+              >
+                <KeyRound size={24} />
+              </div>
+              <h2 style={{ fontSize: "18px", fontWeight: "700", color: "var(--text-primary)", margin: "0 0 6px 0" }}>
+                Set Permanent Password
+              </h2>
+              <p style={{ fontSize: "13px", color: "var(--text-secondary)", margin: 0 }}>
+                This is your first login with a temporary password. Please choose a new permanent password to secure your account.
+              </p>
+            </div>
+
+            {changePasswordError && (
+              <div
+                style={{
+                  background: "#fef2f2",
+                  border: "1px solid #fecaca",
+                  borderRadius: "8px",
+                  padding: "10px 14px",
+                  marginBottom: "16px",
+                  fontSize: "12.5px",
+                  color: "#991b1b",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "6px",
+                }}
+              >
+                <AlertCircle size={15} />
+                <span>{changePasswordError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleChangePasswordSubmit} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "12.5px", fontWeight: "600", color: "var(--text-primary)", marginBottom: "6px" }}>
+                  New Password
+                </label>
+                <input
+                  type="password"
+                  className="form-input"
+                  placeholder="••••••••"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  disabled={isChangingPassword}
+                  style={{
+                    width: "100%",
+                    height: "42px",
+                    padding: "0 12px",
+                    borderRadius: "8px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "13.5px",
+                  }}
+                  required
+                />
+                
+                {/* Visual Password Rule Checklist */}
+                <div style={{ marginTop: "10px", padding: "10px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0", fontSize: "11.5px" }}>
+                  <div style={{ fontWeight: "600", color: "#475569", marginBottom: "6px" }}>Password Rules:</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 8px" }}>
+                    <div style={{ color: newPassword.length >= 8 ? "#166534" : "#64748b", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span>{newPassword.length >= 8 ? "✓" : "•"}</span> Minimum 8 characters
+                    </div>
+                    <div style={{ color: /[A-Z]/.test(newPassword) ? "#166534" : "#64748b", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span>{/[A-Z]/.test(newPassword) ? "✓" : "•"}</span> 1 Uppercase (A-Z)
+                    </div>
+                    <div style={{ color: /[a-z]/.test(newPassword) ? "#166534" : "#64748b", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span>{/[a-z]/.test(newPassword) ? "✓" : "•"}</span> 1 Lowercase (a-z)
+                    </div>
+                    <div style={{ color: /[0-9]/.test(newPassword) ? "#166534" : "#64748b", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span>{/[0-9]/.test(newPassword) ? "✓" : "•"}</span> 1 Number (0-9)
+                    </div>
+                    <div style={{ color: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(newPassword) ? "#166534" : "#64748b", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span>{/[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?]/.test(newPassword) ? "✓" : "•"}</span> 1 Special (!@#$...)
+                    </div>
+                    <div style={{ color: newPassword && !newPassword.includes(" ") ? "#166534" : "#64748b", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span>{newPassword && !newPassword.includes(" ") ? "✓" : "•"}</span> No spaces
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label style={{ display: "block", fontSize: "12.5px", fontWeight: "600", color: "var(--text-primary)", marginBottom: "6px" }}>
+                  Confirm New Password
+                </label>
+                <input
+                  type="password"
+                  className="form-input"
+                  placeholder="••••••••"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  disabled={isChangingPassword}
+                  style={{
+                    width: "100%",
+                    height: "42px",
+                    padding: "0 12px",
+                    borderRadius: "8px",
+                    border: "1px solid #d1d5db",
+                    fontSize: "13.5px",
+                  }}
+                  required
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isChangingPassword}
+                style={{
+                  width: "100%",
+                  height: "42px",
+                  fontSize: "13.5px",
+                  fontWeight: "600",
+                  marginTop: "6px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "8px",
+                  borderRadius: "8px",
+                }}
+              >
+                {isChangingPassword ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    <span>Saving New Password...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={16} />
+                    <span>Save & Continue to Dashboard</span>
+                  </>
+                )}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
 
       <PublicFooter />
     </div>

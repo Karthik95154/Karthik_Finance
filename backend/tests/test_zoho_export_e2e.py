@@ -87,6 +87,7 @@ async def test_full_zoho_export_success_flow():
             "tds": {
                 "applicable": True,
                 "tds_section": "194J",
+                "rate": 2.0,
                 "calculated_tds_amount": 200.0,
             }
         },

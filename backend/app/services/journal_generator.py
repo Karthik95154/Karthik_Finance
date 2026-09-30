@@ -289,6 +289,16 @@ class JournalGenerator:
                     else:
                         taxable = 0.0
 
+                # Skip zero-amount informational line items (e.g. 0 rate / 0 taxable items) when there are active taxable lines
+                if taxable <= 0.0 and len(line_items) > 1:
+                    continue
+
+                # Check line item's direct COA specification first (user edit / line assignment)
+                line_app_id = line.get("approved_account_id") or line.get("final_account_id")
+                line_app_name = line.get("approved_account_name") or line.get("final_account_name")
+                line_acc_id = line.get("account_id") or line.get("ai_account_id")
+                line_acc_name = line.get("account_name") or line.get("ai_account_name") or line.get("account")
+
                 # Match line in accounting by line_index or sequential index
                 acc_info = {}
                 if idx in acc_by_index:
@@ -298,10 +308,10 @@ class JournalGenerator:
                 elif idx < len(accounting_list):
                     acc_info = accounting_list[idx]
 
-                approved_acc_id = acc_info.get("approved_account_id") or acc_info.get("final_account_id")
-                approved_acc_name = acc_info.get("approved_account_name") or acc_info.get("final_account_name")
-                ai_acc_id = acc_info.get("ai_account_id") or acc_info.get("account_id")
-                ai_acc_name = acc_info.get("ai_account_name") or acc_info.get("account_name")
+                approved_acc_id = line_app_id or acc_info.get("approved_account_id") or acc_info.get("final_account_id")
+                approved_acc_name = line_app_name or acc_info.get("approved_account_name") or acc_info.get("final_account_name")
+                ai_acc_id = line_acc_id or acc_info.get("ai_account_id") or acc_info.get("account_id")
+                ai_acc_name = line_acc_name or acc_info.get("ai_account_name") or acc_info.get("account_name")
 
                 if approved_acc_id and approved_acc_name:
                     account_id = approved_acc_id
@@ -312,9 +322,13 @@ class JournalGenerator:
                         f"Cannot generate authoritative journal: Line item {idx + 1} has not been approved by Finance. "
                         f"approved_account_id and approved_account_name are required."
                     )
+                elif line_acc_name and not ai_acc_id:
+                    account_id = line_acc_id or f"ACC_{idx + 1}"
+                    account_name = str(line_acc_name).strip()
+                    provenance = "USER_ASSIGNED"
                 elif ai_acc_id and ai_acc_name:
                     account_id = ai_acc_id
-                    account_name = f"[Unapproved] {str(ai_acc_name).replace('[Unapproved] ', '').strip()}"
+                    account_name = str(ai_acc_name).strip()
                     provenance = acc_info.get("provenance") or "AI_PREDICTED"
                 elif ai_acc_id:
                     account_id = ai_acc_id

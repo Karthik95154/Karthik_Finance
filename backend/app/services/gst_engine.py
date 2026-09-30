@@ -1,6 +1,7 @@
 import re
 import logging
 from typing import Dict, Any, List, Optional, Tuple
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -662,11 +663,15 @@ def check_foreign_supplier_evidence(data_obj: Dict[str, Any]) -> Tuple[bool, Opt
     """
     Deterministically evaluates whether the supplier is located in non-taxable territory (outside India).
     CRITICAL RULE: Never infer 'supplier outside India' merely from missing Indian GSTIN.
-    Requires explicit foreign country/location evidence.
+    Requires explicit foreign country/location evidence or FOREIGN_SERVICE classification.
     Missing location/GSTIN alone = UNKNOWN, not foreign.
     """
     if not isinstance(data_obj, dict):
         return False, None
+
+    origin = str(data_obj.get("invoice_origin") or data_obj.get("classification") or data_obj.get("classification_override") or "").upper()
+    if origin == "FOREIGN_SERVICE":
+        return True, "Invoice classified as FOREIGN_SERVICE"
 
     vendor_country = str(data_obj.get("vendor_country") or data_obj.get("supplier_country") or "").strip().upper()
     if vendor_country and vendor_country not in ("IN", "IND", "INDIA"):
@@ -681,8 +686,8 @@ def check_foreign_supplier_evidence(data_obj: Dict[str, Any]) -> Tuple[bool, Opt
         for pat in foreign_country_patterns:
             m = re.search(pat, v_addr, re.IGNORECASE)
             if m:
-                # Ensure it doesn't also mention India
-                if not re.search(r"\b(india|pin\s*-\s*\d{6}|\b\d{6}\b)\b", v_addr, re.IGNORECASE):
+                # Ensure it doesn't also mention India or Indian PIN code format
+                if not re.search(r"\b(india|pin\s*[-:]?\s*\d{6}|pincode\s*[-:]?\s*\d{6}|pin\s*code\s*[-:]?\s*\d{6})\b", v_addr, re.IGNORECASE):
                     return True, f"Vendor address indicates overseas location: '{m.group(0)}'"
 
     return False, None
@@ -1210,7 +1215,12 @@ class GSTEngine:
         # 4. Supply Type Determination
         supply_type: str = "REVIEW_REQUIRED"
 
-        if supplier_state_code and pos_state_code:
+        is_foreign, _ = check_foreign_supplier_evidence(data_obj)
+        if is_foreign and (pos_state_code or buyer_state_code):
+            supply_type = "INTER_STATE"
+            supplier_state_code = "97"
+            supplier_state_name = "Other Territory / Overseas"
+        elif supplier_state_code and pos_state_code:
             if supplier_state_code == pos_state_code:
                 supply_type = "INTRA_STATE"
             else:
@@ -1304,14 +1314,15 @@ class GSTEngine:
             if taxable is not None and taxable > 0:
                 has_line_math = True
                 if supply_type == "INTRA_STATE":
-                    rate = item_cgst_r or (item_gst_r / 2.0 if item_gst_r else 0.0)
+                    rate = item_cgst_r or (item_gst_r / 2.0 if item_gst_r else (round(item_cgst_a / taxable * 100.0, 2) if item_cgst_a else 0.0))
                     expected_line_cgst = round((taxable * rate / 100.0), 2)
-                    rate_s = item_sgst_r or (item_gst_r / 2.0 if item_gst_r else 0.0)
+                    rate_s = item_sgst_r or (item_gst_r / 2.0 if item_gst_r else (round(item_sgst_a / taxable * 100.0, 2) if item_sgst_a else 0.0))
                     expected_line_sgst = round((taxable * rate_s / 100.0), 2)
                     calc_cgst += expected_line_cgst
                     calc_sgst += expected_line_sgst
                 elif supply_type == "INTER_STATE":
-                    rate_i = item_igst_r or item_gst_r or ((item_cgst_r or 0.0) + (item_sgst_r or 0.0))
+                    default_import_rcm_rate = float(getattr(settings, "DEFAULT_IMPORT_SERVICES_GST_RATE", 18.0))
+                    rate_i = item_igst_r or item_gst_r or ((item_cgst_r or 0.0) + (item_sgst_r or 0.0)) or (round(item_igst_a / taxable * 100.0, 2) if item_igst_a else (default_import_rcm_rate if (is_reverse_charge and rcm_category == "IMPORT_OF_SERVICES") else 0.0))
                     expected_line_igst = round((taxable * rate_i / 100.0), 2)
                     calc_igst += expected_line_igst
 
@@ -1367,8 +1378,8 @@ class GSTEngine:
             validation_status = "REVIEW_REQUIRED"
             warnings.append("Supply type could not be determined definitively. Manual review required.")
 
-        # Check total discrepancy if both extracted and line math exist
-        if ext_tax_total is not None and has_line_math and calculated_gst_total > 0:
+        # Check total discrepancy if both extracted and line math exist (forward charge supplies)
+        if not is_reverse_charge and ext_tax_total is not None and has_line_math and calculated_gst_total > 0:
             diff = abs(ext_tax_total - calculated_gst_total)
             if diff > 2.0:  # Rounding tolerance threshold
                 warnings.append(f"Discrepancy of ₹{diff:,.2f} between extracted Tax Total (₹{ext_tax_total:,.2f}) and line-level GST sum (₹{calculated_gst_total:,.2f}).")

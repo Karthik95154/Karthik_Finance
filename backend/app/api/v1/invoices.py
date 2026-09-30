@@ -34,6 +34,7 @@ from app.schemas.invoice import (
     InvoiceUpdateRequest,
     InvoiceUploadResponse,
     PeriodDecisionRequest,
+    ClassificationOverrideRequest,
 )
 from app.storage.supabase_storage import storage_service
 from app.services.invoice_processing import (
@@ -491,6 +492,12 @@ async def get_invoice(
             detail="Customer access unavailable: Invoice is awaiting internal Finance review and approval.",
         )
 
+    # For foreign service invoices, ensure current_vlm_output provides canonical INR converted line items and totals
+    if invoice.invoice_origin == "FOREIGN_SERVICE" and invoice.exchange_rate:
+        from app.services.invoice_processing import get_effective_invoice_data
+        eff = get_effective_invoice_data(invoice, convert_fx=True)
+        invoice.current_vlm_output = {"data": eff}
+
     return invoice
 
 
@@ -554,6 +561,43 @@ async def update_invoice_extraction(
     if update_data.current_accounting_output is not None:
         invoice.current_accounting_output = update_data.current_accounting_output
 
+    if update_data.classification_override is not None:
+        valid_origins = {"INDIAN", "FOREIGN_SERVICE", "REVIEW_REQUIRED", "UNSUPPORTED_FOREIGN_GOODS"}
+        target_ov = update_data.classification_override.strip().upper()
+        if target_ov not in valid_origins:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid classification override '{target_ov}'. Valid options: {sorted(list(valid_origins))}",
+            )
+        invoice.classification_override = target_ov
+        invoice.classification_override_reason = (update_data.classification_override_reason or "").strip()
+        invoice.classified_by = current_user.email or current_user.id
+        invoice.classified_at = datetime.now(timezone.utc)
+        invoice.invoice_origin = target_ov
+        invoice.classification_source = "USER_OVERRIDE"
+
+    if update_data.exchange_rate is not None:
+        from app.services.forex_service import forex_service
+        orig_sys_rate = invoice.fx_original_rate or invoice.exchange_rate or Decimal("1.000000")
+        active_rate, is_overridden, reason, orig_rate = forex_service.apply_finance_override(
+            original_rate=orig_sys_rate,
+            override_rate=update_data.exchange_rate,
+            override_reason=update_data.fx_override_reason,
+        )
+        invoice.exchange_rate = active_rate
+        invoice.fx_original_rate = orig_rate
+        invoice.fx_rate_overridden = is_overridden
+        invoice.fx_override_reason = reason
+        if invoice.original_total_amount is not None:
+            invoice.converted_total_inr = forex_service.convert_to_inr(invoice.original_total_amount, active_rate)
+        if invoice.original_taxable_amount is not None:
+            invoice.converted_taxable_inr = forex_service.convert_to_inr(invoice.original_taxable_amount, active_rate)
+
+    if update_data.exchange_rate_date is not None:
+        invoice.exchange_rate_date = update_data.exchange_rate_date
+    if update_data.exchange_rate_source is not None:
+        invoice.exchange_rate_source = update_data.exchange_rate_source
+
     # Re-evaluate Deterministic Validation Pipeline (Stages 4, 5, 6) only if invoice has already passed Stage 1
     if invoice.status != "HITL_REVIEW":
         try:
@@ -564,7 +608,7 @@ async def update_invoice_extraction(
             from app.services.tds_engine import tds_engine
             from app.services.journal_generator import journal_generator, sync_relational_journal
 
-            working_payload = get_effective_invoice_data(invoice)
+            working_payload = get_effective_invoice_data(invoice, convert_fx=True)
             
             accounting_dict = (
                 invoice.current_accounting_output
@@ -572,6 +616,36 @@ async def update_invoice_extraction(
                 else (invoice.accounting_output if isinstance(invoice.accounting_output, dict) else {})
             )
             accounting_lines = accounting_dict.get("accounting") or []
+
+            # Synchronize line item accounts with accounting lines
+            line_items_list = working_payload.get("line_items") or []
+            if line_items_list:
+                synced_accounting_lines = []
+                for idx, itm in enumerate(line_items_list, 1):
+                    existing_entry = next((a for a in accounting_lines if a.get("line_index") == idx), None) if accounting_lines else None
+                    # User-specified account_name takes highest priority
+                    acc_name = itm.get("account_name") or itm.get("account") or (existing_entry.get("account_name") if existing_entry else None) or "General Expenses"
+                    existing_name = existing_entry.get("account_name") if existing_entry else None
+                    
+                    if existing_entry and existing_name and existing_name.lower().strip() == acc_name.lower().strip():
+                        acc_id = itm.get("account_id") or itm.get("zoho_account_id") or existing_entry.get("account_id") or f"ACC_{idx}"
+                        app_id = itm.get("approved_account_id") or existing_entry.get("approved_account_id") or acc_id
+                        app_name = itm.get("approved_account_name") or existing_entry.get("approved_account_name") or acc_name
+                    else:
+                        acc_id = itm.get("account_id") or itm.get("zoho_account_id") or f"ACC_{idx}"
+                        app_id = itm.get("approved_account_id") or acc_id
+                        app_name = itm.get("approved_account_name") or acc_name
+
+                    synced_accounting_lines.append({
+                        "line_index": idx,
+                        "source_description": itm.get("description") or f"Line {idx}",
+                        "account_id": acc_id,
+                        "account_name": acc_name,
+                        "approved_account_id": app_id,
+                        "approved_account_name": app_name,
+                    })
+                accounting_lines = synced_accounting_lines
+
             tds_assessment = accounting_dict.get("tds_assessment") or {}
 
             # 1. Stage 4 GST Engine
@@ -582,7 +656,11 @@ async def update_invoice_extraction(
                 "accounting": accounting_lines,
                 "tds_assessment": tds_assessment,
             }
-            itc_result = itc_engine.evaluate_itc(working_payload, combined_context)
+            itc_result = itc_engine.evaluate_itc(
+                invoice_data=working_payload,
+                accounting_output=combined_context,
+                gst_result=gst_result,
+            )
 
             # 3. Stage 5 Financial Validator
             financial_validation_result = financial_validator.validate_invoice(working_payload, gst_result)
@@ -1042,4 +1120,70 @@ async def decide_invoice_period(
             "status": invoice.status,
             "message": "Invoice processing confirmed. Resuming workflow.",
         }
+
+
+@router.post(
+    "/{invoice_id}/classification/override",
+    response_model=InvoiceResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def override_invoice_classification(
+    invoice_id: uuid.UUID,
+    payload: ClassificationOverrideRequest,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Overrides the invoice classification (INDIAN, FOREIGN_SERVICE, REVIEW_REQUIRED, UNSUPPORTED_FOREIGN_GOODS)
+    while preserving the system classification and reasons in the audit trail.
+    """
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
+    result = await db.execute(query)
+    invoice = result.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    valid_origins = {"INDIAN", "FOREIGN_SERVICE", "REVIEW_REQUIRED", "UNSUPPORTED_FOREIGN_GOODS"}
+    target_class = payload.classification.strip().upper()
+    if target_class not in valid_origins:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid classification: '{target_class}'. Valid options: {sorted(list(valid_origins))}",
+        )
+
+    if not payload.reason or not payload.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An explicit reason is required when overriding invoice classification.",
+        )
+
+    previous_origin = invoice.invoice_origin
+    invoice.classification_override = target_class
+    invoice.classification_override_reason = payload.reason.strip()
+    invoice.classified_by = current_user.email or current_user.id
+    invoice.classified_at = datetime.now(timezone.utc)
+    invoice.invoice_origin = target_class
+    invoice.classification_source = "USER_OVERRIDE"
+    invoice.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(invoice)
+
+    from app.services.audit_service import audit_service
+    await audit_service.log_event(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        invoice_id=invoice_id,
+        user_email=current_user.email,
+        action="CLASSIFICATION_OVERRIDE",
+        reason=f"Classification overridden from {previous_origin} to {target_class}. Reason: {payload.reason.strip()}",
+    )
+
+    return invoice
+
 

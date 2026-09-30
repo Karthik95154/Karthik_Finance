@@ -110,17 +110,19 @@ def run_imap_polling(
         # --- Determine poll window boundaries (both timezone-naive for header comparison) ---
         now_time = datetime.now()
         if since_datetime is not None:
-            # Incremental mode: use caller-supplied checkpoint.
-            # Convert to local naive for comparison with parse_email_date() output.
+            # Incremental mode: use caller-supplied checkpoint with a safety buffer (up to 72 hours)
+            # to accommodate forwarded emails and timezone variations.
             try:
-                poll_start_time = since_datetime.astimezone().replace(tzinfo=None)
+                base_time = since_datetime.astimezone().replace(tzinfo=None)
             except Exception:
-                poll_start_time = since_datetime.replace(tzinfo=None)
-            logger.info(f"INCREMENTAL POLL | since={since_datetime.isoformat()}")
+                base_time = since_datetime.replace(tzinfo=None)
+            # Apply a 24-hour lookback buffer, capped at 72 hours max window
+            poll_start_time = max(now_time - timedelta(hours=72), base_time - timedelta(hours=24))
+            logger.info(f"INCREMENTAL POLL | since={since_datetime.isoformat()} | buffered_start={poll_start_time.isoformat()}")
         else:
-            # Initial mode: classic fixed-window lookback
-            poll_start_time = now_time - timedelta(hours=window_hours)
-            logger.info(f"INITIAL POLL | window={window_hours}h")
+            # Initial mode: classic fixed-window lookback (default 72h)
+            poll_start_time = now_time - timedelta(hours=max(window_hours, 72))
+            logger.info(f"INITIAL POLL | window={max(window_hours, 72)}h")
         
         # 3. Header Batch Fetching
         start_header = time.perf_counter()

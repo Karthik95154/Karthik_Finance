@@ -453,6 +453,8 @@ class ZohoClientService:
         phone: Optional[str] = None,
         address: Optional[str] = None,
         state_name: Optional[str] = None,
+        country: Optional[str] = None,
+        gst_treatment: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates a new Vendor Contact in Zoho Books with proper GST state classification."""
         payload: Dict[str, Any] = {
@@ -461,25 +463,32 @@ class ZohoClientService:
             "contact_type": "vendor",
         }
 
-        # Normalize state to valid 2-letter Zoho state code (e.g. "TS", "MH", "KA", "TN", "AD", "DL")
-        from app.services.gst_engine import normalize_indian_state, validate_gstin
-        zoho_state_code, numeric_state_code, full_state_name = normalize_indian_state(
-            state_input=state_name,
-            gstin=gstin,
-        )
+        is_foreign = bool(country and str(country).strip().lower() not in ("india", "in", ""))
 
-        # Validate GSTIN format before passing to Zoho API
-        is_valid_gst, clean_gst = validate_gstin(gstin)
-
-        if is_valid_gst and clean_gst:
-            payload["gst_no"] = clean_gst
-            payload["gst_treatment"] = "business_gst"
+        if is_foreign:
+            payload["gst_treatment"] = gst_treatment or "overseas"
+            zoho_state_code = None
+            full_state_name = state_name
         else:
-            payload["gst_treatment"] = "business_none"
+            # Normalize state to valid 2-letter Zoho state code (e.g. "TS", "MH", "KA", "TN", "AD", "DL")
+            from app.services.gst_engine import normalize_indian_state, validate_gstin
+            zoho_state_code, numeric_state_code, full_state_name = normalize_indian_state(
+                state_input=state_name,
+                gstin=gstin,
+            )
 
-        # Zoho Books India Contact API strictly requires place_of_contact to be the 2-letter Zoho state code (e.g. "TS", "MH")
-        if zoho_state_code:
-            payload["place_of_contact"] = zoho_state_code
+            # Validate GSTIN format before passing to Zoho API
+            is_valid_gst, clean_gst = validate_gstin(gstin)
+
+            if is_valid_gst and clean_gst:
+                payload["gst_no"] = clean_gst
+                payload["gst_treatment"] = gst_treatment or "business_gst"
+            else:
+                payload["gst_treatment"] = gst_treatment or "business_none"
+
+            # Zoho Books India Contact API strictly requires place_of_contact to be the 2-letter Zoho state code (e.g. "TS", "MH")
+            if zoho_state_code:
+                payload["place_of_contact"] = zoho_state_code
 
         if pan:
             clean_pan = re.sub(r"[^A-Za-z0-9]", "", pan).upper().strip()
@@ -508,7 +517,7 @@ class ZohoClientService:
                 contact_person["mobile"] = clean_phone
             payload["contact_persons"] = [contact_person]
 
-        billing_addr: Dict[str, Any] = {"country": "India"}
+        billing_addr: Dict[str, Any] = {"country": country or "India"}
         if address:
             billing_addr["address"] = address
         if full_state_name:
@@ -571,6 +580,24 @@ class ZohoClientService:
             headers=headers,
         )
         return res.get("bill", {})
+
+    async def update_bill(
+        self,
+        connection: ZohoConnection,
+        db: AsyncSession,
+        bill_id: str,
+        bill_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Updates an existing Vendor Bill (`PUT /bills/{bill_id}`) in Zoho Books."""
+        res = await self._make_authorized_request(
+            connection=connection,
+            db=db,
+            method="PUT",
+            endpoint_path=f"bills/{bill_id}",
+            json_data=bill_payload,
+        )
+        return res.get("bill", {})
+
 
     async def get_vendor_bills(
         self,

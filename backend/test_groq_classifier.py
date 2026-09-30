@@ -151,6 +151,30 @@ def main():
     p5 = print_test_result("Blank Image Document", c5_att["filename"], c5_att["mime_type"], c5_att["email_subject"], res5, "UNKNOWN", "UNKNOWN")
     results.append(("Case 5 (Blank Image)", p5))
 
+    # CASE 6 — Foreign SaaS Invoice (HubSpot Singapore in USD with OIDAR GSTIN & Indian Customer)
+    c6_pdf = create_mock_pdf_bytes([
+        "HubSpot Asia Pte Ltd.",
+        "Mapletree Anson, 60 Anson Road, #10-03, Singapore 079914",
+        "GSTIN INDIA: 9922SGP29007OSQ",
+        "Tax Invoice",
+        "Invoice #: 786868521 | Invoice Date: July 4, 2026",
+        "Billed to: Jukshio Technology Innovation Pvt. Ltd., Hyderabad India",
+        "Business GSTIN: 36AAECJ6056C1ZQ",
+        "Total Due: $100.00"
+    ])
+    c6_att = {
+        "filename": "HubSpot_786868521_04Jul26.pdf",
+        "mime_type": "application/pdf",
+        "file_bytes": c6_pdf,
+        "email_subject": "Your HubSpot Invoice"
+    }
+    ctx6 = prepare_classification_context(c6_att)
+    res6 = classify_document(ctx6)
+    p6 = print_test_result("Foreign SaaS Invoice (HubSpot Singapore USD)", c6_att["filename"], c6_att["mime_type"], c6_att["email_subject"], res6, "FINANCIAL", "INVOICE")
+    is_foreign_pass = res6.invoice_origin.value == "FOREIGN" and res6.currency == "USD"
+    print(f"Origin Check: {res6.invoice_origin.value} (Expected: FOREIGN) | Currency: {res6.currency} (Expected: USD) -> {'PASS' if is_foreign_pass else 'FAIL'}")
+    results.append(("Case 6 (Foreign SaaS Invoice Origin & Currency)", p6 and is_foreign_pass))
+
     print("=" * 50)
     print("SUMMARY OF GROQ VISION VERIFICATION RUN")
     print("=" * 50)
@@ -159,3 +183,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -14,6 +14,7 @@ from app.core.security import (
 )
 from app.db.database import get_db
 from app.db.models import Invoice, JournalEntry, JournalLine, AuditLog, ChartOfAccount
+from app.schemas.invoice import ClassificationOverrideRequest
 from app.services.journal_generator import journal_generator, sync_relational_journal
 from app.services.audit_service import audit_service
 from app.services.export_service import export_service
@@ -76,7 +77,7 @@ async def get_journal_preview(
         }
 
     from app.services.invoice_processing import get_effective_invoice_data
-    vlm_data = get_effective_invoice_data(invoice)
+    vlm_data = get_effective_invoice_data(invoice, convert_fx=True)
 
     accounting_data = (
         invoice.current_accounting_output
@@ -84,11 +85,17 @@ async def get_journal_preview(
         else invoice.accounting_output
     )
 
+    from app.services.gst_engine import gst_engine
+    from app.services.itc_engine import itc_engine
+
+    gst_eval = gst_engine.evaluate_gst(vlm_data) if (not invoice.gst_result or vlm_data.get("invoice_origin") == "FOREIGN_SERVICE") else invoice.gst_result
+    itc_eval = itc_engine.evaluate_itc(invoice_data=vlm_data, gst_result=gst_eval, accounting_output=accounting_data) if (not invoice.itc_result or vlm_data.get("invoice_origin") == "FOREIGN_SERVICE") else invoice.itc_result
+
     journal = journal_generator.generate_journal_entry(
         invoice_data=vlm_data,
         accounting_data=accounting_data,
-        gst_result=invoice.gst_result,
-        itc_result=invoice.itc_result,
+        gst_result=gst_eval,
+        itc_result=itc_eval,
         tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
         financial_validation_result=invoice.financial_validation_result,
         cost_center=cost_center,
@@ -143,7 +150,7 @@ async def approve_journal_entry(
 
     # 2. Extract / Generate Authoritative Journal
     from app.services.invoice_processing import get_effective_invoice_data
-    vlm_data = get_effective_invoice_data(invoice)
+    vlm_data = get_effective_invoice_data(invoice, convert_fx=True)
     accounting_data = (
         invoice.current_accounting_output
         if isinstance(invoice.current_accounting_output, dict)
@@ -276,7 +283,7 @@ async def approve_tds_assessment(
 
     # Regenerate GL journal with approved TDS
     from app.services.invoice_processing import get_effective_invoice_data
-    vlm_data = get_effective_invoice_data(invoice)
+    vlm_data = get_effective_invoice_data(invoice, convert_fx=True)
 
     journal = journal_generator.generate_journal(
         invoice_data=vlm_data,
@@ -356,7 +363,7 @@ async def approve_invoice(
 
     # 2. Extract Authoritative Working Payload and Accounting Classification
     from app.services.invoice_processing import get_effective_invoice_data
-    vlm_data = get_effective_invoice_data(invoice)
+    vlm_data = get_effective_invoice_data(invoice, convert_fx=True)
 
     accounting_data = (
         invoice.current_accounting_output
@@ -456,12 +463,24 @@ async def approve_invoice(
     accounting_data["accounting"] = acct_lines
 
     # 3. Generate Authoritative Journal (require_approved=True) using single source of truth
+    from app.services.gst_engine import gst_engine
+    from app.services.itc_engine import itc_engine
+
+    effective_gst = gst_engine.evaluate_gst(vlm_data)
+    effective_itc = itc_engine.evaluate_itc(
+        invoice_data=vlm_data,
+        gst_result=effective_gst,
+        accounting_output=accounting_data,
+    )
+    invoice.gst_result = effective_gst
+    invoice.itc_result = effective_itc
+
     try:
         journal = journal_generator.generate_journal_entry(
             invoice_data=vlm_data,
             accounting_data=accounting_data,
-            gst_result=invoice.gst_result,
-            itc_result=invoice.itc_result,
+            gst_result=effective_gst,
+            itc_result=effective_itc,
             tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
             financial_validation_result=invoice.financial_validation_result,
             require_approved=True,
@@ -485,8 +504,8 @@ async def approve_invoice(
     authoritative_journal_dict = journal_generator.generate_journal(
         invoice_data=vlm_data,
         accounting_classification=accounting_data,
-        gst_result=invoice.gst_result,
-        itc_result=invoice.itc_result,
+        gst_result=effective_gst,
+        itc_result=effective_itc,
         tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
         financial_validation_result=invoice.financial_validation_result,
         require_approved=True,
@@ -579,13 +598,16 @@ async def reject_invoice(
 @router.post("/invoices/{invoice_id}/export/zoho")
 @router.post("/zoho/export-bill/{invoice_id}")
 @router.post("/review/invoices/{invoice_id}/export")
+@router.post("/invoices/{invoice_id}/resync")
+@router.post("/review/invoices/{invoice_id}/resync")
 async def export_invoice(
     invoice_id: UUID,
+    force_resync: bool = True,
     current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Exports an APPROVED invoice to Zoho Books with original document attachment.
+    Exports or resyncs an APPROVED invoice to Zoho Books with updated line items, accounts, and tax/TDS rules.
     Requires ADMIN or FINANCE role.
     """
     tenant_id = current_user.tenant_id
@@ -597,11 +619,14 @@ async def export_invoice(
             tenant_id=tenant_id,
             db=db,
             user_email=user_email,
+            force_resync=force_resync,
         )
         return result
     except ValueError as val_err:
+        logger.error(f"Validation error exporting invoice {invoice_id} to Zoho: {val_err}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(val_err))
     except Exception as exc:
+        logger.error(f"Unexpected error exporting invoice {invoice_id} to Zoho: {exc}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Export failed: {str(exc)}")
 
 
@@ -812,4 +837,74 @@ async def get_invoice_audit_trail(
         }
         for log in logs
     ]
+
+
+@router.post("/invoices/{invoice_id}/classification/override")
+@router.post("/review/invoices/{invoice_id}/classification/override")
+async def override_classification_review(
+    invoice_id: UUID,
+    payload: ClassificationOverrideRequest,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Finance classification override endpoint on Review Router:
+    Allows Finance users to override classification (e.g. REVIEW_REQUIRED -> FOREIGN_SERVICE or FOREIGN_SERVICE -> INDIAN).
+    Preserves system classification, records override reason, user, and timestamp in audit log.
+    """
+    user_filter = get_user_filter(current_user)
+    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
+    res = await db.execute(query)
+    invoice = res.scalar_one_or_none()
+
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    valid_origins = {"INDIAN", "FOREIGN_SERVICE", "REVIEW_REQUIRED", "UNSUPPORTED_FOREIGN_GOODS"}
+    target_class = payload.classification.strip().upper()
+    if target_class not in valid_origins:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid classification: '{target_class}'. Valid options: {sorted(list(valid_origins))}",
+        )
+
+    if not payload.reason or not payload.reason.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="An explicit reason is required when overriding invoice classification.",
+        )
+
+    previous_origin = invoice.invoice_origin
+    invoice.classification_override = target_class
+    invoice.classification_override_reason = payload.reason.strip()
+    invoice.classified_by = current_user.email or current_user.id
+    invoice.classified_at = datetime.now(timezone.utc)
+    invoice.invoice_origin = target_class
+    invoice.classification_source = "USER_OVERRIDE"
+    invoice.updated_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(invoice)
+
+    await audit_service.log_event(
+        db=db,
+        tenant_id=current_user.tenant_id,
+        invoice_id=invoice_id,
+        user_email=current_user.email,
+        action="CLASSIFICATION_OVERRIDE",
+        reason=f"Classification overridden from {previous_origin} to {target_class}. Reason: {payload.reason.strip()}",
+    )
+
+    return {
+        "status": "success",
+        "message": f"Classification overridden to {target_class} successfully.",
+        "invoice_id": str(invoice_id),
+        "system_classification": previous_origin,
+        "classification_override": invoice.classification_override,
+        "classification_override_reason": invoice.classification_override_reason,
+        "final_classification": invoice.invoice_origin,
+        "classified_by": invoice.classified_by,
+        "classified_at": invoice.classified_at.isoformat() if invoice.classified_at else None,
+    }
+
 

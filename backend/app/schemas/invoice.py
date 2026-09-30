@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, date
+from decimal import Decimal
 from uuid import UUID
 from typing import Optional, Any, Dict, List
 from pydantic import BaseModel, ConfigDict
@@ -20,6 +21,11 @@ class PeriodDecisionRequest(BaseModel):
     decision: str  # CONTINUE or CANCEL
 
 
+class ClassificationOverrideRequest(BaseModel):
+    classification: str  # INDIAN, FOREIGN_SERVICE, REVIEW_REQUIRED, UNSUPPORTED_FOREIGN_GOODS
+    reason: str
+
+
 class InvoiceStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -36,6 +42,23 @@ class InvoiceStatusResponse(BaseModel):
     period_message: Optional[str] = None
     invoice_date: Optional[str] = None
     updated_at: datetime
+    # Classification & Foreign Currency / FX fields
+    invoice_origin: Optional[str] = "INDIAN"
+    currency: Optional[str] = "INR"
+    classification_confidence: Optional[float] = None
+    classification_reason: Optional[str] = None
+    classification_source: Optional[str] = "SYSTEM"
+    classification_override: Optional[str] = None
+    classification_override_reason: Optional[str] = None
+    classified_by: Optional[str] = None
+    classified_at: Optional[datetime] = None
+    original_currency: Optional[str] = "INR"
+    original_total_amount: Optional[Decimal] = None
+    exchange_rate: Optional[Decimal] = None
+    exchange_rate_date: Optional[date] = None
+    exchange_rate_source: Optional[str] = None
+    converted_total_inr: Optional[Decimal] = None
+    fx_rate_overridden: Optional[bool] = False
 
 
 class InvoiceResponse(BaseModel):
@@ -72,9 +95,30 @@ class InvoiceResponse(BaseModel):
     journal_entry: Optional[Dict[str, Any]] = None
     financial_relevance: Optional[str] = None
     document_type: Optional[str] = None
+    invoice_origin: Optional[str] = "INDIAN"
+    currency: Optional[str] = "INR"
     classification_confidence: Optional[float] = None
     classification_reason: Optional[str] = None
     classification_model: Optional[str] = None
+    classification_source: Optional[str] = "SYSTEM"
+    classification_override: Optional[str] = None
+    classification_override_reason: Optional[str] = None
+    classified_by: Optional[str] = None
+    classified_at: Optional[datetime] = None
+    
+    # Foreign Currency & FX Fields (Step 1 Foundation)
+    original_currency: Optional[str] = "INR"
+    original_total_amount: Optional[Decimal] = None
+    original_taxable_amount: Optional[Decimal] = None
+    exchange_rate: Optional[Decimal] = None
+    exchange_rate_date: Optional[date] = None
+    exchange_rate_source: Optional[str] = None
+    converted_total_inr: Optional[Decimal] = None
+    converted_taxable_inr: Optional[Decimal] = None
+    fx_rate_overridden: Optional[bool] = False
+    fx_override_reason: Optional[str] = None
+    fx_original_rate: Optional[Decimal] = None
+
     created_at: datetime
     updated_at: datetime
 
@@ -86,6 +130,20 @@ class InvoiceUpdateRequest(BaseModel):
     itc_result: Optional[Dict[str, Any]] = None
     financial_validation_result: Optional[Dict[str, Any]] = None
     journal_entry: Optional[Dict[str, Any]] = None
+    
+    # Optional classification overrides
+    classification_override: Optional[str] = None
+    classification_override_reason: Optional[str] = None
+
+    # Optional FX overrides
+    exchange_rate: Optional[Decimal] = None
+    exchange_rate_date: Optional[date] = None
+    exchange_rate_source: Optional[str] = None
+    converted_total_inr: Optional[Decimal] = None
+    converted_taxable_inr: Optional[Decimal] = None
+    fx_rate_overridden: Optional[bool] = None
+    fx_override_reason: Optional[str] = None
+    fx_original_rate: Optional[Decimal] = None
 
 
 class InvoiceListItemResponse(BaseModel):
@@ -102,14 +160,27 @@ class InvoiceListItemResponse(BaseModel):
     export_status: Optional[str] = "NOT_EXPORTED"
     financial_relevance: Optional[str] = None
     document_type: Optional[str] = None
+    invoice_origin: Optional[str] = "INDIAN"
+    currency: Optional[str] = "INR"
     classification_confidence: Optional[float] = None
     classification_reason: Optional[str] = None
-    classification_model: Optional[str] = None
+    classification_source: Optional[str] = "SYSTEM"
+    classification_override: Optional[str] = None
+    classification_override_reason: Optional[str] = None
     zoho_bill_id: Optional[str] = None
     zoho_bill_number: Optional[str] = None
     vendor_name: Optional[str] = None
     invoice_number: Optional[str] = None
     total_amount: Optional[float] = None
+    
+    # Foreign Currency & FX Summary Fields
+    original_currency: Optional[str] = "INR"
+    original_total_amount: Optional[Decimal] = None
+    exchange_rate: Optional[Decimal] = None
+    exchange_rate_date: Optional[date] = None
+    converted_total_inr: Optional[Decimal] = None
+    fx_rate_overridden: Optional[bool] = False
+
     created_at: datetime
     updated_at: datetime
 

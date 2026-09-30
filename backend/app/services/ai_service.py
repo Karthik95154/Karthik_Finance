@@ -196,7 +196,7 @@ D. INVOICE EXTRACTION SPECIFICATION
 ================================================================================
 Extract all invoice metadata, vendor, customer, line items, and financial values into the fixed contract:
 1. HEADER DETAILS (invoice_details):
-   - invoice_number, invoice_date (YYYY-MM-DD), due_date (YYYY-MM-DD or null), po_number, place_of_supply (State name or 2-digit code), payment_terms, currency (default "INR" if ₹/INR shown, otherwise null), document_type ("TAX_INVOICE", "BILL_OF_SUPPLY", "CREDIT_NOTE", "DEBIT_NOTE", "RECEIPT_VOUCHER").
+   - invoice_number, invoice_date (YYYY-MM-DD), due_date (YYYY-MM-DD or null), po_number, place_of_supply (State name or 2-digit code), payment_terms (e.g., "Net 30", "Due on receipt", or printed terms), invoice_period (e.g. "01.09.2026 - 30.09.2026"), category (service category, e.g. "Support Services"), currency (default "INR" if ₹/INR shown, otherwise null), document_type ("TAX_INVOICE", "BILL_OF_SUPPLY", "CREDIT_NOTE", "DEBIT_NOTE", "RECEIPT_VOUCHER").
 2. VENDOR DETAILS (vendor_details):
    - vendor_name: Exact printed vendor entity name.
    - vendor_address: Full printed vendor address.
@@ -218,18 +218,26 @@ Extract all invoice metadata, vendor, customer, line items, and financial values
    - customer_pan: 10-character PAN.
    - customer_phone, customer_email: Extract only when explicitly printed on the invoice; otherwise null.
 4. LINE ITEMS (line_items):
-   For every line, preserve EXACTLY:
+   For every line, apply the following strict extraction rules:
+   - SALARY / WAGE / MANPOWER / DUTY-BASED INVOICES:
+     * When the invoice is for salary, wages, manpower supply, security guards, housekeeping, labor contractor, or duty-based billing (which often lists complex breakdowns like "No. of duties", "Days / Shifts", "Persons / Count", "Cost per person / Rate per duty", "PF / ESI contributions", and a "Total Amount" / "Taxable Amount" for that line or service):
+       -> Set `quantity` = 1.0 (or 1)
+       -> Set `taxable_amount` = exact printed total taxable / assessable amount for that line
+       -> Set `unit_price` = exact printed total taxable / assessable amount for that line (so 1 x unit_price = taxable_amount)
+       -> Set `unit` = "JOB", "MONTH", "SERVICE", "NOS", or null (and retain duty/shift/rate details verbatim inside the `description`)
+   - STANDARD GOODS / SERVICES INVOICES:
+     * When the invoice contains standard products or services with explicit regular quantity and unit price (e.g., 5 NOS @ 200.00 = 1000.00):
+       -> Take `quantity` as printed (e.g., 5.0)
+       -> Take `unit_price` as printed (e.g., 200.00)
+       -> Take `taxable_amount` as printed (e.g., 1000.00)
+       -> Take `unit` as printed (e.g., "NOS", "KG", "PCS", "HOURS", etc.)
    - line_index (1-based integer)
-   - description (verbatim item/service text)
-   - quantity (numeric or null if lump-sum/service)
-   - unit (e.g., "NOS", "HRS", "KG", "MONTHS", or null)
-   - unit_price (base rate per unit before tax/discount)
+   - description (verbatim item/service text including duty/person count details)
    - discount (item-specific discount amount, or null if omitted; 0.0 only if explicit zero printed)
-   - taxable_amount (net assessable base for tax)
-   - hsn_sac (printed HSN or SAC code; do not invent)
+   - hsn_sac (printed HSN or SAC code, e.g., 9985 for security/manpower; do not invent)
    - gst_rate (printed tax rate percentage, e.g., 18.0)
-   - cgst_amount, sgst_amount, igst_amount (as printed on line, or null if tax is summary-only)
-   CRITICAL DISTINCTION: Do NOT confuse unit price, tax-inclusive price, line taxable amount, or total line amount. If only a tax-inclusive or lump-sum total is printed, extract what is visible without arbitrary arithmetic reverse-engineering.
+   - cgst_amount, sgst_amount, igst_amount (as printed on line/notes, e.g., CGST @ 900, SGST @ 900, or null if tax is summary-only)
+   CRITICAL DISTINCTION: Do NOT confuse unit price, tax-inclusive price, line taxable amount, or total line amount. If only a tax-inclusive or lump-sum total is printed, extract what is visible without arbitrary arithmetic reverse-engineering. Always ensure taxable_amount accurately reflects the full assessable line amount printed on the invoice table.
 5. FINANCIAL DETAILS (financial_details):
    Preserve EXACTLY:
    - subtotal, discount_total, taxable_amount, tax_total, cgst_amount, sgst_amount, igst_amount, round_off, total_amount.

@@ -300,9 +300,11 @@ STATUTORY_TDS_TABLE_2025 = {
     },
     "NON_RESIDENT": {
         "section": "Section 393",
-        "provision": "Section 393(2) - Sum Paid to Non-Resident",
+        "provision": "Section 393(2), Table Sl. No. 17",
         "nature_of_payment": "Non-Resident Payment / Foreign Remittance",
         "default_rate": 20.0,
+        "cess_rate": 4.0,
+        "threshold_amount": None,
         "legacy_section": "195",
         "zoho_section_slug": "non_resident_payments",
     },
@@ -428,7 +430,7 @@ def resolve_tds_tax_details(
     elif any(k in norm for k in ("194T", "194 T", "PARTNER")):
         category_key = "PARTNER_REMUNERATION"
         entry = STATUTORY_TDS_TABLE_2025[category_key]
-    elif any(k in norm for k in ("195", "NON RESIDENT", "FOREIGN")):
+    elif any(k in norm for k in ("195", "NON RESIDENT", "FOREIGN", "393 2", "393(2)", "SL 17", "TABLE SL NO 17", "TABLE SL 17")):
         category_key = "NON_RESIDENT"
         entry = STATUTORY_TDS_TABLE_2025[category_key]
     # 2. Then check Section 393(1) Sl 6(iii) / 194J (Professional vs Technical Services)
@@ -770,6 +772,18 @@ class TDSEngine:
         except (ValueError, TypeError):
             prop_float = None
 
+        is_foreign = (
+            inv.get("invoice_origin") == "FOREIGN_SERVICE"
+            or inv.get("classification") == "FOREIGN_SERVICE"
+            or (inv.get("original_currency") and inv.get("original_currency") != "INR")
+        )
+        if is_foreign and inv.get("currency") == "INR":
+            inr_taxable = inv.get("converted_taxable_inr") or inv.get("taxable_amount") or inv.get("subtotal") or inv.get("total_amount")
+            orig_amt = inv.get("original_taxable_amount") or inv.get("original_total_amount")
+            if inr_taxable is not None and float(inr_taxable) > 0:
+                if prop_float is None or (orig_amt is not None and abs(float(prop_float) - float(orig_amt)) < 0.01):
+                    return round(float(inr_taxable), 2)
+
         if prop_float is not None and prop_float > 0:
             return round(prop_float, 2)
 
@@ -1039,7 +1053,15 @@ class TDSEngine:
             is_purchase_goods = (resolved_category == "PURCHASE_OF_GOODS")
             is_ecommerce = (resolved_category == "ECOMMERCE")
 
-            if pan_missing_or_invalid:
+            is_foreign_non_resident = (
+                resolved_category == "NON_RESIDENT"
+                or any(k in sec_str for k in ("195", "NON RESIDENT", "FOREIGN", "393(2)", "393 2", "SL 17", "TABLE SL NO 17", "TABLE SL 17"))
+            )
+
+            if is_foreign_non_resident:
+                computed_rate = 20.0
+                reason = "Foreign Service / Non-Resident TDS (20%) under Section 393(2), Table Sl. No. 17"
+            elif pan_missing_or_invalid:
                 pan_status_desc = "missing" if not vendor_pan else "invalid"
                 if is_purchase_goods:
                     computed_rate = 5.0
@@ -1106,6 +1128,7 @@ class TDSEngine:
         # Evaluate statutory threshold state machine
         resolved_details = resolve_tds_tax_details(section, provision, nature_of_payment)
         category_key = resolved_details.get("category_key")
+        cat_info = STATUTORY_TDS_TABLE_2025.get(category_key, {}) if category_key else {}
         thresh_eval = cls.evaluate_threshold_state(
             resolved_category=category_key,
             current_amount=base_amount,
@@ -1115,11 +1138,28 @@ class TDSEngine:
             nature_raw=nature_of_payment,
         )
 
-        is_statutory_applicable = bool(thresh_eval.get("tds_applicable"))
-        effective_base_amount = float(thresh_eval.get("tds_base_amount") or 0.0)
+        if applicable is True:
+            is_statutory_applicable = True
+            effective_base_amount = float(thresh_eval.get("tds_base_amount") or base_amount)
+            if effective_base_amount <= 0:
+                effective_base_amount = base_amount
+        else:
+            is_statutory_applicable = bool(thresh_eval.get("tds_applicable"))
+            effective_base_amount = float(thresh_eval.get("tds_base_amount") or 0.0)
 
-        # TDS is strictly calculated on effective_base_amount (Subtotal or Projected YTD when crossing)
-        tds_amount = round((effective_base_amount * computed_rate) / 100.0, 2) if (is_statutory_applicable and effective_base_amount > 0) else 0.0
+        # TDS is strictly calculated on effective_base_amount
+        base_tds_amount = round((effective_base_amount * computed_rate) / 100.0, 2) if (is_statutory_applicable and effective_base_amount > 0) else 0.0
+        
+        # Statutory Health & Education Cess (4% of TDS amount for foreign service / non-resident payments)
+        cess_rate = float(cat_info.get("cess_rate") or (4.0 if category_key == "NON_RESIDENT" else 0.0))
+        cess_amount = round(base_tds_amount * (cess_rate / 100.0), 2) if (base_tds_amount > 0 and cess_rate > 0) else 0.0
+        tds_amount = round(base_tds_amount + cess_amount, 2)
+
+        # Statutory sanity constraint: TDS on a single invoice can never exceed the invoice base amount itself
+        if effective_base_amount > 0 and tds_amount > effective_base_amount:
+            tds_amount = round(effective_base_amount, 2)
+            base_tds_amount = round(effective_base_amount / (1.0 + (cess_rate / 100.0)), 2)
+            cess_amount = round(tds_amount - base_tds_amount, 2)
 
         tds_needs_review = False
         conflict_code = None
@@ -1152,7 +1192,11 @@ class TDSEngine:
             "tds_rate": computed_rate,
             "base_amount": round(effective_base_amount, 2),
             "tds_base_amount": round(effective_base_amount, 2),
+            "base_tds_amount": base_tds_amount,
+            "cess_rate": cess_rate,
+            "cess_amount": cess_amount,
             "tds_amount": tds_amount,
+            "total_tds_amount": tds_amount,
             "proposed_tds_amount": tds_amount,
             "threshold_amount": thresh_eval.get("threshold_amount"),
             "threshold_status": thresh_eval.get("threshold_status"),

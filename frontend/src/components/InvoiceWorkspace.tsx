@@ -34,6 +34,7 @@ import {
   JournalEntry,
   JournalPreviewResponse,
 } from "@/lib/api";
+import ForeignInvoiceCard from "@/components/ForeignInvoiceCard";
 import {
   ArrowLeft,
   FileText,
@@ -61,6 +62,7 @@ import {
   Landmark,
   Calculator,
   Calendar,
+  Info,
 } from "lucide-react";
 
 // Helper to parse clean numeric values including currency strings like "Rupees 35,36,917.24" or "Rs. 248,417.88"
@@ -80,6 +82,14 @@ function parseCleanNumeric(val: any): number | null {
     }
   }
   return null;
+}
+
+// Helper to format clean 2-decimal display string for number inputs
+function toCleanDisplayNum(val: any): string | number {
+  if (val === null || val === undefined || val === "") return "";
+  const num = typeof val === "number" ? val : parseFloat(String(val).replace(/,/g, ""));
+  if (isNaN(num)) return "";
+  return Number(num.toFixed(2));
 }
 
 // Helper to format ISO YYYY-MM-DD or arbitrary dates into DD/MM/YYYY
@@ -445,6 +455,7 @@ export default function InvoiceWorkspace({
           const acc = currentAcc[idx] || { line_index: idx + 1 };
           const predName = String(
             acc.approved_account_name ||
+            acc.final_account_name ||
             acc.account_name ||
             acc.ai_account_name ||
             item.account_name ||
@@ -452,8 +463,11 @@ export default function InvoiceWorkspace({
           ).replace(/^\[Unapproved\]\s*/i, "").trim();
 
           if (predName) {
+            const predNorm = predName.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
             const matched = zohoAccounts.find(
               (za: any) => za.account_name?.toLowerCase().trim() === predName.toLowerCase()
+            ) || zohoAccounts.find(
+              (za: any) => String(za.account_name || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "") === predNorm
             );
             if (matched) {
               const zohoId = String(matched.zoho_account_id || matched.id);
@@ -470,6 +484,14 @@ export default function InvoiceWorkspace({
                 };
                 changed = true;
               }
+            } else if (!acc.approved_account_name && !acc.account_name) {
+              currentAcc[idx] = {
+                ...acc,
+                account_id: acc.account_id || "PROPOSED",
+                approved_account_name: predName,
+                account_name: predName,
+              };
+              changed = true;
             }
           }
         });
@@ -3298,6 +3320,32 @@ export default function InvoiceWorkspace({
                   gap: "24px",
                 }}
               >
+                {/* Foreign Invoice & FX Management Card */}
+                {invoice && (
+                  <ForeignInvoiceCard
+                    invoice={invoice}
+                    extractedData={formData}
+                    isReadOnly={mode === "customer" || invoice.approval_status === "APPROVED"}
+                    onRefreshInvoice={async () => {
+                      if (!invoiceId) return;
+                      try {
+                        const updated = await getInvoice(invoiceId);
+                        setInvoice(updated);
+                        const prev = await getJournalPreview(invoiceId).catch(() => null);
+                        if (prev) setJournalPreview(prev);
+                      } catch (_) {}
+                    }}
+                    onShowToast={(msg, type) => {
+                      if (type === "error") {
+                        setError(msg);
+                      } else {
+                        setActionNotice(msg);
+                        setTimeout(() => setActionNotice(null), 4000);
+                      }
+                    }}
+                  />
+                )}
+
                 {/* 1. INVOICE INFORMATION */}
                 <section>
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
@@ -3770,10 +3818,22 @@ export default function InvoiceWorkspace({
                                                 return curId;
                                               }
                                             }
-                                            const curName = String(acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || "").toLowerCase().trim();
+                                            const curName = String(acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || formData.line_items?.[idx]?.account_name || "").toLowerCase().trim();
                                             if (curName && curName !== "none" && curName !== "null") {
+                                              // 1. Exact match in Zoho accounts
                                               const matched = zohoAccounts.find((za: any) => String(za.account_name || "").toLowerCase().trim() === curName);
                                               if (matched) return String(matched.zoho_account_id || matched.id);
+
+                                              // 2. Normalized match (& vs and, special chars)
+                                              const normCur = curName.replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
+                                              const normMatch = normCur ? zohoAccounts.find((za: any) => {
+                                                const normZa = String(za.account_name || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
+                                                return normZa === normCur;
+                                              }) : null;
+                                              if (normMatch) return String(normMatch.zoho_account_id || normMatch.id);
+
+                                              // 3. Fallback to custom proposed option value
+                                              return String(acc.account_id || "PROPOSED");
                                             }
                                             return "";
                                           })()}
@@ -3785,7 +3845,7 @@ export default function InvoiceWorkspace({
                                             });
                                             const selId = e.target.value;
                                             const match = zohoAccounts.find((za: any) => String(za.zoho_account_id || za.id) === String(selId));
-                                            const selName = match ? match.account_name : selId;
+                                            const selName = match ? match.account_name : (acc.approved_account_name || acc.account_name || acc.ai_account_name || formData.line_items?.[idx]?.account_name || selId);
                                             updateAccountingLine(idx, {
                                               approved_account_id: selId,
                                               approved_account_name: selName,
@@ -3795,15 +3855,30 @@ export default function InvoiceWorkspace({
                                               account_name: selName,
                                               line_index: idx + 1,
                                             });
+                                            handleLineItemChange(idx, "account_name", selName);
                                           }}
                                         >
                                           <option value="">⚠️ Select COA Account (Required)</option>
                                           {/* Custom AI option if not directly in zoho master list */}
-                                          {(acc.approved_account_name || acc.account_name || acc.ai_account_name) && !zohoAccounts.some((za: any) => String(za.zoho_account_id) === String(acc.account_id) || za.account_name.toLowerCase().trim() === String(acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || "").toLowerCase().trim()) && (
-                                            <option value={acc.account_id || "PROPOSED"}>
-                                              {acc.approved_account_name || acc.account_name || acc.ai_account_name} (AI Proposed)
-                                            </option>
-                                          )}
+                                          {(() => {
+                                            const propName = String(acc.approved_account_name || acc.final_account_name || acc.account_name || acc.ai_account_name || formData.line_items?.[idx]?.account_name || "").trim();
+                                            if (!propName || propName.toLowerCase() === "none" || propName.toLowerCase() === "null") return null;
+                                            const normProp = propName.toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "");
+                                            const isInZoho = zohoAccounts.some((za: any) => 
+                                              String(za.zoho_account_id || za.id) === String(acc.account_id) || 
+                                              String(za.account_name || "").toLowerCase().trim() === propName.toLowerCase() ||
+                                              String(za.account_name || "").toLowerCase().replace(/&/g, "and").replace(/[^a-z0-9]/g, "") === normProp
+                                            );
+                                            if (!isInZoho) {
+                                              const customVal = String(acc.account_id || "PROPOSED");
+                                              return (
+                                                <option value={customVal}>
+                                                  {propName} (AI Proposed)
+                                                </option>
+                                              );
+                                            }
+                                            return null;
+                                          })()}
                                           {zohoAccounts.map((za: any) => (
                                             <option key={za.zoho_account_id || za.id} value={za.zoho_account_id}>
                                               {za.account_name} ({za.account_type || "expense"})
@@ -4000,7 +4075,7 @@ export default function InvoiceWorkspace({
                                   />
                                 </td>
                                 <td style={{ padding: "6px" }}>
-                                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                                  <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
                                     <input
                                       type="number"
                                       className="table-input"
@@ -4019,6 +4094,11 @@ export default function InvoiceWorkspace({
                                           : {}
                                       }
                                     />
+                                    {(invoice?.is_foreign || invoice?.invoice_origin === "FOREIGN" || invoice?.invoice_origin === "FOREIGN_SERVICE" || invoice?.original_currency || formData.original_currency) && (
+                                      <div style={{ fontSize: "9.5px", color: "#0284c7", fontWeight: 700, marginTop: "2px", paddingLeft: "2px" }}>
+                                        {item.original_currency || invoice?.original_currency || formData.original_currency || "USD"} {item.original_unit_price != null ? Number(item.original_unit_price).toFixed(2) : (Number(item.unit_price || item.rate || 0) / (invoice?.exchange_rate || formData.exchange_rate || 95.2408)).toFixed(2)}
+                                      </div>
+                                    )}
                                   </div>
                                 </td>
                                 <td style={{ padding: "6px" }}>
@@ -4031,28 +4111,35 @@ export default function InvoiceWorkspace({
                                   />
                                 </td>
                                 <td style={{ padding: "6px" }}>
-                                  <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-                                    <input
-                                      type="number"
-                                      className="table-input"
-                                      value={item.taxable_amount ?? ""}
-                                      placeholder="0.00"
-                                      onChange={(e) => handleLineItemChange(idx, "taxable_amount", parseFloat(e.target.value) || 0)}
-                                      style={
-                                        (financialValidationResult?.checks || []).some(
-                                          (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && c.line_item_index === idx + 1
-                                        )
-                                          ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.05)" }
-                                          : {}
-                                      }
-                                    />
-                                    {(financialValidationResult?.checks || []).some(
-                                      (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && c.line_item_index === idx + 1
-                                    ) && (
-                                        <span title="Line item math mismatch detected (Qty × Unit Price ≠ Taxable Amount)" style={{ position: "absolute", right: "6px", cursor: "pointer" }}>
-                                          <AlertCircle size={13} style={{ color: "#ef4444" }} />
-                                        </span>
-                                      )}
+                                  <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
+                                    <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                                      <input
+                                        type="number"
+                                        className="table-input"
+                                        value={item.taxable_amount ?? ""}
+                                        placeholder="0.00"
+                                        onChange={(e) => handleLineItemChange(idx, "taxable_amount", parseFloat(e.target.value) || 0)}
+                                        style={
+                                          (financialValidationResult?.checks || []).some(
+                                            (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && c.line_item_index === idx + 1
+                                          )
+                                            ? { borderColor: "#ef4444", backgroundColor: "rgba(239, 68, 68, 0.05)" }
+                                            : {}
+                                        }
+                                      />
+                                      {(financialValidationResult?.checks || []).some(
+                                        (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && c.line_item_index === idx + 1
+                                      ) && (
+                                          <span title="Line item math mismatch detected (Qty × Unit Price ≠ Taxable Amount)" style={{ position: "absolute", right: "6px", cursor: "pointer" }}>
+                                            <AlertCircle size={13} style={{ color: "#ef4444" }} />
+                                          </span>
+                                        )}
+                                    </div>
+                                    {(invoice?.is_foreign || invoice?.invoice_origin === "FOREIGN" || invoice?.invoice_origin === "FOREIGN_SERVICE" || invoice?.original_currency || formData.original_currency) && (
+                                      <div style={{ fontSize: "9.5px", color: "#0284c7", fontWeight: 700, marginTop: "2px", paddingLeft: "2px" }}>
+                                        {item.original_currency || invoice?.original_currency || formData.original_currency || "USD"} {item.original_taxable_amount != null ? Number(item.original_taxable_amount).toFixed(2) : (Number(item.taxable_amount || 0) / (invoice?.exchange_rate || formData.exchange_rate || 95.2408)).toFixed(2)}
+                                      </div>
+                                    )}
                                   </div>
                                 </td>
                                 <td style={{ padding: "6px" }}>
@@ -4128,14 +4215,21 @@ export default function InvoiceWorkspace({
                                   />
                                 </td>
                                 <td style={{ padding: "6px" }}>
-                                  <input
-                                    type="number"
-                                    className="table-input"
-                                    style={{ fontWeight: "600" }}
-                                    value={item.total ?? ""}
-                                    placeholder="0.00"
-                                    onChange={(e) => handleLineItemChange(idx, "total", parseFloat(e.target.value) || 0)}
-                                  />
+                                  <div style={{ position: "relative", display: "flex", flexDirection: "column" }}>
+                                    <input
+                                      type="number"
+                                      className="table-input"
+                                      style={{ fontWeight: "600" }}
+                                      value={item.total ?? ""}
+                                      placeholder="0.00"
+                                      onChange={(e) => handleLineItemChange(idx, "total", parseFloat(e.target.value) || 0)}
+                                    />
+                                    {(invoice?.is_foreign || invoice?.invoice_origin === "FOREIGN" || invoice?.invoice_origin === "FOREIGN_SERVICE" || invoice?.original_currency || formData.original_currency) && (
+                                      <div style={{ fontSize: "9.5px", color: "#0284c7", fontWeight: 700, marginTop: "2px", paddingLeft: "2px" }}>
+                                        {item.original_currency || invoice?.original_currency || formData.original_currency || "USD"} {item.original_total_amount != null ? Number(item.original_total_amount).toFixed(2) : (Number(item.total || 0) / (invoice?.exchange_rate || formData.exchange_rate || 95.2408)).toFixed(2)}
+                                      </div>
+                                    )}
+                                  </div>
                                 </td>
                                 <td style={{ padding: "6px", textAlign: "center" }}>
                                   <button
@@ -4298,6 +4392,108 @@ export default function InvoiceWorkspace({
                     </h3>
                   </div>
 
+                  {/* Foreign Service & RCM Concise Summary Bar */}
+                  {(() => {
+                    const isForeignOrRcm = Boolean(
+                      invoice?.is_foreign ||
+                      invoice?.invoice_origin === "FOREIGN_SERVICE" ||
+                      invoice?.classification_override === "FOREIGN_SERVICE" ||
+                      invoice?.invoice_origin === "FOREIGN" ||
+                      invoice?.original_currency ||
+                      formData.original_currency ||
+                      gstResult?.is_reverse_charge
+                    );
+                    if (!isForeignOrRcm) return null;
+
+                    const activeRate = Number(invoice?.exchange_rate || 95.2408);
+                    const foreignCurr = String(invoice?.original_currency || formData.original_currency || (invoice?.currency && invoice?.currency !== "INR" ? invoice?.currency : "USD")).toUpperCase();
+                    const subtotalInr = Number(formData.subtotal || formData.total_amount || 0);
+                    const foreignAmt = Number(invoice?.original_total_amount || (subtotalInr > 0 && activeRate > 0 ? subtotalInr / activeRate : 100.0));
+                    
+                    const isTdsApp = Boolean(tdsResult?.tds_applicable ?? tdsResult?.applicable ?? true);
+                    const tdsRate = isTdsApp ? Number(tdsResult?.approved_tds_rate ?? tdsResult?.tds_rate ?? tdsResult?.rate ?? 20.0) : 20.0;
+                    const tdsAmtInr = Math.round(((subtotalInr * tdsRate) / 100) * 100) / 100;
+                    const netRemittanceInr = Math.max(0, Math.round((subtotalInr - tdsAmtInr) * 100) / 100);
+                    const netRemittanceForeign = activeRate > 0 ? (netRemittanceInr / activeRate) : 0;
+                    const igstRcmAmt = Math.round((subtotalInr * 0.18) * 100) / 100;
+
+                    return (
+                      <div
+                        style={{
+                          background: "#fafafa",
+                          border: "1px solid var(--border-subtle)",
+                          borderRadius: "var(--radius-sm)",
+                          padding: "14px 16px",
+                          marginBottom: "14px",
+                          display: "grid",
+                          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+                          gap: "12px",
+                          fontSize: "12px",
+                        }}
+                      >
+                        <div>
+                          <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>
+                            FOREIGN INVOICE ({foreignCurr})
+                          </div>
+                          <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--text-primary)" }}>
+                            {foreignCurr} {foreignAmt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                            @ ₹{activeRate.toFixed(4)}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>
+                            VENDOR GRAND TOTAL
+                          </div>
+                          <div style={{ fontWeight: "700", fontSize: "14px", color: "var(--accent)" }}>
+                            ₹{subtotalInr.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#16a34a", marginTop: "2px", fontWeight: "600" }}>
+                            0% Vendor GST (Overseas)
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>
+                            TDS WITHHOLDING ({tdsRate}%)
+                          </div>
+                          <div style={{ fontWeight: "700", fontSize: "14px", color: "#dc2626" }}>
+                            -₹{tdsAmtInr.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                            Sec 195 (Paid to IT Dept)
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>
+                            NET WIRE REMITTANCE
+                          </div>
+                          <div style={{ fontWeight: "800", fontSize: "14px", color: "#15803d" }}>
+                            ₹{netRemittanceInr.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#166534", marginTop: "2px", fontWeight: "600" }}>
+                            {foreignCurr} {netRemittanceForeign.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div style={{ color: "var(--text-secondary)", fontSize: "11px", marginBottom: "2px" }}>
+                            18.0% IGST RCM (SELF-ASSESSED)
+                          </div>
+                          <div style={{ fontWeight: "700", fontSize: "14px", color: "#2563eb" }}>
+                            ₹{igstRcmAmt.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <div style={{ fontSize: "11px", color: "#2563eb", marginTop: "2px" }}>
+                            100% ITC Claim (₹0 Net Cost)
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "12px" }}>
                     <div>
                       <label className="form-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -4312,8 +4508,9 @@ export default function InvoiceWorkspace({
                       </label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.subtotal ?? ""}
+                        value={toCleanDisplayNum(formData.subtotal)}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("subtotal", e.target.value === "" ? null : parseFloat(e.target.value))}
                         style={
@@ -4329,8 +4526,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">Discount Total</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.discount_total ?? ""}
+                        value={toCleanDisplayNum(formData.discount_total)}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("discount_total", e.target.value === "" ? null : parseFloat(e.target.value))}
                       />
@@ -4339,8 +4537,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">CGST Amount</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.cgst_amount ?? formData.cgst ?? ""}
+                        value={toCleanDisplayNum(formData.cgst_amount ?? formData.cgst)}
                         placeholder="0.00"
                         onChange={(e) => {
                           const val = e.target.value === "" ? null : parseFloat(e.target.value);
@@ -4353,8 +4552,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">SGST Amount</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.sgst_amount ?? formData.sgst ?? ""}
+                        value={toCleanDisplayNum(formData.sgst_amount ?? formData.sgst)}
                         placeholder="0.00"
                         onChange={(e) => {
                           const val = e.target.value === "" ? null : parseFloat(e.target.value);
@@ -4367,8 +4567,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">IGST Amount</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.igst_amount ?? formData.igst ?? ""}
+                        value={toCleanDisplayNum(formData.igst_amount ?? formData.igst)}
                         placeholder="0.00"
                         onChange={(e) => {
                           const val = e.target.value === "" ? null : parseFloat(e.target.value);
@@ -4381,8 +4582,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">Cess Amount</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.cess_amount ?? formData.cess ?? ""}
+                        value={toCleanDisplayNum(formData.cess_amount ?? formData.cess)}
                         placeholder="0.00"
                         onChange={(e) => {
                           const val = e.target.value === "" ? null : parseFloat(e.target.value);
@@ -4404,8 +4606,9 @@ export default function InvoiceWorkspace({
                       </label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.tax_total ?? ""}
+                        value={toCleanDisplayNum(formData.tax_total)}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("tax_total", e.target.value === "" ? null : parseFloat(e.target.value))}
                         style={
@@ -4421,8 +4624,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">Shipping Charges</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.shipping_charges ?? ""}
+                        value={toCleanDisplayNum(formData.shipping_charges)}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("shipping_charges", e.target.value === "" ? null : parseFloat(e.target.value))}
                       />
@@ -4431,8 +4635,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">Other Charges</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.other_charges ?? ""}
+                        value={toCleanDisplayNum(formData.other_charges)}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("other_charges", e.target.value === "" ? null : parseFloat(e.target.value))}
                       />
@@ -4441,8 +4646,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">Adjustment</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.adjustment ?? ""}
+                        value={toCleanDisplayNum(formData.adjustment)}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("adjustment", e.target.value === "" ? null : parseFloat(e.target.value))}
                       />
@@ -4451,8 +4657,9 @@ export default function InvoiceWorkspace({
                       <label className="form-label">Round Off</label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
-                        value={formData.round_off ?? ""}
+                        value={toCleanDisplayNum(formData.round_off)}
                         placeholder="0.00"
                         onChange={(e) => handleFieldChange("round_off", e.target.value === "" ? null : parseFloat(e.target.value))}
                       />
@@ -4470,7 +4677,10 @@ export default function InvoiceWorkspace({
                       </label>
                       <input
                         type="number"
+                        step="0.01"
                         className="form-input"
+                        value={toCleanDisplayNum(formData.total_amount)}
+                        placeholder="0.00"
                         style={{
                           fontSize: "16px",
                           fontWeight: "700",
@@ -4484,8 +4694,6 @@ export default function InvoiceWorkspace({
                             (c: any) => (c.status === "MISMATCH" || c.status === "FAILED") && (c.type === "GRAND_TOTAL" || c.name?.includes("total"))
                           ) ? "rgba(239, 68, 68, 0.05)" : undefined,
                         }}
-                        value={formData.total_amount ?? ""}
-                        placeholder="0.00"
                         onChange={(e) => handleFieldChange("total_amount", e.target.value === "" ? null : parseFloat(e.target.value))}
                       />
                     </div>
@@ -4662,6 +4870,91 @@ export default function InvoiceWorkspace({
                         </div>
                       );
                     })()}
+
+                    {/* Quick Presets for Statutory TDS Section & Rate */}
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap", marginBottom: "12px" }}>
+                      <span style={{ fontSize: "11px", fontWeight: "600", color: "var(--text-secondary)" }}>Presets:</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
+                          const calcAmt = Math.round((subtotal * 0.20) * 100) / 100;
+                          setAccountingData((prev: any) => {
+                            const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                            currTds.tds_applicable = true;
+                            currTds.applicable = true;
+                            currTds.tds_section = "Section 195 [Foreign Remittance]";
+                            currTds.section = "Section 195 [Foreign Remittance]";
+                            currTds.tds_provision = "Section 195 - Other sums payable to Non-Resident / Foreign Entity (20%)";
+                            currTds.provision = "Section 195 - Other sums payable to Non-Resident / Foreign Entity (20%)";
+                            currTds.tds_rate = 20.0;
+                            currTds.rate = 20.0;
+                            currTds.approved_tds_rate = 20.0;
+                            currTds.tds_base_amount = subtotal;
+                            currTds.base_amount = subtotal;
+                            currTds.proposed_tds_amount = calcAmt;
+                            currTds.tds_amount = calcAmt;
+                            return { ...prev, tds_assessment: currTds, tds: currTds, tds_final: currTds };
+                          });
+                        }}
+                        style={{ fontSize: "11px", padding: "3px 8px", background: "rgba(37,99,235,0.06)", border: "1px solid rgba(37,99,235,0.2)", borderRadius: "4px", cursor: "pointer", fontWeight: "600", color: "#2563eb" }}
+                      >
+                        ⚡ Sec 195 (20.0% Non-Resident)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
+                          const calcAmt = Math.round((subtotal * 0.10) * 100) / 100;
+                          setAccountingData((prev: any) => {
+                            const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                            currTds.tds_applicable = true;
+                            currTds.applicable = true;
+                            currTds.tds_section = "Section 195 [DTAA Relief / TRC]";
+                            currTds.section = "Section 195 [DTAA Relief / TRC]";
+                            currTds.tds_provision = "Section 195 - DTAA Double Taxation Avoidance Agreement Treaty Relief (10%)";
+                            currTds.provision = "Section 195 - DTAA Double Taxation Avoidance Agreement Treaty Relief (10%)";
+                            currTds.tds_rate = 10.0;
+                            currTds.rate = 10.0;
+                            currTds.approved_tds_rate = 10.0;
+                            currTds.tds_base_amount = subtotal;
+                            currTds.base_amount = subtotal;
+                            currTds.proposed_tds_amount = calcAmt;
+                            currTds.tds_amount = calcAmt;
+                            return { ...prev, tds_assessment: currTds, tds: currTds, tds_final: currTds };
+                          });
+                        }}
+                        style={{ fontSize: "11px", padding: "3px 8px", background: "rgba(37,99,235,0.06)", border: "1px solid rgba(37,99,235,0.2)", borderRadius: "4px", cursor: "pointer", fontWeight: "600", color: "#2563eb" }}
+                      >
+                        ⚡ Sec 195 (10.0% DTAA)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const subtotal = parseFloat(String(formData.subtotal || formData.total_amount || 0));
+                          setAccountingData((prev: any) => {
+                            const currTds = { ...(prev.tds_assessment || prev.tds || {}) };
+                            currTds.tds_applicable = true;
+                            currTds.applicable = true;
+                            currTds.tds_section = "Section 197 [Nil Deduction Certificate]";
+                            currTds.section = "Section 197 [Nil Deduction Certificate]";
+                            currTds.tds_provision = "Section 197 - Lower / Nil Withholding Tax Certificate Issued by AO";
+                            currTds.provision = "Section 197 - Lower / Nil Withholding Tax Certificate Issued by AO";
+                            currTds.tds_rate = 0.0;
+                            currTds.rate = 0.0;
+                            currTds.approved_tds_rate = 0.0;
+                            currTds.tds_base_amount = subtotal;
+                            currTds.base_amount = subtotal;
+                            currTds.proposed_tds_amount = 0.0;
+                            currTds.tds_amount = 0.0;
+                            return { ...prev, tds_assessment: currTds, tds: currTds, tds_final: currTds };
+                          });
+                        }}
+                        style={{ fontSize: "11px", padding: "3px 8px", background: "rgba(37,99,235,0.06)", border: "1px solid rgba(37,99,235,0.2)", borderRadius: "4px", cursor: "pointer", fontWeight: "600", color: "#2563eb" }}
+                      >
+                        ⚡ Sec 197 (0.0% Nil)
+                      </button>
+                    </div>
 
                     <div
                       style={{
@@ -5049,6 +5342,62 @@ export default function InvoiceWorkspace({
                                 <div style={{ fontSize: "13px", fontWeight: "700", color: "#b91c1c" }}>
                                   {threshAmt !== null ? `₹${threshAmt.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "N/A"}
                                 </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Live TDS & Remittance Computation Callout */}
+                      {(() => {
+                        const isApp = Boolean(tdsResult.tds_applicable ?? tdsResult.applicable);
+                        if (!isApp) return null;
+                        const subtotal = Number(formData.subtotal || formData.total_amount || 0);
+                        const rawRate = Number(tdsResult.approved_tds_rate ?? tdsResult.tds_rate ?? tdsResult.rate ?? 0);
+                        const tdsAmt = Math.round(((subtotal * rawRate) / 100) * 100) / 100;
+                        const netRemit = Math.max(0, Math.round((subtotal - tdsAmt) * 100) / 100);
+                        const fxRate = Number(invoice?.exchange_rate || 95.2408);
+                        const foreignCurr = String(invoice?.original_currency || formData.original_currency || (invoice?.currency && invoice?.currency !== "INR" ? invoice?.currency : "USD")).toUpperCase();
+                        const isForeign = Boolean(invoice?.is_foreign || invoice?.invoice_origin === "FOREIGN_SERVICE" || invoice?.classification_override === "FOREIGN_SERVICE" || invoice?.original_currency);
+                        const foreignNetRemit = fxRate > 0 ? (netRemit / fxRate) : 0;
+
+                        return (
+                          <div
+                            style={{
+                              gridColumn: "1 / -1",
+                              background: "#fafafa",
+                              border: "1px solid var(--border-subtle)",
+                              borderRadius: "var(--radius-sm)",
+                              padding: "10px 14px",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              flexWrap: "wrap",
+                              gap: "8px",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                              <CheckCircle2 size={16} color="var(--accent)" />
+                              <div>
+                                <div style={{ fontSize: "12px", fontWeight: "700", color: "var(--text-primary)" }}>
+                                  Net Vendor Payable (After {rawRate}% TDS Withholding)
+                                </div>
+                                <div style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+                                  Base: ₹{subtotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })} − TDS: ₹{tdsAmt.toLocaleString("en-IN", { minimumFractionDigits: 2 })} (Paid to Govt)
+                                </div>
+                              </div>
+                            </div>
+                            <div style={{ textAlign: "right" }}>
+                              <div style={{ fontSize: "10px", fontWeight: "700", color: "var(--text-secondary)", textTransform: "uppercase" }}>
+                                Net Wire Remittance
+                              </div>
+                              <div style={{ fontSize: "14px", fontWeight: "800", color: "#15803d" }}>
+                                ₹{netRemit.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                                {isForeign && (
+                                  <span style={{ fontSize: "11px", fontWeight: "600", color: "#166534", marginLeft: "4px" }}>
+                                    ({foreignCurr} {foreignNetRemit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>

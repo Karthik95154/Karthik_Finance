@@ -332,6 +332,52 @@ export default function AppShell({
               );
             })}
           </nav>
+
+          {/* Administration Section (ADMIN & FINANCE_ADMIN) */}
+          {["ADMIN", "FINANCE_ADMIN"].includes(userProfile?.role?.toUpperCase() || "") && (
+            <div style={{ marginTop: "16px" }}>
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontWeight: "700",
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                  color: "var(--text-tertiary)",
+                  padding: "8px 10px 4px",
+                }}
+              >
+                Administration
+              </div>
+              <nav style={{ display: "flex", flexDirection: "column", gap: "3px" }}>
+                <Link
+                  href="/administration/users"
+                  onClick={() => setMobileOpen(false)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "9px 12px",
+                    borderRadius: "var(--radius-sm)",
+                    fontSize: "13px",
+                    fontWeight: pathname.startsWith("/administration") ? "600" : "500",
+                    color: pathname.startsWith("/administration") ? "var(--accent)" : "var(--text-primary)",
+                    background: pathname.startsWith("/administration") ? "rgba(0, 113, 227, 0.08)" : "transparent",
+                    transition: "all 0.15s ease",
+                    textDecoration: "none",
+                  }}
+                  className="nav-item-link"
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <ShieldCheck
+                      size={17}
+                      color={pathname.startsWith("/administration") ? "var(--accent)" : "var(--text-secondary)"}
+                    />
+                    <span>Users & Access</span>
+                  </div>
+                </Link>
+              </nav>
+            </div>
+          )}
         </div>
 
         {/* Sidebar Footer: System Status & User */}

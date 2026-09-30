@@ -355,6 +355,9 @@ async def poll_email_inbox(
 
                 # Step C: Save STAGED invoice record in PostgreSQL
                 start_insert = time.perf_counter()
+                origin_val = classification_res.invoice_origin.value if hasattr(classification_res.invoice_origin, "value") else str(getattr(classification_res, "invoice_origin", "INDIAN"))
+                curr_val = str(getattr(classification_res, "currency", "INR"))
+
                 new_invoice = Invoice(
                     id=invoice_id,
                     tenant_id=current_user.tenant_id,
@@ -372,6 +375,8 @@ async def poll_email_inbox(
                     email_message_id=attachment["email_message_id"],
                     financial_relevance=rel_val,
                     document_type=type_val,
+                    invoice_origin=origin_val,
+                    currency=curr_val,
                     classification_confidence=classification_res.confidence,
                     classification_reason=classification_res.reason,
                     classification_model=getattr(settings, "GROQ_MODEL", "qwen/qwen3.8-27b"),
