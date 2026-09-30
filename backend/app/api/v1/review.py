@@ -13,8 +13,9 @@ from app.core.security import (
     require_roles,
 )
 from app.db.database import get_db
-from app.db.models import Invoice, JournalEntry, JournalLine, AuditLog, ChartOfAccount
+from app.db.models import Invoice, JournalEntry, JournalLine, AuditLog, ChartOfAccount, Tenant
 from app.schemas.invoice import ClassificationOverrideRequest
+from app.core.date_utils import parse_and_normalize_date, is_date_in_closed_period, format_to_indian_standard
 from app.services.journal_generator import journal_generator, sync_relational_journal
 from app.services.audit_service import audit_service
 from app.services.export_service import export_service
@@ -25,6 +26,60 @@ router = APIRouter(tags=["Finance Review & Export"])
 
 class RejectRequest(BaseModel):
     reason: str
+
+
+class TenantClosedPeriodRequest(BaseModel):
+    books_closed_through_date: Optional[str] = None  # ISO YYYY-MM-DD or null
+
+
+@router.get("/tenants/closed-period")
+async def get_tenant_closed_period(
+    current_user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Returns the authenticated tenant's closed accounting period lock date."""
+    tenant_query = select(Tenant).where(Tenant.id == current_user.tenant_id)
+    t_res = await db.execute(tenant_query)
+    tenant = t_res.scalar_one_or_none()
+
+    lock_date = tenant.books_closed_through_date.isoformat() if (tenant and tenant.books_closed_through_date) else None
+    return {
+        "tenant_id": current_user.tenant_id,
+        "books_closed_through_date": lock_date,
+        "books_closed_through_date_formatted": format_to_indian_standard(lock_date) if lock_date else None,
+    }
+
+
+@router.put("/tenants/closed-period")
+async def update_tenant_closed_period(
+    payload: TenantClosedPeriodRequest,
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN"])),
+    db: AsyncSession = Depends(get_db),
+):
+    """Updates the authenticated tenant's books_closed_through_date. Only ADMIN authorized."""
+    tenant_query = select(Tenant).where(Tenant.id == current_user.tenant_id)
+    t_res = await db.execute(tenant_query)
+    tenant = t_res.scalar_one_or_none()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    new_date = None
+    if payload.books_closed_through_date:
+        norm_date = parse_and_normalize_date(payload.books_closed_through_date)
+        if not norm_date:
+            raise HTTPException(status_code=400, detail="Invalid date format for books_closed_through_date.")
+        from datetime import datetime
+        new_date = datetime.strptime(norm_date, "%Y-%m-%d").date()
+
+    tenant.books_closed_through_date = new_date
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": "Tenant closed accounting period updated successfully.",
+        "tenant_id": current_user.tenant_id,
+        "books_closed_through_date": new_date.isoformat() if new_date else None,
+    }
 
 
 class JournalPreviewResponse(BaseModel):
@@ -115,7 +170,7 @@ async def get_journal_preview(
 @router.post("/invoices/{invoice_id}/review/journal/approve")
 async def approve_journal_entry(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -148,9 +203,22 @@ async def approve_journal_entry(
             "journal_entry": existing_journal,
         }
 
-    # 2. Extract / Generate Authoritative Journal
+    # 2. Extract / Generate Authoritative Journal with Financial Validation Gate Check
     from app.services.invoice_processing import get_effective_invoice_data
+    from app.services.financial_validator import financial_validator
     vlm_data = get_effective_invoice_data(invoice, convert_fx=True)
+
+    if invoice.financial_validation_result and isinstance(invoice.financial_validation_result, dict):
+        fin_status = invoice.financial_validation_result.get("overall_status")
+        if fin_status == "MISMATCH":
+            re_fin = financial_validator.validate_invoice(vlm_data, invoice.gst_result)
+            if re_fin.get("overall_status") == "PASSED":
+                invoice.financial_validation_result = re_fin
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot approve journal: Stage 5 Financial Validation reported MISMATCH. Discrepancies must be resolved before approval.",
+                )
     accounting_data = (
         invoice.current_accounting_output
         if isinstance(invoice.current_accounting_output, dict)
@@ -238,7 +306,7 @@ async def approve_journal_entry(
 @router.post("/invoices/{invoice_id}/review/tds/approve")
 async def approve_tds_assessment(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -328,7 +396,7 @@ async def approve_tds_assessment(
 @router.post("/invoices/{invoice_id}/review/approve")
 async def approve_invoice(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -357,13 +425,52 @@ async def approve_invoice(
             "approval_status": "APPROVED",
         }
 
-    # 1. Financial Validation Check (Human-in-the-Loop override supported upon explicit user approval)
-    # The human reviewer is authoritative; if they review and trigger approval, we allow approval.
-    pass
-
-    # 2. Extract Authoritative Working Payload and Accounting Classification
+    # 1. Financial Validation Gate Check
     from app.services.invoice_processing import get_effective_invoice_data
+    from app.services.financial_validator import financial_validator
     vlm_data = get_effective_invoice_data(invoice, convert_fx=True)
+
+    if invoice.financial_validation_result and isinstance(invoice.financial_validation_result, dict):
+        fin_status = invoice.financial_validation_result.get("overall_status")
+        if fin_status == "MISMATCH":
+            re_fin = financial_validator.validate_invoice(vlm_data, invoice.gst_result)
+            if re_fin.get("overall_status") == "PASSED":
+                invoice.financial_validation_result = re_fin
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Cannot approve invoice: Stage 5 Financial Validation reported MISMATCH. Discrepancies must be resolved before approval.",
+                )
+
+    # GATE 2 ENFORCEMENT: Server-side Closed Accounting Period Validation
+    t_query = select(Tenant).where(Tenant.id == tenant_id)
+    t_res = await db.execute(t_query)
+    tenant_obj = t_res.scalar_one_or_none()
+    if not tenant_obj:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Tenant organization '{tenant_id}' could not be loaded for accounting period validation."
+        )
+    lock_date = getattr(tenant_obj, "books_closed_through_date", None)
+
+    doc_date = parse_and_normalize_date(vlm_data.get("invoice_date"))
+    effective_posting = parse_and_normalize_date(invoice.posting_date) or doc_date
+
+    if is_date_in_closed_period(effective_posting, lock_date):
+        if invoice.period_resolution != "PRIOR_PERIOD_EXCEPTION":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Cannot approve invoice: Posting date ({effective_posting}) falls within a closed accounting period "
+                    f"(Books closed through {lock_date}). An authorized Finance Prior-Period Exception is required before approval."
+                ),
+            )
+        # Verify exception has mandatory reason
+        if not invoice.period_resolution_reason or len(invoice.period_resolution_reason.strip()) < 10:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Prior-Period Exception requires a valid audit rationale (minimum 10 characters).",
+            )
 
     accounting_data = (
         invoice.current_accounting_output
@@ -460,56 +567,39 @@ async def approve_invoice(
         accounting_data["tds"]["approved_by"] = user_email
         accounting_data["tds"]["approved_at"] = now_iso
 
-    accounting_data["accounting"] = acct_lines
+    # 3. Use pre-balanced approved journal if present, or generate authoritative balanced journal
+    if invoice.journal_entry and isinstance(invoice.journal_entry, dict) and (invoice.journal_entry.get("is_balanced") or invoice.journal_entry.get("validation", {}).get("balanced")):
+        authoritative_journal_dict = dict(invoice.journal_entry)
+        authoritative_journal_dict["status"] = "APPROVED"
+        authoritative_journal_dict["approval_status"] = "APPROVED"
+        authoritative_journal_dict["approved_by"] = user_email
+        authoritative_journal_dict["approved_at"] = now_iso
+    else:
+        try:
+            authoritative_journal_dict = journal_generator.generate_journal(
+                invoice_data=vlm_data,
+                accounting_classification=accounting_data,
+                gst_result=invoice.gst_result,
+                itc_result=invoice.itc_result,
+                tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
+                financial_validation_result=invoice.financial_validation_result,
+                require_approved=True,
+            )
+        except ValueError as val_err:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Authoritative journal generation failed: {str(val_err)}",
+            )
 
-    # 3. Generate Authoritative Journal (require_approved=True) using single source of truth
-    from app.services.gst_engine import gst_engine
-    from app.services.itc_engine import itc_engine
-
-    effective_gst = gst_engine.evaluate_gst(vlm_data)
-    effective_itc = itc_engine.evaluate_itc(
-        invoice_data=vlm_data,
-        gst_result=effective_gst,
-        accounting_output=accounting_data,
-    )
-    invoice.gst_result = effective_gst
-    invoice.itc_result = effective_itc
-
-    try:
-        journal = journal_generator.generate_journal_entry(
-            invoice_data=vlm_data,
-            accounting_data=accounting_data,
-            gst_result=effective_gst,
-            itc_result=effective_itc,
-            tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
-            financial_validation_result=invoice.financial_validation_result,
-            require_approved=True,
-        )
-    except ValueError as val_err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Authoritative journal generation failed: {str(val_err)}",
-        )
-
-    if not journal.get("is_balanced"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot approve invoice: Journal is unbalanced (Debits ₹{journal.get('total_debit')} != Credits ₹{journal.get('total_credit')}).",
-        )
+        is_bal = bool(authoritative_journal_dict.get("is_balanced") or authoritative_journal_dict.get("validation", {}).get("balanced"))
+        if not is_bal:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Cannot approve invoice: Journal is unbalanced (Debits ₹{authoritative_journal_dict.get('total_debit')} != Credits ₹{authoritative_journal_dict.get('total_credit')}).",
+            )
 
     # 4. Atomic Database Mutations
     invoice.current_accounting_output = accounting_data
-
-    # Generate authoritative journal dict for persistence
-    authoritative_journal_dict = journal_generator.generate_journal(
-        invoice_data=vlm_data,
-        accounting_classification=accounting_data,
-        gst_result=effective_gst,
-        itc_result=effective_itc,
-        tds_result=accounting_data.get("tds") if isinstance(accounting_data, dict) else None,
-        financial_validation_result=invoice.financial_validation_result,
-        require_approved=True,
-    )
     invoice.journal_entry = authoritative_journal_dict
 
     # Sync relational tables with the authoritative journal
@@ -542,7 +632,7 @@ async def approve_invoice(
         "message": "Invoice approved and authoritative journal created successfully.",
         "approval_status": "APPROVED",
         "journal_entry_id": str(synced_entry.id) if synced_entry else str(invoice_id),
-        "is_balanced": journal["is_balanced"],
+        "is_balanced": bool(authoritative_journal_dict.get("is_balanced") or authoritative_journal_dict.get("validation", {}).get("balanced")),
     }
 
 
@@ -552,7 +642,7 @@ async def approve_invoice(
 async def reject_invoice(
     invoice_id: UUID,
     req: RejectRequest,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -603,7 +693,7 @@ async def reject_invoice(
 async def export_invoice(
     invoice_id: UUID,
     force_resync: bool = True,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_ADMIN", "FINANCE_USER", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -712,7 +802,7 @@ async def get_invoice_vendor_status(
 @router.post("/review/invoices/{invoice_id}/vendor/add-to-zoho")
 async def add_vendor_to_zoho(
     invoice_id: UUID,
-    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE"])),
+    current_user: AuthenticatedUser = Depends(require_roles(["ADMIN", "FINANCE", "FINANCE_MANAGER", "FINANCE_REVIEWER", "DATA_REVIEWER"])),
     db: AsyncSession = Depends(get_db),
 ):
     """

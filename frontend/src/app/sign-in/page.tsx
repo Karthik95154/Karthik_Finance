@@ -8,6 +8,8 @@ import PublicFooter from "@/components/PublicFooter";
 import { API_BASE, invalidateZohoCache, clearAuthToken, changePassword } from "@/lib/api";
 import { ShieldCheck, ArrowRight, Lock, Mail, AlertCircle, CheckCircle2, Loader2, KeyRound } from "lucide-react";
 
+import { loginUser } from "@/lib/api";
+
 export default function SignInPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
@@ -87,7 +89,8 @@ export default function SignInPage() {
       }
       router.push("/dashboard");
     } catch (err: any) {
-      setError(err.message || "Network error during authentication.");
+      setError(err.message || "Invalid email or password.");
+    } finally {
       setIsLoading(false);
     }
   };

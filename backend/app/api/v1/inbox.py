@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Invoice, Integration, EmailConnection
 from app.core.config import settings
-from app.core.security import AuthenticatedUser, get_current_user
+from app.core.security import AuthenticatedUser, get_current_user, require_roles
 from app.storage.supabase_storage import storage_service
 from app.services.imap_service import imap_service
 from app.services.invoice_processing import process_invoice_background
@@ -28,22 +28,19 @@ def get_user_filter(current_user: AuthenticatedUser):
         return false()
 
 
-
 @router.get("/inbox/staged")
 async def get_staged_documents(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Retrieves staged invoices waiting for review belonging strictly to the authenticated user."""
-    try:
-        user_uuid = uuid.UUID(current_user.id)
-        user_filter = (Invoice.user_id == user_uuid)
-    except (ValueError, TypeError):
-        user_filter = false()
+    """Retrieves staged invoices waiting for review, strictly scoped to the authenticated user and tenant."""
+    tenant_id = current_user.tenant_id
+    user_filter = get_user_filter(current_user)
 
     query = (
         select(Invoice)
         .where(
+            Invoice.tenant_id == tenant_id,
             Invoice.status == "STAGED",
             user_filter,
             or_(
@@ -51,12 +48,12 @@ async def get_staged_documents(
                 Invoice.financial_relevance.is_(None),
             ),
         )
-        .order_by(Invoice.created_at.desc())
     )
+
+    query = query.order_by(Invoice.created_at.desc())
     result = await db.execute(query)
     staged = result.scalars().all()
     return staged
-
 
 
 @router.post("/inbox/staged/{invoice_id}/process")
@@ -66,14 +63,11 @@ async def process_staged_document(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Triggers invoice extraction and Stage 3 accounting pipeline for a staged document."""
-    try:
-        user_uuid = uuid.UUID(current_user.id)
-        user_filter = (Invoice.user_id == user_uuid)
-    except (ValueError, TypeError):
-        user_filter = false()
+    """Triggers invoice extraction and Stage 3 accounting pipeline for a staged document belonging to the tenant."""
+    tenant_id = current_user.tenant_id
+    user_filter = get_user_filter(current_user)
 
-    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -112,14 +106,11 @@ async def delete_staged_document(
     current_user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Deletes a staged invoice from the database instantly, cleaning up Supabase Storage in the background."""
-    try:
-        user_uuid = uuid.UUID(current_user.id)
-        user_filter = (Invoice.user_id == user_uuid)
-    except (ValueError, TypeError):
-        user_filter = false()
+    """Deletes a staged invoice from the database and Supabase Storage, strictly verifying tenant ownership."""
+    tenant_id = current_user.tenant_id
+    user_filter = get_user_filter(current_user)
 
-    query = select(Invoice).where(Invoice.id == invoice_id, user_filter)
+    query = select(Invoice).where(Invoice.id == invoice_id, Invoice.tenant_id == tenant_id, user_filter)
     result = await db.execute(query)
     invoice = result.scalar_one_or_none()
 
@@ -170,8 +161,12 @@ async def poll_email_inbox(
     import asyncio
     import re
     start_total = time.perf_counter()
-
-    # ── 1. Resolve user UUID and EmailConnection filter ──────────────────────
+    tenant_id = current_user.tenant_id
+    user_id = current_user.id
+    try:
+        parsed_user_id = uuid.UUID(str(user_id))
+    except Exception:
+        parsed_user_id = None
     try:
         current_user_uuid = uuid.UUID(current_user.id)
         user_conn_filter = or_(

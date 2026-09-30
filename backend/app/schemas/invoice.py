@@ -41,7 +41,7 @@ class InvoiceStatusResponse(BaseModel):
     period_decision: Optional[str] = "NOT_REQUIRED"
     period_message: Optional[str] = None
     invoice_date: Optional[str] = None
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
     # Classification & Foreign Currency / FX fields
     invoice_origin: Optional[str] = "INDIAN"
     currency: Optional[str] = "INR"
@@ -66,6 +66,7 @@ class InvoiceResponse(BaseModel):
 
     id: UUID
     tenant_id: Optional[str] = "default-tenant-001"
+    owner_user_id: Optional[UUID] = None
     file_path: str
     file_name: str
     file_size: int
@@ -85,6 +86,11 @@ class InvoiceResponse(BaseModel):
     error_message: Optional[str] = None
     confidence_score: Optional[float] = None
     accounting_confidence: Optional[float] = None
+    posting_date: Optional[date] = None
+    period_resolution: Optional[str] = "NONE"
+    period_resolution_reason: Optional[str] = None
+    period_resolved_by: Optional[str] = None
+    period_resolved_at: Optional[datetime] = None
     raw_vlm_output: Optional[Dict[str, Any]] = None
     current_vlm_output: Optional[Dict[str, Any]] = None
     accounting_output: Optional[Dict[str, Any]] = None
@@ -151,6 +157,7 @@ class InvoiceListItemResponse(BaseModel):
 
     id: UUID
     tenant_id: Optional[str] = "default-tenant-001"
+    owner_user_id: Optional[UUID] = None
     file_name: str
     file_size: int
     mime_type: str

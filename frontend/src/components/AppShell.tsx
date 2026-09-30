@@ -21,7 +21,7 @@ import {
   AlertTriangle,
   XCircle,
 } from "lucide-react";
-import { getHealth, HealthResponse, getCurrentUser, UserProfile, invalidateZohoCache, clearAuthToken } from "@/lib/api";
+import { getHealth, HealthResponse, getCurrentUser, logoutUser, UserProfile, invalidateZohoCache, clearAuthToken } from "@/lib/api";
 import SystemStatusModal, { getStatusBadge } from "./SystemStatusModal";
 
 interface AppShellProps {
@@ -42,12 +42,15 @@ export default function AppShell({
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [health, setHealth] = useState<HealthResponse | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   const [isRefreshingHealth, setIsRefreshingHealth] = useState(false);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [logoutModalOpen, setLogoutModalOpen] = useState(false);
 
-  const handleLogoutConfirm = () => {
+  const handleLogoutConfirm = async () => {
+    try {
+      await logoutUser();
+    } catch {}
     if (typeof window !== "undefined") {
       // Clear in-memory and persisted caches so the next user starts clean
       clearAuthToken();
@@ -57,7 +60,8 @@ export default function AppShell({
       sessionStorage.removeItem("sakshi_staged_docs_cache");
       localStorage.removeItem("dev_auth_token");
       localStorage.removeItem("user_info");
-      window.location.href = "/";
+      sessionStorage.removeItem("sakshi_imap_settings_cache");
+      window.location.href = "/sign-in";
     }
   };
 
@@ -75,12 +79,6 @@ export default function AppShell({
 
   useEffect(() => {
     fetchHealth();
-    const interval = setInterval(fetchHealth, 30000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    // Check localStorage user_info or fetch from API /auth/me
     if (typeof window !== "undefined") {
       const savedUser = localStorage.getItem("user_info");
       if (savedUser) {
@@ -99,6 +97,9 @@ export default function AppShell({
         }
       })
       .catch(() => null);
+
+    const interval = setInterval(fetchHealth, 30000);
+    return () => clearInterval(interval);
   }, []);
 
   const navItems = [

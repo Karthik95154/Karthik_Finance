@@ -1,5 +1,5 @@
-import uuid
 import logging
+import uuid
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -8,7 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.database import get_db
 from app.db.models import Integration, EmailConnection, User, Tenant
-from app.core.security import AuthenticatedUser, get_current_user
+from app.core.security import AuthenticatedUser, get_current_user, require_roles
 from app.core.security_util import encrypt_data
 from app.services.imap_service import imap_service
 
@@ -18,10 +18,10 @@ router = APIRouter(prefix="/settings/integrations", tags=["Integration Settings"
 
 
 class IMAPConfigureRequest(BaseModel):
-    imap_server: str = Field(..., example="imap.gmail.com")
-    imap_port: int = Field(993, example=993)
-    email_address: str = Field(..., example="user@gmail.com")
-    password: str = Field(..., example="Google App Password")
+    imap_server: str = Field(..., description="IMAP server hostname, e.g. imap.gmail.com")
+    imap_port: int = Field(993, description="IMAP port, default 993")
+    email_address: str = Field(..., description="Email address for mailbox")
+    password: str = Field(..., description="Password or App Password")
 
 
 def mask_password(config: Dict[str, Any]) -> Dict[str, Any]:

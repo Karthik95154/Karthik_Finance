@@ -13,7 +13,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from app.db.models import Invoice, ZohoConnection, JournalEntry, TaxRate, ChartOfAccount
+from app.db.models import Invoice, ZohoConnection, JournalEntry, TaxRate, ChartOfAccount, Tenant
 from app.services.export_service import export_service
 
 
@@ -78,6 +78,7 @@ async def test_case_1_approved_balanced_is_allowed():
         status="BALANCED",
         is_balanced=True,
     )
+    mock_tenant = Tenant(id=tenant_id, name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_conn = ZohoConnection(id=uuid.uuid4(), tenant_id=tenant_id, status="CONNECTED", organization_id="ORG_1")
     coa = ChartOfAccount(id=uuid.uuid4(), tenant_id=tenant_id, zoho_account_id="4076465000000000558", account_name="Operating expenses", is_active=True)
     tax_18 = TaxRate(id=uuid.uuid4(), tenant_id=tenant_id, zoho_tax_id="T18", tax_name="GST18", tax_percentage=18.0, tax_type="tax_group", is_active=True)
@@ -90,8 +91,11 @@ async def test_case_1_approved_balanced_is_allowed():
             res.scalar_one_or_none.return_value = mock_inv
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = mock_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM zoho_connections" in stmt_str or "zoho_connections." in stmt_str:
             res.scalar_one_or_none.return_value = mock_conn
+            res.scalars.return_value.all.return_value = [mock_conn]
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
@@ -251,6 +255,7 @@ async def test_case_6_posted_balanced_is_allowed():
         status="POSTED",
         is_balanced=True,
     )
+    mock_tenant = Tenant(id=tenant_id, name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_conn = ZohoConnection(id=uuid.uuid4(), tenant_id=tenant_id, status="CONNECTED", organization_id="ORG_1")
     coa = ChartOfAccount(id=uuid.uuid4(), tenant_id=tenant_id, zoho_account_id="4076465000000000558", account_name="Operating expenses", is_active=True)
     tax_18 = TaxRate(id=uuid.uuid4(), tenant_id=tenant_id, zoho_tax_id="T18", tax_name="GST18", tax_percentage=18.0, tax_type="tax_group", is_active=True)
@@ -263,8 +268,11 @@ async def test_case_6_posted_balanced_is_allowed():
             res.scalar_one_or_none.return_value = mock_inv
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = mock_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM zoho_connections" in stmt_str or "zoho_connections." in stmt_str:
             res.scalar_one_or_none.return_value = mock_conn
+            res.scalars.return_value.all.return_value = [mock_conn]
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:

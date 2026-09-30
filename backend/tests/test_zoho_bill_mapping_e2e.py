@@ -6,7 +6,7 @@ from app.services.gst_engine import gst_engine
 from app.services.tds_engine import tds_engine
 from app.services.journal_generator import journal_generator
 from app.services.export_service import export_service
-from app.db.models import Invoice, ZohoConnection, ChartOfAccount, TaxRate, JournalEntry
+from app.db.models import Invoice, ZohoConnection, ChartOfAccount, TaxRate, JournalEntry, Tenant
 
 
 @pytest.mark.asyncio
@@ -393,6 +393,7 @@ async def test_case_5_zero_tax_and_intra_state_tax_group_zoho_mapping():
     tax_gst18 = TaxRate(id=uuid4(), tenant_id="test-tenant", zoho_tax_id="460000000099018", tax_name="GST18", tax_percentage=18.0, tax_type="tax_group", is_active=True)
     tax_gst0 = TaxRate(id=uuid4(), tenant_id="test-tenant", zoho_tax_id="460000000099000", tax_name="GST0", tax_percentage=0.0, tax_type="GST", is_active=True)
 
+    mock_tenant = Tenant(id="test-tenant", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -402,6 +403,8 @@ async def test_case_5_zero_tax_and_intra_state_tax_group_zoho_mapping():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa_1, coa_2]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
@@ -511,6 +514,7 @@ async def test_case_6_missing_tax_mapping_raises_error_and_never_marks_exempt():
 
     coa_1 = ChartOfAccount(id=uuid4(), tenant_id="test-tenant", zoho_account_id="460000000028001", account_name="Consulting Expense", is_active=True)
 
+    mock_tenant = Tenant(id="test-tenant", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -520,6 +524,8 @@ async def test_case_6_missing_tax_mapping_raises_error_and_never_marks_exempt():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa_1]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
@@ -618,6 +624,7 @@ async def test_case_7_rcm_reverse_charge_mapping():
     coa_1 = ChartOfAccount(id=uuid4(), tenant_id="test-tenant", zoho_account_id="460000000028001", account_name="Freight Expense", is_active=True)
     tax_gst5 = TaxRate(id=uuid4(), tenant_id="test-tenant", zoho_tax_id="460000000099005", tax_name="GST5", tax_percentage=5.0, tax_type="tax_group", is_active=True)
 
+    mock_tenant = Tenant(id="test-tenant", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
 
     async def mock_execute(stmt, *args, **kwargs):
@@ -627,6 +634,8 @@ async def test_case_7_rcm_reverse_charge_mapping():
             res.scalar_one_or_none.return_value = mock_invoice
         elif "FROM journal_entries" in stmt_str or "journal_entries." in stmt_str:
             res.scalar_one_or_none.return_value = balanced_journal
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
         elif "FROM chart_of_accounts" in stmt_str or "chart_of_accounts." in stmt_str:
             res.scalars.return_value.all.return_value = [coa_1]
         elif "FROM tax_rates" in stmt_str or "tax_rates." in stmt_str:
@@ -683,4 +692,79 @@ async def test_case_8_zoho_source_of_supply_state_code_length():
     assert to_zoho_state_code("TG") == "TG"
     assert len(to_zoho_state_code("Telangana")) < 5
     assert len(to_zoho_state_code("Maharashtra")) < 5
+
+
+@pytest.mark.asyncio
+async def test_case_9_zoho_itc_eligibility_mapping_and_error_73003_prevention():
+    """
+    TEST CASE 9 — Zoho Books ITC Eligibility Mapping & Error 73003 Prevention:
+    - Intra-state tax across differing source & destination states sets 'ineligible_others'
+    - Section 17(5) blocked credit sets 'ineligible_others'
+    - Inter-state eligible service sets 'eligible_input_services'
+    - Inter-state eligible capital goods sets 'eligible_capital_goods'
+    - Same-state eligible goods sets 'eligible_inputs'
+    """
+    from app.services.export_service import resolve_zoho_itc_eligibility
+
+    # 1. State mismatch on intra-state supply (Zoho Error 73003 scenario)
+    res_mismatch = resolve_zoho_itc_eligibility(
+        item_desc="Office Supplies",
+        item_hsn="8471",
+        line_itc=None,
+        overall_itc_res={"status": "ELIGIBLE"},
+        source_state="36",
+        dest_state="27",
+        supply_type="INTRA_STATE",
+        line_has_intra_tax=True,
+    )
+    assert res_mismatch == "ineligible_others"
+
+    # 2. Blocked under Section 17(5)
+    res_blocked = resolve_zoho_itc_eligibility(
+        item_desc="Executive Food & Beverage Catering",
+        item_hsn="9963",
+        line_itc={"itc_status": "INELIGIBLE", "status": "INELIGIBLE"},
+        overall_itc_res={"status": "INELIGIBLE"},
+        source_state="36",
+        dest_state="36",
+        supply_type="INTRA_STATE",
+    )
+    assert res_blocked == "ineligible_others"
+
+    # 3. Inter-state Consulting Service (HSN 9983)
+    res_service = resolve_zoho_itc_eligibility(
+        item_desc="Cloud Software Consulting",
+        item_hsn="998311",
+        line_itc={"itc_status": "ELIGIBLE"},
+        overall_itc_res={"status": "ELIGIBLE"},
+        source_state="33",
+        dest_state="36",
+        supply_type="INTER_STATE",
+    )
+    assert res_service == "eligible_input_services"
+
+    # 4. Capital Goods (Laptop / Machinery)
+    res_capital = resolve_zoho_itc_eligibility(
+        item_desc="Dell PowerEdge Server Hardware",
+        item_hsn="8471",
+        line_itc={"itc_status": "ELIGIBLE"},
+        overall_itc_res={"status": "ELIGIBLE"},
+        source_state="36",
+        dest_state="36",
+        supply_type="INTRA_STATE",
+    )
+    assert res_capital == "eligible_capital_goods"
+
+    # 5. Standard Goods (Raw Material / Inputs)
+    res_goods = resolve_zoho_itc_eligibility(
+        item_desc="Copper Wire Cables",
+        item_hsn="8544",
+        line_itc={"itc_status": "ELIGIBLE"},
+        overall_itc_res={"status": "ELIGIBLE"},
+        source_state="36",
+        dest_state="36",
+        supply_type="INTRA_STATE",
+    )
+    assert res_goods == "eligible_inputs"
+
 

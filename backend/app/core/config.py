@@ -23,13 +23,27 @@ class Settings(BaseSettings):
         "http://localhost:3003",
         "http://127.0.0.1:3003",
     ]
-    FRONTEND_URL: str = "http://localhost:3002"
+    FRONTEND_URL: str = "http://localhost:3000"
+    HOST: str = "0.0.0.0"
+    PORT: int = 8000
+
+    @field_validator("PORT", mode="before")
+    @classmethod
+    def parse_port(cls, v: Any) -> int:
+        if v is None or v == "":
+            return 8000
+        try:
+            return int(v)
+        except (ValueError, TypeError):
+            return 8000
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: Any) -> List[str]:
         if isinstance(v, str):
             val = v.strip()
+            if not val:
+                return ["*"]
             # If wrapped in quotes, strip them
             if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
                 val = val[1:-1].strip()
@@ -48,10 +62,10 @@ class Settings(BaseSettings):
                 cleaned = item.strip().strip("'\"").strip()
                 if cleaned:
                     items.append(cleaned)
-            return items
+            return items if items else ["*"]
         elif isinstance(v, (list, tuple, set)):
             return [str(x).strip() for x in v if str(x).strip()]
-        return v
+        return ["*"]
 
     # Supabase Database
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/postgres"
@@ -90,7 +104,7 @@ class Settings(BaseSettings):
     AUTH_SECRET_KEY: str = ""
     JWT_ALGORITHM: str = "HS256"
     AUTH_TOKEN_EXPIRE_MINUTES: int = 1440
-    ENABLE_DEV_AUTH: bool = True
+    ENABLE_DEV_AUTH: bool = False
 
     def model_post_init(self, __context) -> None:
         if self.FRONTEND_URL:
@@ -111,6 +125,7 @@ class Settings(BaseSettings):
                 self.AUTH_SECRET_KEY = "sakshi-dev-jwt-secret-local-only-not-for-production"
             if not self.TOKEN_ENCRYPTION_KEY:
                 self.TOKEN_ENCRYPTION_KEY = "sakshi-dev-token-encryption-key-32b-local"
+            self.ENABLE_DEV_AUTH = True
 
     # Outbound Transactional Email / SMTP Configuration
     SMTP_HOST: str = ""
@@ -158,12 +173,32 @@ class Settings(BaseSettings):
 
     # File Constraints
     MAX_UPLOAD_SIZE_BYTES: int = 25 * 1024 * 1024  # 25 MB
-    ALLOWED_MIME_TYPES: List[str] = [
+    ALLOWED_MIME_TYPES: Union[str, List[str]] = [
         "application/pdf",
         "image/png",
         "image/jpeg",
         "image/jpg",
     ]
+
+    @field_validator("ALLOWED_MIME_TYPES", mode="before")
+    @classmethod
+    def parse_allowed_mime_types(cls, v: Any) -> List[str]:
+        if isinstance(v, str):
+            val = v.strip()
+            if not val:
+                return ["application/pdf", "image/png", "image/jpeg", "image/jpg"]
+            if val.startswith("[") and val.endswith("]"):
+                import json
+                try:
+                    parsed = json.loads(val)
+                    if isinstance(parsed, list):
+                        return [str(x).strip() for x in parsed if str(x).strip()]
+                except Exception:
+                    pass
+            return [x.strip() for x in val.split(",") if x.strip()]
+        elif isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        return ["application/pdf", "image/png", "image/jpeg", "image/jpg"]
 
 
 settings = Settings()

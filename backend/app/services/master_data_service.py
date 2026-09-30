@@ -108,17 +108,19 @@ class MasterDataService:
                 pass
 
         return primary
+        return primary
 
     async def _resolve_organization_id(
         self,
         tenant_id: str,
         db: AsyncSession,
         organization_id: Optional[str] = None,
+        user_id: Optional[Any] = None,
     ) -> Optional[str]:
         """Resolves authoritative active organization_id for tenant."""
         if organization_id:
             return str(organization_id).strip()
-        conn = await self.get_or_create_zoho_connection(tenant_id, db)
+        conn = await self.get_or_create_zoho_connection(tenant_id, db, user_id=user_id)
         return str(conn.organization_id).strip() if conn and conn.organization_id else None
 
     async def sync_chart_of_accounts(
@@ -505,24 +507,23 @@ class MasterDataService:
                     "tax_section": t.get("section"),
                     "tax_description": t.get("description"),
                 })
-            for tg in editpage.get("tax_groups", []):
-                tg_id = str(tg.get("tax_group_id") or tg.get("tax_id"))
-                tg_name = tg.get("tax_group_name") or tg.get("tax_name")
-                tg_pct = float(
-                    tg.get("tax_group_percentage")
-                    if tg.get("tax_group_percentage") is not None
-                    else tg.get("tax_percentage", 0.0)
-                )
+        except Exception as e:
+            logger.warning(f"Failed to fetch bills/editpage: {e}")
+
+        # 3. Fetch tax_groups from settings/taxgroups
+        try:
+            tax_groups = await zoho_client_service.get_tax_groups(connection, db)
+            for tg in tax_groups:
                 all_taxes_to_sync.append({
-                    "tax_id": tg_id,
-                    "tax_name": tg_name,
-                    "tax_percentage": tg_pct,
+                    "tax_id": str(tg.get("tax_group_id") or tg.get("tax_id")),
+                    "tax_name": tg.get("tax_group_name") or tg.get("tax_name") or "GST Group",
+                    "tax_percentage": float(tg.get("tax_group_percentage") or tg.get("tax_percentage", 0.0)),
                     "tax_type": "tax_group",
                     "tax_section": None,
                     "tax_description": None,
                 })
         except Exception as e:
-            logger.warning(f"Failed to fetch bills/editpage tds_taxes: {e}")
+            logger.warning(f"Failed to fetch settings/taxgroups: {e}")
 
         logger.info(f"Fetched {len(all_taxes_to_sync)} total tax records from Zoho for tenant {tenant_id} (Org: {current_org_id})")
 

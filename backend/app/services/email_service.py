@@ -241,5 +241,16 @@ Sakshi Finance Security
             html_body
         )
 
+    @classmethod
+    async def send_verification_otp(
+        cls,
+        to_email: str,
+        otp: str,
+        recipient_name: Optional[str] = None,
+        expires_in_minutes: int = 15
+    ) -> Tuple[bool, Optional[str]]:
+        """Alias for send_otp_email supporting named argument conventions."""
+        return await cls.send_otp_email(to_email, otp, expires_in_minutes)
+
 
 email_service = EmailService()

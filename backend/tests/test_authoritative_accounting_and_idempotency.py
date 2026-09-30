@@ -2,7 +2,7 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from app.core.security import create_access_token
-from app.db.models import Invoice, ZohoConnection, ChartOfAccount, TaxRate, JournalEntry
+from app.db.models import Invoice, ZohoConnection, ChartOfAccount, TaxRate, JournalEntry, Tenant
 from app.services.journal_generator import journal_generator
 from app.services.export_service import export_service
 from app.api.v1.review import approve_invoice, RejectRequest, reject_invoice
@@ -79,10 +79,20 @@ async def test_f_approval_fails_without_approved_account_id():
         },
     )
 
+    mock_tenant = Tenant(id="tenant-a", name="Tenant A", slug="tenant-a", books_closed_through_date=None)
     mock_db = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_invoice
-    mock_db.execute.return_value = mock_result
+    async def mock_exec_f(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_invoice
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_exec_f
 
     user = AuthenticatedUser(
         id=str(uuid.uuid4()),
@@ -124,10 +134,20 @@ async def test_l_finance_can_approve_with_approved_accounts():
         },
     )
 
+    mock_tenant = Tenant(id="tenant-a", name="Tenant A", slug="tenant-a", books_closed_through_date=None)
     mock_db = AsyncMock()
-    mock_result = MagicMock()
-    mock_result.scalar_one_or_none.return_value = mock_invoice
-    mock_db.execute.return_value = mock_result
+    async def mock_exec_l(stmt, *args, **kwargs):
+        res = MagicMock()
+        stmt_str = str(stmt)
+        if "FROM invoices" in stmt_str or "invoices." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_invoice
+        elif "FROM tenants" in stmt_str or "tenants." in stmt_str:
+            res.scalar_one_or_none.return_value = mock_tenant
+        else:
+            res.scalar_one_or_none.return_value = None
+            res.scalars.return_value.all.return_value = []
+        return res
+    mock_db.execute = mock_exec_l
     mock_db.add = MagicMock()
     mock_db.flush = AsyncMock()
     mock_db.commit = AsyncMock()
@@ -215,11 +235,13 @@ async def test_n_export_refuses_ai_fallback():
         status="APPROVED",
     )
 
+    mock_tenant = Tenant(id="tenant-a", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
     mock_db.execute.side_effect = [
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_connection)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_tenant)),
+        MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[mock_connection])))),
         MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[ChartOfAccount(zoho_account_id="4076465000000000531", account_name="Professional Fees")])))),
     ]
     mock_db.commit = AsyncMock()
@@ -269,11 +291,13 @@ async def test_h_zoho_create_timeout_followed_by_reconciliation():
         status="APPROVED",
     )
 
+    mock_tenant = Tenant(id="tenant-a", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
     mock_db.execute.side_effect = [
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_connection)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_tenant)),
+        MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[mock_connection])))),
         MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))),  # taxes
     ]
     mock_db.commit = AsyncMock()
@@ -348,11 +372,13 @@ async def test_q_attachment_retry_uses_existing_zoho_bill_id():
         status="APPROVED",
     )
 
+    mock_tenant = Tenant(id="tenant-a", name="Test Org", slug="test-org", books_closed_through_date=None)
     mock_db = AsyncMock()
     mock_db.execute.side_effect = [
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_invoice)),
         MagicMock(scalar_one_or_none=MagicMock(return_value=mock_journal)),
-        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_connection)),
+        MagicMock(scalar_one_or_none=MagicMock(return_value=mock_tenant)),
+        MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[mock_connection])))),
         MagicMock(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))),
     ]
     mock_db.commit = AsyncMock()

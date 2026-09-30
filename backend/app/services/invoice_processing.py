@@ -338,6 +338,18 @@ def get_effective_invoice_data(invoice: Invoice, convert_fx: bool = False) -> di
     from app.core.date_utils import parse_and_normalize_date
     if merged.get("invoice_date"):
         merged["invoice_date"] = parse_and_normalize_date(merged["invoice_date"])
+        merged["document_date"] = merged["invoice_date"]
+    elif merged.get("document_date"):
+        merged["document_date"] = parse_and_normalize_date(merged["document_date"])
+        merged["invoice_date"] = merged["document_date"]
+
+    if getattr(invoice, "posting_date", None):
+        merged["posting_date"] = invoice.posting_date.isoformat() if hasattr(invoice.posting_date, "isoformat") else str(invoice.posting_date)
+    elif merged.get("posting_date"):
+        merged["posting_date"] = parse_and_normalize_date(merged["posting_date"])
+    elif merged.get("invoice_date"):
+        merged["posting_date"] = merged.get("invoice_date")
+
     if merged.get("due_date"):
         merged["due_date"] = parse_and_normalize_date(merged["due_date"])
 

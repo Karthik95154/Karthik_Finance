@@ -15,8 +15,9 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
 )
+from sqlalchemy.orm import relationship, synonym
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
+
 from app.db.database import Base
 
 
@@ -26,6 +27,7 @@ class Tenant(Base):
     id = Column(String(64), primary_key=True)  # e.g. "default-tenant-001"
     name = Column(String(255), nullable=False)
     slug = Column(String(100), nullable=False, unique=True, index=True)
+    books_closed_through_date = Column(Date, nullable=True, default=None)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -39,7 +41,7 @@ class Tenant(Base):
     )
 
     users = relationship("User", back_populates="tenant", cascade="all, delete-orphan")
-    zoho_connection = relationship("ZohoConnection", back_populates="tenant", uselist=False, cascade="all, delete-orphan")
+    zoho_connections = relationship("ZohoConnection", back_populates="tenant", cascade="all, delete-orphan")
     chart_of_accounts = relationship("ChartOfAccount", back_populates="tenant", cascade="all, delete-orphan")
     tax_rates = relationship("TaxRate", back_populates="tenant", cascade="all, delete-orphan")
     vendors = relationship("Vendor", back_populates="tenant", cascade="all, delete-orphan")
@@ -54,9 +56,10 @@ class User(Base):
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
     email = Column(String(255), nullable=False, unique=True, index=True)
-    hashed_password = Column(String(255), nullable=True)
+    password_hash = Column(String(255), nullable=True)
+    hashed_password = synonym("password_hash")
     full_name = Column(String(255), nullable=True)
-    role = Column(String(50), nullable=False, default="FINANCE_USER")  # ADMIN, FINANCE_USER, FINANCE, VIEWER
+    role = Column(String(50), nullable=False, default="FINANCE")  # ADMIN, FINANCE_ADMIN, FINANCE, FINANCE_USER, FINANCE_MANAGER, FINANCE_REVIEWER, DATA_REVIEWER, VIEWER, CUSTOMER
     is_active = Column(Boolean, nullable=False, default=True)
     must_change_password = Column(Boolean, nullable=False, default=False)
     created_at = Column(
@@ -72,6 +75,7 @@ class User(Base):
     )
 
     tenant = relationship("Tenant", back_populates="users")
+    zoho_connections = relationship("ZohoConnection", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserInvitation(Base):
@@ -113,12 +117,17 @@ class UserInvitation(Base):
 
 class ZohoConnection(Base):
     __tablename__ = "zoho_connections"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", name="uq_zoho_tenant_user"),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(
         String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     organization_id = Column(String(100), nullable=True)
     organization_name = Column(String(255), nullable=True)
     encrypted_access_token = Column(Text, nullable=True)
@@ -139,7 +148,8 @@ class ZohoConnection(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
-    tenant = relationship("Tenant", back_populates="zoho_connection")
+    tenant = relationship("Tenant", back_populates="zoho_connections")
+    user = relationship("User", back_populates="zoho_connections")
 
 
 # Alias for backward compatibility
@@ -282,6 +292,7 @@ class Invoice(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id = Column(String(64), nullable=False, default="default-tenant-001", index=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    owner_user_id = synonym("user_id")
     file_path = Column(String(512), nullable=False)
     file_name = Column(String(255), nullable=False)
     file_size = Column(Integer, nullable=False)
@@ -301,6 +312,12 @@ class Invoice(Base):
     exported_at = Column(DateTime(timezone=True), nullable=True)
     locked_at = Column(DateTime(timezone=True), nullable=True)
 
+    # Closed Accounting Period & Posting Date Controls
+    posting_date = Column(Date, nullable=True, default=None, index=True)
+    period_resolution = Column(String(50), nullable=False, default="NONE", index=True)
+    period_resolution_reason = Column(Text, nullable=True)
+    period_resolved_by = Column(String(255), nullable=True)
+    period_resolved_at = Column(DateTime(timezone=True), nullable=True)
     # Accounting Period & Previous-FY Decision
     period_category = Column(String(50), nullable=True)  # CURRENT_MONTH, PREVIOUS_MONTH_CURRENT_FY, PREVIOUS_FINANCIAL_YEAR, CURRENT_FINANCIAL_YEAR, FUTURE_PERIOD
     period_decision = Column(String(50), nullable=False, default="NOT_REQUIRED")  # NOT_REQUIRED, PENDING, CONTINUE, CANCELLED
@@ -368,6 +385,7 @@ class Invoice(Base):
     )
 
     journal_entry_rel = relationship("JournalEntry", back_populates="invoice", uselist=False, cascade="all, delete-orphan")
+    owner = relationship("User", foreign_keys=[user_id], backref="owned_invoices")
 
     def __repr__(self) -> str:
         return f"<Invoice(id={self.id}, file_name={self.file_name}, status={self.status}, export_status={self.export_status})>"
@@ -376,8 +394,13 @@ class Invoice(Base):
 class Integration(Base):
     __tablename__ = "integrations"
 
-    id = Column(String(50), primary_key=True, default="imap_email")
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
+    id = Column(String(255), primary_key=True, default="imap_email")
+    tenant_id = Column(
+        String(64), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, default="default-tenant-001", index=True
+    )
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     status = Column(String(50), nullable=False, default="disconnected")
     config = Column(JSONB, nullable=True)
     last_synced_at = Column(DateTime(timezone=True), nullable=True)
@@ -392,6 +415,8 @@ class Integration(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+    user = relationship("User", backref="integrations")
 
 
 class EmailConnection(Base):
@@ -522,6 +547,8 @@ class HitlReview(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_id = Column(UUID(as_uuid=True), ForeignKey("invoices.id", ondelete="CASCADE"), nullable=False, index=True)
+    tenant_id = Column(String(64), nullable=True, index=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     stage = Column(String(50), nullable=False)  # EXTRACTION, FINAL_FINANCE
     reviewer_id = Column(String(100), nullable=False)
     status = Column(String(50), nullable=False, default="APPROVED")  # APPROVED, REJECTED
@@ -532,3 +559,4 @@ class HitlReview(Base):
     
     created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     approved_at = Column(DateTime(timezone=True), nullable=True, default=lambda: datetime.now(timezone.utc))
+

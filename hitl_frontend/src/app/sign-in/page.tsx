@@ -60,10 +60,10 @@ export default function SignInPage() {
       }
       
       // Navigate to dashboard
-      window.location.href = "/";
+      window.location.href = "/dashboard";
     } catch (err: any) {
       // Fallback navigation if network issue
-      window.location.href = "/";
+      window.location.href = "/dashboard";
     } finally {
       setIsLoading(false);
     }

@@ -147,6 +147,8 @@ class JournalEntryResult(BaseModel):
     total_credit: float = 0.0
     difference: float = 0.0
     currency: str = "INR"
+    entry_date: Optional[str] = None
+    posting_date: Optional[str] = None
     lines: List[JournalLine] = Field(default_factory=list)
     validation: JournalValidation = Field(default_factory=JournalValidation)
 
@@ -268,8 +270,6 @@ class JournalGenerator:
                     line.get("taxable_amount")
                     or line.get("taxable")
                     or line.get("pretax_amount")
-                    or line.get("total")
-                    or line.get("amount")
                 )
                 if taxable is None:
                     qty = self._clean_num(line.get("quantity"))
@@ -287,7 +287,7 @@ class JournalGenerator:
                     elif subtotal is not None and len(line_items) == 1:
                         taxable = subtotal
                     else:
-                        taxable = 0.0
+                        taxable = self._clean_num(line.get("amount") or line.get("total")) or 0.0
 
                 # Skip zero-amount informational line items (e.g. 0 rate / 0 taxable items) when there are active taxable lines
                 if taxable <= 0.0 and len(line_items) > 1:
@@ -1096,12 +1096,16 @@ class JournalGenerator:
         else:
             overall_status = "BALANCED"
 
+        entry_date_val = inv.get("posting_date") or inv.get("invoice_date")
+
         result = JournalEntryResult(
             status=overall_status,
             total_debit=total_debit,
             total_credit=total_credit,
             difference=difference,
             currency="INR",
+            entry_date=entry_date_val,
+            posting_date=entry_date_val,
             lines=lines,
             validation=JournalValidation(
                 balanced=is_balanced,
@@ -1245,6 +1249,7 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
         tot_cr = float(journal_dict.get("total_credit", 0.0))
         diff = float(journal_dict.get("difference", 0.0))
         status_val = journal_dict.get("status", "BALANCED" if is_bal else "UNBALANCED")
+        entry_date_val = str(journal_dict.get("entry_date") or journal_dict.get("posting_date") or "")
 
         if entry:
             entry.status = status_val
@@ -1253,6 +1258,8 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
             entry.difference = diff
             entry.balanced = is_bal
             entry.is_balanced = is_bal
+            if entry_date_val:
+                entry.entry_date = entry_date_val
             
             # Delete old lines to prevent duplication
             await session.execute(
@@ -1264,6 +1271,7 @@ async def sync_relational_journal(session, invoice_id, journal_dict: Dict[str, A
                 invoice_id=invoice_id,
                 tenant_id=tenant_id,
                 status=status_val,
+                entry_date=entry_date_val or None,
                 total_debit=tot_dr,
                 total_credit=tot_cr,
                 difference=diff,
